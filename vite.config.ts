@@ -13,10 +13,22 @@ export default defineConfig({
       '@': path.resolve(__dirname, './'),
     },
   },
+  logLevel: 'info',
   build: {
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: false,
+    target: 'esnext',
+    chunkSizeWarningLimit: 1500,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom', 'recharts', 'lucide-react'],
+          firebase: ['firebase/compat/app', 'firebase/compat/auth', 'firebase/compat/firestore', 'firebase/compat/storage'],
+          utils: ['xlsx', 'exceljs', 'html2canvas', '@google/genai'],
+        },
+      },
+    },
   },
   server: {
     host: '0.0.0.0',

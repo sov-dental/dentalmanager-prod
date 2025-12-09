@@ -9,6 +9,7 @@ declare global {
 
 // NOTE: In a production environment, this should be in an environment variable.
 const CLIENT_ID = '497470423292-hpo7k2u4j10tankppa2fvb2h0b3k8bd9.apps.googleusercontent.com';
+// Includes full calendar access and events specific scope
 const SCOPES = 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events';
 const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest';
 
@@ -34,7 +35,7 @@ export const initGoogleClient = (
     const now = Date.now();
 
     if (token && expiry && parseInt(expiry, 10) > now) {
-      if (window.gapi.client) {
+      if (window.gapi && window.gapi.client) {
         window.gapi.client.setToken({ access_token: token });
         // Call the passed callback directly for synchronous checks
         onUserChanged(true);
@@ -50,35 +51,48 @@ export const initGoogleClient = (
 
   const gapiLoaded = () => {
     window.gapi.load('client', async () => {
-      await window.gapi.client.init({
-        discoveryDocs: [DISCOVERY_DOC],
-      });
-      gapiInited = true;
-      if (gisInited) attemptRestoreSession();
+      try {
+        await window.gapi.client.init({
+          discoveryDocs: [DISCOVERY_DOC],
+        });
+        
+        // CRITICAL FIX: Explicitly load calendar v3 to ensure gapi.client.calendar is available
+        await window.gapi.client.load('calendar', 'v3');
+        console.log("[GoogleCalendar] GAPI Client & Calendar API V3 loaded successfully.");
+
+        gapiInited = true;
+        if (gisInited) attemptRestoreSession();
+      } catch (error) {
+        console.error("[GoogleCalendar] GAPI Init Error:", error);
+      }
     });
   };
 
   const gisLoaded = () => {
-    tokenClient = window.google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: SCOPES,
-      callback: (resp: any) => {
-        if (resp.error !== undefined) {
-          throw (resp);
-        }
-        // Save Token
-        const expiryTime = Date.now() + (resp.expires_in * 1000);
-        localStorage.setItem(STORAGE_KEY_TOKEN, resp.access_token);
-        localStorage.setItem(STORAGE_KEY_EXPIRY, expiryTime.toString());
-        
-        // Use the module-level active callback to update the current UI
-        if (activeUserChangedCallback) {
-            activeUserChangedCallback(true);
-        }
-      },
-    });
-    gisInited = true;
-    if (gapiInited) attemptRestoreSession();
+    try {
+      tokenClient = window.google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        callback: (resp: any) => {
+          if (resp.error !== undefined) {
+            throw (resp);
+          }
+          // Save Token
+          const expiryTime = Date.now() + (resp.expires_in * 1000);
+          localStorage.setItem(STORAGE_KEY_TOKEN, resp.access_token);
+          localStorage.setItem(STORAGE_KEY_EXPIRY, expiryTime.toString());
+          
+          // Use the module-level active callback to update the current UI
+          if (activeUserChangedCallback) {
+              activeUserChangedCallback(true);
+          }
+        },
+      });
+      gisInited = true;
+      if (gapiInited) attemptRestoreSession();
+    } catch (error) {
+      console.error("[GoogleCalendar] GIS Init Error:", error);
+    }
   };
 
   // If already initialized, just restore/check session
@@ -88,11 +102,18 @@ export const initGoogleClient = (
   }
 
   // Check if scripts are already loaded in DOM (e.g. from previous mounts) but not tracked in this module
-  if (window.gapi && !gapiInited) gapiLoaded();
-  if (window.google && !gisInited) gisLoaded();
+  if (typeof window !== 'undefined') {
+    if (window.gapi && !gapiInited) gapiLoaded();
+    if (window.google && !gisInited) gisLoaded();
+  }
 };
 
 export const handleAuthClick = () => {
+  if (!tokenClient) {
+    console.error("Google Token Client not initialized");
+    return;
+  }
+
   if (window.gapi.client.getToken() === null) {
     // Prompt the user to select a Google Account and ask for consent to share their data
     // when establishing a new session.
@@ -131,8 +152,26 @@ export interface GoogleEvent {
   allDay?: boolean; 
 }
 
+// Helper to ensure client is loaded before calling API
+const ensureCalendarClient = async () => {
+  if (!window.gapi || !window.gapi.client) {
+    throw new Error("GAPI not initialized");
+  }
+  if (!window.gapi.client.calendar) {
+    console.warn("[GoogleCalendar] Calendar client missing, attempting explicit load...");
+    await window.gapi.client.load('calendar', 'v3');
+  }
+};
+
 export const listCalendars = async (): Promise<GoogleCalendar[]> => {
   try {
+    // Safety check
+    if (!window.gapi?.client?.calendar) {
+        console.warn("GAPI Calendar not initialized yet. Skipping listCalendars.");
+        return [];
+    }
+    
+    await ensureCalendarClient();
     const response = await window.gapi.client.calendar.calendarList.list();
     return response.result.items.map((item: any) => ({
       id: item.id,
@@ -156,6 +195,13 @@ export const listEvents = async (
   timeMax: Date
 ): Promise<GoogleEvent[]> => {
   try {
+    // Safety check: Prevent crash if API isn't ready
+    if (!window.gapi?.client?.calendar) {
+        console.warn("GAPI Calendar not initialized yet. Skipping listEvents.");
+        return [];
+    }
+
+    await ensureCalendarClient();
     const response = await window.gapi.client.calendar.events.list({
       calendarId: calendarId,
       timeMin: timeMin.toISOString(),
@@ -191,6 +237,13 @@ export const searchEvents = async (
   timeMax: Date
 ): Promise<GoogleEvent[]> => {
   try {
+    // Safety check
+    if (!window.gapi?.client?.calendar) {
+        console.warn("GAPI Calendar not initialized yet. Skipping searchEvents.");
+        return [];
+    }
+
+    await ensureCalendarClient();
     const response = await window.gapi.client.calendar.events.list({
       calendarId: calendarId,
       q: query,
@@ -225,6 +278,13 @@ export const patchEvent = async (
   patchData: { summary?: string; description?: string }
 ): Promise<boolean> => {
   try {
+    // Safety check
+    if (!window.gapi?.client?.calendar) {
+        console.warn("GAPI Calendar not initialized yet. Skipping patchEvent.");
+        return false;
+    }
+
+    await ensureCalendarClient();
     await window.gapi.client.calendar.events.patch({
       calendarId: calendarId,
       eventId: eventId,
@@ -247,21 +307,6 @@ export interface ParsedAppointment {
 
 /**
  * Parses a Google Calendar Event Summary into structured appointment data.
- * 
- * CORE PARSING LOGIC:
- * 1. Find the Anchor (ID): Look for a continuous sequence of 4, 7, or 10 digits.
- * 2. Scenario A (Standard): No hyphen '-' immediately before the ID.
- *    Format: [Status][ID]-[Name]-[Procedure]
- * 3. Scenario B (Swapped): A hyphen '-' exists immediately before the ID.
- *    Format: [Name]-[ID]-[Procedure] (Status is null)
- * 4. Scenario C (No ID): No 4/7/10 digits found.
- *    Format: [Name]-[Procedure] (ID="NP")
- * 
- * EXCLUSION: If Name contains '+', returns null.
- * 
- * DATA MAPPING:
- * - np_display: "NP" if ID is 10 digits or "NP". Otherwise empty.
- * - original_status: The extracted status prefix (e.g. "V", "@"). Not used for np_display.
  */
 export const parseAppointmentTitle = (title: string): ParsedAppointment | null => {
   // 1. Find the Anchor (ID): 10, 7, or 4 digits. Order matters.
@@ -321,9 +366,6 @@ export const parseAppointmentTitle = (title: string): ParsedAppointment | null =
   }
 
   // np_display Logic:
-  // Strict Rule: Do NOT include the parsed `Status` in this column.
-  // Condition 1: ID has 10 digits OR ID is "NP" -> "NP"
-  // Condition 2: ID has 4 or 7 digits -> "" (empty)
   if (chartId === 'NP' || chartId.length === 10) {
       np_display = 'NP';
   } else {

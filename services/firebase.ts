@@ -1,3 +1,4 @@
+
 import firebase from "firebase/compat/app";
 import "firebase/compat/auth";
 import "firebase/compat/firestore";
@@ -114,7 +115,8 @@ export const sanitizeRow = (row: AccountingRow): AccountingRow => {
         labFee: num(row.labFee),
         isManual: !!row.isManual,
         isManualName: !!row.isManualName,
-        isArrived: !!row.isArrived,
+        // Ensure we save the new field 'attendance'.
+        attendance: row.attendance !== undefined ? row.attendance : true,
         startTime: row.startTime || null,
         originalDate: row.originalDate || null, 
         matchStatus: row.matchStatus || null
@@ -138,7 +140,9 @@ export const hydrateRow = (row: any): AccountingRow => {
             ...(row.paymentBreakdown || {})
         },
         actualCollected: Number(row.actualCollected) || 0,
-        isArrived: row.isArrived !== undefined ? row.isArrived : (!!row.isManual),
+        // CRITICAL FIX: Map legacy 'isArrived' to 'attendance' if 'attendance' is undefined.
+        // If both are missing, default to true.
+        attendance: row.attendance !== undefined ? row.attendance : (row.isArrived !== undefined ? row.isArrived : true),
         startTime: row.startTime || new Date().toISOString()
     };
 };
@@ -508,7 +512,7 @@ export const seedTestEnvironment = async () => {
 
 export const loadDailyAccounting = async (clinicId: string, date: string): Promise<DailyAccountingRecord | null> => {
   if (!clinicId || !date) return null;
-  const docId = `${clinicId}_${date}`;
+  const docId = `${clinicId}_date`;
   try {
       const docSnap = await db.collection('daily_accounting').doc(docId).get();
       if (docSnap.exists) {

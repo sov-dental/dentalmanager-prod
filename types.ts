@@ -172,7 +172,7 @@ export interface AccountingRow {
     labFee?: number;
     isManual: boolean;
     isManualName?: boolean;
-    isArrived?: boolean; // New: Patient Arrival Status
+    attendance?: boolean; // Renamed from isArrived
     startTime?: string;
     originalDate?: string; 
     matchStatus?: 'none' | 'matched' | 'manual' | 'saved';

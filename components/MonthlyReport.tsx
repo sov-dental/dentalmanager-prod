@@ -257,7 +257,7 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
       return (
           <div className="flex justify-center" title={row.doctorName}>
               <div 
-                className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shadow-sm ring-2 ring-white"
+                className="w-8 h-8 rounded-full flex items-center justify-center text-white text-[14px] font-bold shadow-sm ring-2 ring-white"
                 style={{ backgroundColor: color }}
               >
                   {text}
@@ -267,15 +267,15 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
   };
 
   // --- PATIENT COLOR LOGIC ---
+// --- PATIENT COLOR LOGIC (SIMPLIFIED) ---
   const getPatientNameColor = (row: AccountingRow) => {
-      // Blue: Manual Entry (Added via "Add Row" button)
-      if (row.isManual) return 'text-blue-600 font-bold';
-      
-      // Black: Processed Calendar Entry (isArrived)
-      if (row.isArrived) return 'text-gray-900 font-bold';
-      
-      // Gray: Pending Calendar Entry
-      return 'text-gray-400 font-medium';
+      const base = "text-lg font-bold";
+      if (row.isManual) return `${base} text-blue-600`;
+      const isArrived = row.attendance !== undefined ? row.attendance : true;
+      if (isArrived) {
+          return `${base} text-gray-900`; // 到診：黑色
+      }
+      return `${base} text-gray-100`; // 未到診：灰色
   };
 
   const renderSelfPayCapsules = (row: AccountingRow) => {
@@ -560,7 +560,7 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                       <thead>
                           <tr>
                               {/* 1. Date */}
-                              <th className={`${headerCellStyle} text-left min-w-[130px]`}>
+                              <th className={`${headerCellStyle} text-left min-w-[80px]`}>
                                   <div className="flex items-center justify-between gap-1">
                                       <span>日期</span>
                                       <div className="relative group">
@@ -578,10 +578,10 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                               </th>
                               
                               {/* 2. Patient */}
-                              <th className={`${headerCellStyle} text-left min-w-[120px]`}>病患</th>
+                              <th className={`${headerCellStyle} text-left min-w-[100px]`}>病患</th>
                               
                               {/* 3. Doctor */}
-                              <th className={`${headerCellStyle} text-center min-w-[100px]`}>
+                              <th className={`${headerCellStyle} text-center min-w-[80px]`}>
                                   <div className="flex items-center justify-center gap-1">
                                       <span>醫師</span>
                                       <div className="relative group">
@@ -599,10 +599,10 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                               </th>
                               
                               {/* 4. Reg/Copay - UPDATED MIN-WIDTH */}
-                              <th className={`${headerCellStyle} text-right min-w-[140px]`}>掛號/部分負擔</th>
+                              <th className={`${headerCellStyle} text-right min-w-[100px]`}>掛號/部分負擔</th>
                               
                               {/* 5. Self-Pay - UPDATED MIN-WIDTH */}
-                              <th className={`${headerCellStyle} text-right min-w-[180px]`}>
+                              <th className={`${headerCellStyle} text-right min-w-[140px]`}>
                                   <div className="flex items-center justify-end gap-1">
                                       <span>自費項目</span>
                                       <div className="relative group">
@@ -627,7 +627,7 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                               </th>
                               
                               {/* 6. Retail - UPDATED MIN-WIDTH */}
-                              <th className={`${headerCellStyle} text-right min-w-[180px]`}>
+                              <th className={`${headerCellStyle} text-right min-w-[140px]`}>
                                   <div className="flex items-center justify-end gap-1">
                                       <span>小金庫/物販</span>
                                       <div className="relative group">
@@ -646,7 +646,7 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                               </th>
                               
                               {/* 7. Total */}
-                              <th className={`${headerCellStyle} text-right min-w-[180px]`}>
+                              <th className={`${headerCellStyle} text-right min-w-[140px]`}>
                                   <div className="flex items-center justify-end gap-1">
                                       <span>總金額 (實收)</span>
                                       <div className="relative group">
@@ -666,10 +666,10 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                               </th>
                               
                               {/* 8. Treatment Content */}
-                              <th className={`${headerCellStyle} text-left min-w-[150px]`}>療程內容</th>
+                              <th className={`${headerCellStyle} text-left min-w-[100px]`}>療程內容</th>
                               
                               {/* 9. Note */}
-                              <th className={`${headerCellStyle} text-left min-w-[100px] border-r-0`}>NP/備註</th>
+                              <th className={`${headerCellStyle} text-left min-w-[80px] border-r-0`}>NP/備註</th>
                           </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 bg-white">
@@ -678,7 +678,7 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                               return (
                                 <tr key={idx} className="hover:bg-slate-50 transition-colors group">
                                     <td 
-                                        className="px-4 py-3 text-sm font-mono text-blue-600 font-bold border-r border-slate-50 cursor-pointer hover:underline whitespace-nowrap"
+                                        className="px-4 py-3 text-lg font-mono text-blue-600 font-bold border-r border-slate-50 cursor-pointer hover:underline whitespace-nowrap"
                                         onClick={() => navigate(`/accounting?date=${dateStr}`)}
                                         title="前往當日帳務"
                                     >

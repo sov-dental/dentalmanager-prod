@@ -74,7 +74,7 @@ export const AppointmentDetailModal: React.FC<Props> = ({
   const [doctorId, setDoctorId] = useState(''); // New State for Doctor Editing
   const [technician, setTechnician] = useState('');
   const [treatmentContent, setTreatmentContent] = useState('');
-  const [isArrived, setIsArrived] = useState(false); // New: Arrival Status
+  const [attendance, setAttendance] = useState(false); // Renamed from isArrived
   
   // Fees
   const [regFee, setRegFee] = useState(150);
@@ -147,8 +147,8 @@ export const AppointmentDetailModal: React.FC<Props> = ({
 
   // Auto-set Arrived if money entered
   useEffect(() => {
-      if (totalRequired > 0 && !isArrived) {
-          setIsArrived(true);
+      if (totalRequired > 0 && !attendance) {
+          setAttendance(true);
       }
   }, [totalRequired]);
 
@@ -161,7 +161,7 @@ export const AppointmentDetailModal: React.FC<Props> = ({
     setDoctorId('');
     setTechnician('');
     setTreatmentContent('');
-    setIsArrived(false);
+    setAttendance(false);
     setRegFee(150);
     setCopayment(50);
     setSelfPayRows([]);
@@ -186,8 +186,8 @@ export const AppointmentDetailModal: React.FC<Props> = ({
       setDoctorId(row.doctorId || '');
       setTechnician(row.technician || '');
       setTreatmentContent(row.treatmentContent || '');
-      // Init isArrived: default to true if manual row, otherwise respect row val or default false
-      setIsArrived(row.isArrived ?? (row.isManual ? true : false));
+      // Init attendance: default to true if manual row, otherwise respect row val or default false
+      setAttendance(row.attendance ?? (row.isManual ? true : false));
       setRegFee(row.treatments.regFee);
       setCopayment(row.treatments.copayment);
       hydrateFormRows(row);
@@ -276,7 +276,7 @@ export const AppointmentDetailModal: React.FC<Props> = ({
         setStatus('not_found');
         setLoading(false);
         // New Record: Default false
-        setIsArrived(false);
+        setAttendance(false);
         return;
       }
 
@@ -300,14 +300,14 @@ export const AppointmentDetailModal: React.FC<Props> = ({
         setTechnician(match.technician || '');
         setTreatmentContent(match.treatmentContent || '');
         // Match found: respect saved value or default false
-        setIsArrived(match.isArrived ?? false);
+        setAttendance(match.attendance ?? false);
         setRegFee(match.treatments.regFee);
         setCopayment(match.treatments.copayment);
         hydrateFormRows(match);
         setStatus('found');
       } else {
         setStatus('not_found');
-        setIsArrived(false); // New from calendar
+        setAttendance(false); // New from calendar
       }
 
     } catch (e) {
@@ -438,7 +438,7 @@ export const AppointmentDetailModal: React.FC<Props> = ({
         actualCollected: paymentAmount,
         paymentMethod,
         isPaymentManual: true,
-        isArrived: isArrived // Save Arrival Status
+        attendance: attendance // Save Arrival Status
       };
 
       // --- DELEGATION CHECK ---
@@ -555,11 +555,11 @@ export const AppointmentDetailModal: React.FC<Props> = ({
                           <div className="flex items-center justify-between bg-slate-50 p-2 rounded-lg border border-slate-200">
                               <span className="text-sm font-bold text-slate-600">已到診 (Arrived)</span>
                               <button 
-                                  onClick={() => setIsArrived(!isArrived)}
-                                  className={`flex items-center gap-2 px-3 py-1 rounded-full transition-colors ${isArrived ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'}`}
+                                  onClick={() => setAttendance(!attendance)}
+                                  className={`flex items-center gap-2 px-3 py-1 rounded-full transition-colors ${attendance ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'}`}
                               >
-                                  {isArrived ? <ToggleRight size={24} /> : <ToggleLeft size={24} />}
-                                  <span className="text-xs font-bold">{isArrived ? 'YES' : 'NO'}</span>
+                                  {attendance ? <ToggleRight size={24} /> : <ToggleLeft size={24} />}
+                                  <span className="text-xs font-bold">{attendance ? 'YES' : 'NO'}</span>
                               </button>
                           </div>
                           
@@ -818,38 +818,4 @@ export const AppointmentDetailModal: React.FC<Props> = ({
                                   <button 
                                       onClick={() => setPaymentMethod('transfer')}
                                       className={`py-1.5 rounded-md text-xs font-bold flex items-center justify-center gap-1 transition-all ${paymentMethod === 'transfer' ? 'bg-amber-500 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-                                  >
-                                      <Landmark size={14} /> 匯款
-                                  </button>
-                              </div>
-                          </div>
-                          
-                          <div>
-                              <label className="block text-xs font-bold text-slate-400 mb-1 uppercase">實收金額</label>
-                              <input 
-                                  type="number"
-                                  className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-right font-mono font-bold text-xl focus:ring-2 focus:ring-teal-500 outline-none text-white"
-                                  value={paymentAmount}
-                                  onChange={e => setPaymentAmount(Number(e.target.value))}
-                              />
-                          </div>
-                      </div>
-
-                      <button 
-                          onClick={handleSave}
-                          disabled={saving || !currentRow}
-                          className="w-full bg-teal-500 hover:bg-teal-400 text-slate-900 py-3 rounded-lg font-bold text-lg flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-teal-900/50"
-                      >
-                          {saving ? <Loader2 className="animate-spin" /> : <Save size={20} />}
-                          儲存結帳
-                      </button>
-                  </div>
-              </div>
-
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
+                                  

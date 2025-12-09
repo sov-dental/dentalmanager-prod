@@ -1,0 +1,393 @@
+
+import React, { useState, useMemo } from 'react';
+import { Clinic, Consultant, DailySchedule, StaffScheduleConfig } from '../types';
+import { StaffScheduleModal } from './StaffScheduleModal';
+import { ChevronLeft, ChevronRight, RefreshCw, Users, Briefcase, Clock, CalendarDays, Loader2 } from 'lucide-react';
+import { useClinic } from '../contexts/ClinicContext';
+import { ClinicSelector } from './ClinicSelector';
+
+interface Props {
+  clinics: Clinic[]; // Compatibility
+  consultants: Consultant[];
+  schedules: DailySchedule[];
+  onSave: (schedules: DailySchedule[]) => Promise<void>;
+}
+
+export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, onSave }) => {
+  const { selectedClinicId, selectedClinic } = useClinic();
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [isImporting, setIsImporting] = useState(false);
+  
+  // Modal State
+  const [modalDateStr, setModalDateStr] = useState<string | null>(null);
+
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+
+  const handleMonthChange = (offset: number) => {
+    setCurrentDate(new Date(year, month + offset, 1));
+  };
+
+  const getDaysInMonth = (y: number, m: number) => new Date(y, m + 1, 0).getDate();
+  const getFirstDayOfMonth = (y: number, m: number) => new Date(y, m, 1).getDay();
+
+  const daysCount = getDaysInMonth(year, month);
+  const firstDay = getFirstDayOfMonth(year, month);
+  const blanks = Array.from({ length: firstDay }, (_, i) => i);
+  const days = Array.from({ length: daysCount }, (_, i) => i + 1);
+
+  const activeConsultants = consultants.filter(c => c.clinicId === selectedClinicId);
+  const groupFullTime = activeConsultants.filter(c => !c.role || c.role === 'consultant' || c.role === 'assistant' || c.role === 'trainee');
+  const groupPartTime = activeConsultants.filter(c => c.role === 'part_time');
+
+  // Helper to extract config from schedule
+  const getStaffConfig = (dateStr: string): StaffScheduleConfig => {
+      const schedule = schedules.find(s => s.date === dateStr && s.clinicId === selectedClinicId);
+      if (schedule?.staffConfiguration) {
+          return schedule.staffConfiguration;
+      }
+      if (schedule?.consultantOffs) {
+          const off = schedule.consultantOffs.filter(id => groupFullTime.some(s => s.id === id));
+          const work = groupPartTime.filter(s => !schedule.consultantOffs?.includes(s.id)).map(s => s.id);
+          return { off, leave: [], work, overtime: [] };
+      }
+      return { off: [], leave: [], work: [], overtime: [] };
+  };
+
+  // --- Statistics Calculation ---
+  const stats = useMemo(() => {
+    // Structure: ID -> Stats
+    const fullTimeStats: Record<string, { off: string[], leaveDays: number, sundayOT: number, totalShifts: number }> = {};
+    const partTimeStats: Record<string, { work: string[] }> = {};
+
+    // Initialize
+    groupFullTime.forEach(c => fullTimeStats[c.id] = { off: [], leaveDays: 0, sundayOT: 0, totalShifts: 0 });
+    groupPartTime.forEach(c => partTimeStats[c.id] = { work: [] });
+
+    for (let d = 1; d <= daysCount; d++) {
+        const dateObj = new Date(year, month, d);
+        const dayOfWeek = dateObj.getDay(); // 0 is Sunday
+        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        const config = getStaffConfig(dateStr);
+        const dayLabel = String(d);
+
+        // Full Time Stats
+        groupFullTime.forEach(c => {
+            if (!fullTimeStats[c.id]) return;
+
+            const isOff = config.off.includes(c.id);
+            const leaveEntry = config.leave.find(l => l.id === c.id);
+            const overtimeEntry = config.overtime?.find(o => o.id === c.id);
+
+            if (isOff) {
+                fullTimeStats[c.id].off.push(dayLabel);
+            } else if (leaveEntry) {
+                // Calculate Leave Duration
+                const duration = leaveEntry.type.includes('(半)') ? 0.5 : 1.0;
+                fullTimeStats[c.id].leaveDays += duration;
+            } else {
+                // Working or Overtime
+                if (dayOfWeek === 0) { // Sunday Logic
+                    if (overtimeEntry) {
+                        const otDuration = overtimeEntry.type.includes('(半)') ? 0.5 : 1.0;
+                        fullTimeStats[c.id].sundayOT += otDuration;
+                        fullTimeStats[c.id].totalShifts += otDuration;
+                    } else {
+                        // If not OFF and not in Overtime array on Sunday, assume Full Overtime (Legacy compatibility or user didn't specify)
+                        // Or strict: If not in overtime array, maybe they forgot to mark off? 
+                        // Current Modal logic forces a choice. We assume full shift if simply omitted from OFF list on Sunday?
+                        // Let's assume Full Shift (1.0) if not OFF.
+                        fullTimeStats[c.id].sundayOT += 1.0;
+                        fullTimeStats[c.id].totalShifts += 1.0;
+                    }
+                } else {
+                    // Regular Day
+                    // If regular day and has overtime entry? (Rare, but possible if used for extra shifts)
+                    // Currently assume full regular shift
+                    fullTimeStats[c.id].totalShifts += 1.0;
+                }
+            }
+        });
+
+        // Part Time Stats
+        config.work.forEach(id => {
+            if (partTimeStats[id]) partTimeStats[id].work.push(dayLabel);
+        });
+    }
+
+    return { fullTimeStats, partTimeStats };
+  }, [schedules, year, month, selectedClinicId, groupFullTime, groupPartTime, daysCount]);
+
+  const handleImportDefaults = async () => {
+      if (!selectedClinic || !selectedClinic.weeklyHours) {
+          alert("無法讀取診所營業時間設定");
+          return;
+      }
+      
+      if (!confirm(`確定要代入預設休診日？\n系統將掃描本月所有週休診日 (例如每週日)，並將該日設為「全員排休」。`)) return;
+
+      setIsImporting(true);
+      try {
+          const closedDaysOfWeek = selectedClinic.weeklyHours
+              .map((h, idx) => (!h.Morning && !h.Afternoon && !h.Evening) ? idx : -1)
+              .filter(i => i !== -1);
+
+          if (closedDaysOfWeek.length === 0) {
+              alert("此診所設定為無固定公休日。");
+              setIsImporting(false);
+              return;
+          }
+
+          let updatedSchedules = [...schedules];
+          const fullTimeIds = groupFullTime.map(c => c.id);
+
+          for (let d = 1; d <= daysCount; d++) {
+              const dateObj = new Date(year, month, d);
+              if (closedDaysOfWeek.includes(dateObj.getDay())) {
+                  const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                  
+                  const newConfig: StaffScheduleConfig = {
+                      off: fullTimeIds,
+                      leave: [], // Clear leaves as clinic is closed
+                      work: [],   // No part-time work
+                      overtime: [] // Clear overtime
+                  };
+
+                  const existingIdx = updatedSchedules.findIndex(s => s.date === dateStr && s.clinicId === selectedClinicId);
+                  
+                  if (existingIdx >= 0) {
+                      updatedSchedules[existingIdx] = { ...updatedSchedules[existingIdx], staffConfiguration: newConfig };
+                  } else {
+                      updatedSchedules.push({
+                          date: dateStr,
+                          clinicId: selectedClinicId,
+                          isClosed: true, // Also force clinic closed status
+                          shifts: { Morning: [], Afternoon: [], Evening: [] },
+                          staffConfiguration: newConfig
+                      });
+                  }
+              }
+          }
+
+          await onSave(updatedSchedules);
+          alert("已成功代入預設休診設定！");
+
+      } catch (e) {
+          console.error(e);
+          alert("代入失敗");
+      } finally {
+          setIsImporting(false);
+      }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header & Filters */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+        <div>
+           <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+             <Users size={28} className="text-teal-600"/> 助理排班總控
+           </h2>
+           <p className="text-slate-500">管理正職排休、請假與打工排班，並檢視月度統計。</p>
+        </div>
+
+        <div className="flex flex-wrap gap-3 items-center">
+            <ClinicSelector className="border p-2 rounded-lg font-medium text-slate-700 bg-slate-50 min-w-[150px]" />
+            
+            <div className="flex items-center bg-slate-100 rounded-lg p-1">
+                <button onClick={() => handleMonthChange(-1)} className="p-1.5 hover:bg-white rounded-md shadow-sm transition"><ChevronLeft size={20}/></button>
+                <span className="w-32 text-center font-bold text-slate-800">{year}年 {month + 1}月</span>
+                <button onClick={() => handleMonthChange(1)} className="p-1.5 hover:bg-white rounded-md shadow-sm transition"><ChevronRight size={20}/></button>
+            </div>
+
+            <button 
+                onClick={handleImportDefaults}
+                disabled={isImporting}
+                className="flex items-center gap-2 bg-orange-50 text-orange-600 hover:bg-orange-100 px-3 py-2 rounded-lg text-sm font-bold border border-orange-200 transition-colors disabled:opacity-50"
+            >
+                {isImporting ? <Loader2 size={16} className="animate-spin"/> : <CalendarDays size={16} />}
+                代入預設休診
+            </button>
+
+            <button 
+                onClick={() => window.location.reload()}
+                className="p-2 bg-slate-100 hover:bg-teal-50 text-slate-500 hover:text-teal-600 rounded-lg transition-colors"
+                title="重新整理"
+            >
+                <RefreshCw size={20} />
+            </button>
+        </div>
+      </div>
+
+      {/* Calendar Grid */}
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+         <div className="grid grid-cols-7 bg-slate-50 border-b border-slate-200 text-center py-2 text-sm font-bold text-slate-500">
+             {['週日', '週一', '週二', '週三', '週四', '週五', '週六'].map(d => <div key={d}>{d}</div>)}
+         </div>
+         <div className="grid grid-cols-7 auto-rows-fr bg-slate-100 gap-px border-b border-slate-200">
+             {blanks.map(i => <div key={`blank-${i}`} className="bg-white min-h-[120px] opacity-50"></div>)}
+             
+             {days.map(d => {
+                 const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                 const config = getStaffConfig(dateStr);
+                 
+                 const offNames = groupFullTime.filter(s => config.off.includes(s.id)).map(s => s.name);
+                 const leaveItems = config.leave.map(l => {
+                     const s = activeConsultants.find(c => c.id === l.id);
+                     return s ? { name: s.name, type: l.type } : null;
+                 }).filter(Boolean) as {name: string, type: string}[];
+                 const workNames = groupPartTime.filter(s => config.work.includes(s.id)).map(s => s.name);
+                 const overtimeItems = (config.overtime || []).map(o => {
+                     const s = activeConsultants.find(c => c.id === o.id);
+                     return s ? { name: s.name, type: o.type } : null;
+                 }).filter(Boolean) as {name: string, type: string}[];
+
+                 return (
+                     <div 
+                        key={d} 
+                        onClick={() => setModalDateStr(dateStr)}
+                        className="bg-white min-h-[120px] p-2 hover:bg-blue-50 cursor-pointer transition-colors relative group"
+                     >
+                         <div className="text-sm font-bold text-slate-700 mb-2 flex justify-between">
+                             {d}
+                             <span className="text-xs text-slate-300 group-hover:text-blue-400 font-normal">編輯</span>
+                         </div>
+                         
+                         <div className="space-y-1">
+                             {offNames.length > 0 && (
+                                 <div className="flex flex-wrap gap-1">
+                                     {offNames.map(name => (
+                                         <span key={name} className="text-[10px] bg-rose-50 text-rose-600 px-1.5 py-0.5 rounded border border-rose-100 font-bold truncate">
+                                             休 {name}
+                                         </span>
+                                     ))}
+                                 </div>
+                             )}
+                             {leaveItems.length > 0 && (
+                                 <div className="flex flex-wrap gap-1">
+                                     {leaveItems.map((item, idx) => (
+                                         <span key={idx} className="text-[10px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100 font-bold truncate">
+                                             {item.type} {item.name}
+                                         </span>
+                                     ))}
+                                 </div>
+                             )}
+                             {overtimeItems.length > 0 && (
+                                 <div className="flex flex-wrap gap-1">
+                                     {overtimeItems.map((item, idx) => (
+                                         <span key={idx} className="text-[10px] bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded border border-amber-200 font-bold truncate">
+                                             {item.type} {item.name}
+                                         </span>
+                                     ))}
+                                 </div>
+                             )}
+                             {workNames.length > 0 && (
+                                 <div className="flex flex-wrap gap-1">
+                                     {workNames.map(name => (
+                                         <span key={name} className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-100 font-bold truncate">
+                                             工 {name}
+                                         </span>
+                                     ))}
+                                 </div>
+                             )}
+                         </div>
+                     </div>
+                 );
+             })}
+         </div>
+      </div>
+
+      {/* Statistics Section */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Full Time Stats */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+              <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center gap-2">
+                  <Briefcase size={20} className="text-teal-600" />
+                  <h3 className="font-bold text-slate-800">正職人員統計 (Full-Time Stats)</h3>
+              </div>
+              <div className="p-4">
+                  <table className="w-full text-sm text-left">
+                      <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-xs">
+                          <tr>
+                              <th className="px-3 py-2">姓名</th>
+                              <th className="px-3 py-2 text-right">週日加班 (天)</th>
+                              <th className="px-3 py-2 text-right">請假天數</th>
+                              <th className="px-3 py-2 text-right">排休天數</th>
+                              <th className="px-3 py-2 text-right">總班數</th>
+                          </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                          {groupFullTime.map(c => {
+                              const s = stats.fullTimeStats[c.id];
+                              return (
+                                  <tr key={c.id} className="hover:bg-slate-50">
+                                      <td className="px-3 py-3 font-bold text-slate-700">{c.name}</td>
+                                      <td className={`px-3 py-3 text-right font-bold ${s.sundayOT > 0 ? 'text-amber-600' : 'text-slate-400'}`}>
+                                          {s.sundayOT}
+                                      </td>
+                                      <td className="px-3 py-3 text-right">
+                                          <div className={`font-bold ${s.leaveDays > 0 ? 'text-purple-600' : 'text-slate-400'}`}>{s.leaveDays}</div>
+                                      </td>
+                                      <td className="px-3 py-3 text-right">
+                                          <div className="font-bold text-slate-600">{s.off.length}</div>
+                                      </td>
+                                      <td className="px-3 py-3 text-right">
+                                          <div className="font-bold text-indigo-600">{s.totalShifts}</div>
+                                      </td>
+                                  </tr>
+                              );
+                          })}
+                          {groupFullTime.length === 0 && <tr><td colSpan={5} className="p-4 text-center text-slate-400">無正職人員</td></tr>}
+                      </tbody>
+                  </table>
+              </div>
+          </div>
+
+          {/* Part Time Stats */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+              <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center gap-2">
+                  <Clock size={20} className="text-amber-500" />
+                  <h3 className="font-bold text-slate-800">打工人員統計 (Part-time)</h3>
+              </div>
+              <div className="p-4">
+                  <table className="w-full text-sm text-left">
+                      <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-xs">
+                          <tr>
+                              <th className="px-3 py-2">姓名</th>
+                              <th className="px-3 py-2">上班天數</th>
+                              <th className="px-3 py-2">日期</th>
+                          </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                          {groupPartTime.map(c => {
+                              const s = stats.partTimeStats[c.id];
+                              return (
+                                  <tr key={c.id} className="hover:bg-slate-50">
+                                      <td className="px-3 py-3 font-bold text-slate-700">{c.name}</td>
+                                      <td className="px-3 py-3 font-bold text-amber-600">{s.work.length} 天</td>
+                                      <td className="px-3 py-3 text-xs text-slate-500 break-words max-w-[200px]">
+                                          {s.work.join(', ') || '-'}
+                                      </td>
+                                  </tr>
+                              );
+                          })}
+                          {groupPartTime.length === 0 && <tr><td colSpan={3} className="p-4 text-center text-slate-400">無打工人員</td></tr>}
+                      </tbody>
+                  </table>
+              </div>
+          </div>
+      </div>
+
+      {/* Reusable Modal */}
+      <StaffScheduleModal 
+          isOpen={!!modalDateStr}
+          onClose={() => setModalDateStr(null)}
+          dateStr={modalDateStr || ''}
+          clinicId={selectedClinicId}
+          schedules={schedules}
+          consultants={consultants}
+          onSave={onSave}
+      />
+    </div>
+  );
+};

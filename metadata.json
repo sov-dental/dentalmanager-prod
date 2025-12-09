@@ -1,0 +1,5 @@
+{
+  "name": "DentalManager",
+  "description": "全方位的診所排班管理系統。管理診所、醫師及固定班表，自動產生每月班表並製作社群貼文。",
+  "requestFramePermissions": []
+}

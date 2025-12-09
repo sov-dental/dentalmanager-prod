@@ -1,0 +1,38 @@
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // --- Helper Functions ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    // --- 1. Clinics Collection (Core Data) ---
+    // Specifically target the single master document 'demo-clinic'
+    // NO DELETE allowed.
+    match /clinics/demo-clinic {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn();
+      allow delete: if false; // SAFETY LOCK
+    }
+
+    // --- 2. Daily Accounting (High Volume Data) ---
+    // Policy: Read/Write by signed in users.
+    // Soft Delete preferred, but hard delete allowed for individual rows logic handled by client.
+    // To be safer, we could restrict delete, but client uses setDoc to overwrite.
+    match /daily_accounting/{docId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // --- 3. Users (if used later) ---
+    match /users/{userId} {
+      allow read, write: if request.auth.uid == userId;
+    }
+    
+    // --- Default Deny ---
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

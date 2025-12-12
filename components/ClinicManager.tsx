@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { Clinic, DailyHours, ClinicStyleConfig } from '../types';
 import { DEFAULT_STYLE_CONFIG } from '../services/storageService';
-import { uploadImage } from '../services/firebase';
+import { uploadImage, saveClinic } from '../services/firebase';
 import { VisualConfigForm } from './VisualConfigForm';
 import { MapPin, Phone, Plus, Check, X, Link as LinkIcon, Image as ImageIcon, Edit2, Palette, Code, Upload, Loader2, Users, Clock } from 'lucide-react';
 import { useClinic } from '../contexts/ClinicContext';
@@ -250,46 +250,38 @@ export const ClinicManager: React.FC<Props> = ({ onSave }) => {
         const safeStyleConfig = newClinic.styleConfig || DEFAULT_STYLE_CONFIG;
         const safeAllowedUsers = newClinic.allowedUsers || [];
 
-        let updatedClinics: Clinic[];
+        // 1. Construct the Clinic Object
+        // Ensure ID exists (generated in init or edit)
+        const clinicToSave: Clinic = {
+            id: newClinic.id || (editingId ? editingId : generateId()),
+            name: newClinic.name!,
+            weeklyHours: safeWeeklyHours,
+            themeColor: newClinic.themeColor || '#0d9488',
+            address: newClinic.address || '',
+            phone: newClinic.phone || '',
+            lineUrl: newClinic.lineUrl || '',
+            scheduleImageUrl: newClinic.scheduleImageUrl || '',
+            logoUrl: newClinic.logoUrl || '',
+            shiftColors: safeShiftColors,
+            shiftLabels: safeShiftLabels,
+            styleConfig: safeStyleConfig,
+            googleCalendarMapping: newClinic.googleCalendarMapping || {},
+            allowedUsers: safeAllowedUsers
+        };
 
+        // 2. Save to Firestore (Single Document Mode)
+        await saveClinic(clinicToSave);
+
+        // 3. Update Local UI via Parent
+        // We assume onSave triggers a local state update in App.tsx
+        // Note: App.tsx will call saveAppData, but we've patched it to skip the 'clinics' array from saving to demo-clinic.
+        let updatedClinics: Clinic[];
         if (editingId) {
-            updatedClinics = clinics.map(c => c.id === editingId ? {
-                ...c,
-                name: newClinic.name!,
-                weeklyHours: safeWeeklyHours,
-                themeColor: newClinic.themeColor || '#0d9488',
-                address: newClinic.address || '',
-                phone: newClinic.phone || '',
-                lineUrl: newClinic.lineUrl || '',
-                scheduleImageUrl: newClinic.scheduleImageUrl || '',
-                logoUrl: newClinic.logoUrl || '',
-                shiftColors: safeShiftColors,
-                shiftLabels: safeShiftLabels,
-                styleConfig: safeStyleConfig,
-                googleCalendarMapping: newClinic.googleCalendarMapping || c.googleCalendarMapping || {},
-                allowedUsers: safeAllowedUsers
-            } : c);
+            updatedClinics = clinics.map(c => c.id === editingId ? clinicToSave : c);
         } else {
-            const clinic: Clinic = {
-                id: newClinic.id || generateId(),
-                name: newClinic.name!,
-                weeklyHours: safeWeeklyHours,
-                themeColor: newClinic.themeColor || '#0d9488',
-                address: newClinic.address || '',
-                phone: newClinic.phone || '',
-                lineUrl: newClinic.lineUrl || '',
-                scheduleImageUrl: newClinic.scheduleImageUrl || '',
-                logoUrl: newClinic.logoUrl || '',
-                shiftColors: safeShiftColors,
-                shiftLabels: safeShiftLabels,
-                styleConfig: safeStyleConfig,
-                googleCalendarMapping: {},
-                allowedUsers: safeAllowedUsers
-            };
-            updatedClinics = [...clinics, clinic];
+            updatedClinics = [...clinics, clinicToSave];
         }
 
-        // Call parent save handler
         await onSave(updatedClinics);
         closeForm();
         

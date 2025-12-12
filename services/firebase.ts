@@ -169,10 +169,13 @@ export const getClinics = async (): Promise<Clinic[]> => {
         const snap = await db.collection('clinics').get();
         return snap.docs.map(doc => {
             const data = doc.data();
-            if (!data.name || Array.isArray(data.clinics)) return null;
+            // Safety Check: exclude demo-clinic if it was retrieved (though it shouldn't be if structured correctly)
+            if (doc.id === 'demo-clinic' && !data.name) return null;
+            if (!data.name) return null;
+            
             return {
                 id: doc.id,
-                name: data.name || doc.id,
+                name: data.name,
                 doctors: data.doctors || [],
                 laboratories: data.laboratories || [],
                 sovReferrals: data.sovReferrals || [],
@@ -189,7 +192,7 @@ export const getClinics = async (): Promise<Clinic[]> => {
 };
 
 export const loadAppData = async (): Promise<AppData> => {
-  // 1. Load Main Doc (Legacy Root)
+  // 1. Load Main Doc (Legacy Root for non-clinic settings if any)
   const docRef = db.collection('clinics').doc(DOC_ID);
   const doc = await docRef.get();
   
@@ -198,7 +201,9 @@ export const loadAppData = async (): Promise<AppData> => {
   };
 
   if (doc.exists) {
-    data = doc.data() as AppData;
+    const legacyData = doc.data() as AppData;
+    // We preserve other fields but ignore legacy 'clinics' array if it exists
+    data = { ...legacyData, clinics: [] };
   }
 
   // 2. Load Real Clinics Collection (Hybrid)
@@ -234,16 +239,62 @@ export const loadAppData = async (): Promise<AppData> => {
   return data;
 };
 
+// ** CRITICAL UPDATE: Exclude clinics from the legacy demo-clinic save **
 export const saveAppData = async (data: AppData) => {
   const docRef = db.collection('clinics').doc(DOC_ID);
-  await docRef.set(data, { merge: true });
+  // Destructure to remove 'clinics' from the payload saved to 'demo-clinic'
+  // This enforces the Multi-Document Architecture by ensuring clinics are only saved via saveClinic
+  const { clinics, ...rest } = data; 
+  await docRef.set(rest, { merge: true });
 };
 
-export const saveDoctors = async (clinicId: string, doctors: Doctor[]) => {};
+// ** NEW: Single Clinic Save Function (Multi-Document) **
+export const saveClinic = async (clinicData: Partial<Clinic>) => {
+    const collectionRef = db.collection('clinics');
+    let docRef;
+    
+    // 1. Determine Document Reference
+    if (clinicData.id) {
+        docRef = collectionRef.doc(clinicData.id);
+    } else {
+        docRef = collectionRef.doc(); // Auto-generate ID
+        clinicData.id = docRef.id;
+    }
+
+    // 2. Save Document (Merge to preserve sub-collections logic if any, though we overwrite fields)
+    await docRef.set(clinicData, { merge: true });
+
+    // 3. Permission Sync: Update User documents
+    if (clinicData.allowedUsers && clinicData.allowedUsers.length > 0 && clinicData.name) {
+        const usersRef = db.collection('users');
+        const clinicName = clinicData.name;
+        
+        // Find users by email and update their allowedClinics
+        const promises = clinicData.allowedUsers.map(async (email) => {
+            const q = await usersRef.where('email', '==', email).limit(1).get();
+            if (!q.empty) {
+                const userDoc = q.docs[0];
+                const userData = userDoc.data();
+                const currentAllowed = userData.allowedClinics || [];
+                
+                // Only update if not already present
+                if (!currentAllowed.includes(clinicName)) {
+                    await userDoc.ref.update({
+                        allowedClinics: firebase.firestore.FieldValue.arrayUnion(clinicName)
+                    });
+                }
+            }
+        });
+        await Promise.all(promises);
+    }
+};
+
+export const saveDoctors = async (clinicId: string, doctors: Doctor[]) => {
+    // Save as embedded array in the clinic document
+    await db.collection('clinics').doc(clinicId).update({ doctors });
+};
+
 export const saveLaboratories = async (clinicId: string, labs: Laboratory[]) => {
-    // Only update the lab array inside the clinic doc if using legacy storage
-    // But since we are moving towards independent collections or embedded arrays, 
-    // for now we stick to embedded array update in 'clinics' collection.
     await db.collection('clinics').doc(clinicId).update({ laboratories: labs });
 };
 
@@ -256,7 +307,9 @@ export const saveSchedules = async (clinicId: string, schedules: DailySchedule[]
     }
 };
 
-export const saveSOVReferrals = async (clinicId: string, referrals: SOVReferral[]) => {};
+export const saveSOVReferrals = async (clinicId: string, referrals: SOVReferral[]) => {
+    await db.collection('clinics').doc(clinicId).update({ sovReferrals: referrals });
+};
 
 // --- NEW COLLECTIONS ---
 

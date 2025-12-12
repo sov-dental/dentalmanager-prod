@@ -448,8 +448,8 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                         doctorName: doctorName,
                                         isVisited: true,
                                         isClosed: false,
-                                        marketingTag: '一般健保',
-                                        source: '其他',
+                                        marketingTag: '矯正諮詢',
+                                        source: 'Line',
                                         updatedAt: new Date()
                                     };
                                     await saveNPRecord(newRecord);

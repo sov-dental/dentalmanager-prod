@@ -81,8 +81,9 @@ export const PatientSearch: React.FC<Props> = ({ doctors, mapping, onEventClick 
             <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
                 <Search size={20} className="text-teal-600"/> 病歷搜尋
             </h3>
-            <form onSubmit={handleSearch} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-                <div>
+            <form onSubmit={handleSearch} className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+                {/* Doctor Selection: 3 Cols */}
+                <div className="md:col-span-3">
                     <label className="block text-xs font-bold text-slate-500 uppercase mb-1">選擇醫師</label>
                     <div className="relative">
                         <User className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -98,7 +99,9 @@ export const PatientSearch: React.FC<Props> = ({ doctors, mapping, onEventClick 
                         </select>
                     </div>
                 </div>
-                <div>
+
+                {/* Keyword: 3 Cols */}
+                <div className="md:col-span-3">
                     <label className="block text-xs font-bold text-slate-500 uppercase mb-1">搜尋關鍵字 (病患姓名)</label>
                     <input 
                         type="text"
@@ -108,30 +111,34 @@ export const PatientSearch: React.FC<Props> = ({ doctors, mapping, onEventClick 
                         onChange={e => setQuery(e.target.value)}
                     />
                 </div>
-                <div className="flex gap-2">
-                    <div className="flex-1">
-                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">開始日期</label>
-                        <input 
-                            type="date"
-                            className="w-full border rounded-lg px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-teal-500"
-                            value={startDate}
-                            onChange={e => setStartDate(e.target.value)}
-                        />
-                    </div>
-                    <div className="flex-1">
-                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">結束日期</label>
-                        <input 
-                            type="date"
-                            className="w-full border rounded-lg px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-teal-500"
-                            value={endDate}
-                            onChange={e => setEndDate(e.target.value)}
-                        />
-                    </div>
+
+                {/* Start Date: 2 Cols */}
+                <div className="md:col-span-2">
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">開始日期</label>
+                    <input 
+                        type="date"
+                        className="w-full border rounded-lg px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-teal-500"
+                        value={startDate}
+                        onChange={e => setStartDate(e.target.value)}
+                    />
                 </div>
+
+                {/* End Date: 2 Cols */}
+                <div className="md:col-span-2">
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">結束日期</label>
+                    <input 
+                        type="date"
+                        className="w-full border rounded-lg px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-teal-500"
+                        value={endDate}
+                        onChange={e => setEndDate(e.target.value)}
+                    />
+                </div>
+
+                {/* Button: 2 Cols (Fills remaining) */}
                 <button 
                     type="submit"
                     disabled={isLoading || !selectedDoctorId || !query}
-                    className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
+                    className="md:col-span-2 w-full bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
                 >
                     {isLoading ? <Loader2 size={18} className="animate-spin"/> : <Search size={18} />}
                     搜尋

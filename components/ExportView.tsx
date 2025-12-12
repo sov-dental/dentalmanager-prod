@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Clinic, Doctor, DailySchedule } from '../types';
 import { generateAnnouncement } from '../services/geminiService';
 import { DEFAULT_STYLE_CONFIG } from '../services/storageService';
+import { CLINIC_ORDER } from '../services/firebase';
 import { Copy, Sparkles, ZoomIn, ZoomOut, Download } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { ScheduleRenderer } from './ScheduleRenderer';
@@ -13,7 +15,7 @@ interface Props {
 }
 
 export const ExportView: React.FC<Props> = ({ clinics, doctors, schedules }) => {
-  const [selectedClinicId, setSelectedClinicId] = useState<string>(clinics[0]?.id || '');
+  const [selectedClinicId, setSelectedClinicId] = useState<string>('');
   const [currentDate, setCurrentDate] = useState(new Date());
   const [generatedText, setGeneratedText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -27,9 +29,17 @@ export const ExportView: React.FC<Props> = ({ clinics, doctors, schedules }) => 
   // Ref for the hidden, full-size export container
   const exportRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (clinics.length > 0 && !selectedClinicId) setSelectedClinicId(clinics[0].id);
+  // Sorting Helper
+  const getSortOrder = (name: string) => CLINIC_ORDER[name] || 999;
+
+  // Sorted Clinics for Dropdown
+  const sortedClinics = useMemo(() => {
+      return [...clinics].sort((a, b) => getSortOrder(a.name) - getSortOrder(b.name));
   }, [clinics]);
+
+  useEffect(() => {
+    if (sortedClinics.length > 0 && !selectedClinicId) setSelectedClinicId(sortedClinics[0].id);
+  }, [sortedClinics]); // Re-select if list changes/reloads
 
   const selectedClinic = clinics.find(c => c.id === selectedClinicId);
   const config = selectedClinic?.styleConfig || DEFAULT_STYLE_CONFIG;
@@ -173,7 +183,7 @@ export const ExportView: React.FC<Props> = ({ clinics, doctors, schedules }) => 
                         value={selectedClinicId}
                         onChange={e => setSelectedClinicId(e.target.value)}
                     >
-                        {clinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        {sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                 </div>
                 <div>

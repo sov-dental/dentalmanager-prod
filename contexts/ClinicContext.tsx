@@ -43,16 +43,33 @@ export const ClinicProvider: React.FC<{ clinics: Clinic[]; children: React.React
     if (userRole === 'admin' || userRole === 'marketing') {
         filteredClinics = [...rawClinics];
     } 
-    // Staff: Strict Allow-List Filter
-    else if (userRole === 'staff') {
-        // Normalize names for comparison (trim + lowercase) to prevent mismatch bugs
-        const normalize = (str: string | undefined | null) => (str ? String(str).trim().toLowerCase() : '');
-        const safeAllowed = (allowedClinics || []).map(normalize).filter(Boolean);
+    // Staff / Manager / Others: Hybrid Filter (ID & Name)
+    else {
+        // Normalize allowed list to string and trimmed
+        const allowed = (allowedClinics || []).map(s => String(s).trim());
+        // Lowercase set for name matching
+        const allowedLower = new Set(allowed.map(s => s.toLowerCase()));
+        // Original set for ID matching (IDs might be case-sensitive)
+        const allowedSet = new Set(allowed);
+
+        console.groupCollapsed(`[ClinicContext] Filtering Clinics for ${userRole}`);
+        console.log("Allowed List (Raw):", allowedClinics);
         
         filteredClinics = rawClinics.filter(c => {
-            const cName = normalize(c.name);
-            return cName && safeAllowed.includes(cName);
+            // 1. Check ID Match
+            const matchId = allowedSet.has(c.id);
+            
+            // 2. Check Name Match (Case Insensitive)
+            const cName = c.name.trim().toLowerCase();
+            const matchName = allowedLower.has(cName);
+            
+            const isMatch = matchId || matchName;
+
+            console.log(`Checking [${c.id}] ${c.name} -> ID Match: ${matchId}, Name Match: ${matchName} => ${isMatch ? 'PASS' : 'FAIL'}`);
+            
+            return isMatch;
         });
+        console.groupEnd();
     }
 
     // Sort the filtered list

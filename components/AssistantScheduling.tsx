@@ -2,23 +2,37 @@
 import React, { useState, useMemo } from 'react';
 import { Clinic, Consultant, DailySchedule, StaffScheduleConfig } from '../types';
 import { StaffScheduleModal } from './StaffScheduleModal';
-import { ChevronLeft, ChevronRight, RefreshCw, Users, Briefcase, Clock, CalendarDays, Loader2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw, Users, Briefcase, Clock, CalendarDays, Loader2, AlertTriangle } from 'lucide-react';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from './ClinicSelector';
 
 interface Props {
-  clinics: Clinic[]; // Compatibility
+  clinics: Clinic[];
   consultants: Consultant[];
   schedules: DailySchedule[];
   onSave: (schedules: DailySchedule[]) => Promise<void>;
 }
 
+// Helper: Ensure YYYY-MM-DD format
+const normalizeDate = (d: Date | string): string => {
+    if (typeof d === 'string') {
+        // Handle explicit split to avoid timezone issues
+        const parts = d.split('-');
+        if (parts.length === 3) {
+            return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+        }
+        return d;
+    }
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+};
+
 export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, onSave }) => {
   const { selectedClinicId, selectedClinic } = useClinic();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isImporting, setIsImporting] = useState(false);
-  
-  // Modal State
   const [modalDateStr, setModalDateStr] = useState<string | null>(null);
 
   const year = currentDate.getFullYear();
@@ -36,16 +50,33 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
   const blanks = Array.from({ length: firstDay }, (_, i) => i);
   const days = Array.from({ length: daysCount }, (_, i) => i + 1);
 
-  const activeConsultants = consultants.filter(c => c.clinicId === selectedClinicId);
-  const groupFullTime = activeConsultants.filter(c => !c.role || c.role === 'consultant' || c.role === 'assistant' || c.role === 'trainee');
+  // 1. Filter Consultants by Clinic
+  const activeConsultants = useMemo(() => {
+      return consultants.filter(c => c.clinicId === selectedClinicId);
+  }, [consultants, selectedClinicId]);
+
+  // 2. Lookup Helper (Safe Name Resolution)
+  const getStaffName = (id: string) => {
+      const staff = consultants.find(c => c.id === id); // Search globally to prevent missing names if clinicId changed
+      return staff ? staff.name : id; // Fallback to ID if not found
+  };
+
+  // 3. Group by Role
+  const groupFullTime = activeConsultants.filter(c => !c.role || ['consultant', 'assistant', 'trainee', 'manager'].includes(c.role));
   const groupPartTime = activeConsultants.filter(c => c.role === 'part_time');
 
-  // Helper to extract config from schedule
-  const getStaffConfig = (dateStr: string): StaffScheduleConfig => {
-      const schedule = schedules.find(s => s.date === dateStr && s.clinicId === selectedClinicId);
+  // 4. Helper to extract config from schedule
+  const getStaffConfig = (targetDateStr: string): StaffScheduleConfig => {
+      const schedule = schedules.find(s => 
+          normalizeDate(s.date) === targetDateStr && 
+          s.clinicId === selectedClinicId
+      );
+
       if (schedule?.staffConfiguration) {
           return schedule.staffConfiguration;
       }
+      
+      // Fallback for legacy data structure
       if (schedule?.consultantOffs) {
           const off = schedule.consultantOffs.filter(id => groupFullTime.some(s => s.id === id));
           const work = groupPartTime.filter(s => !schedule.consultantOffs?.includes(s.id)).map(s => s.id);
@@ -56,18 +87,17 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
 
   // --- Statistics Calculation ---
   const stats = useMemo(() => {
-    // Structure: ID -> Stats
     const fullTimeStats: Record<string, { off: string[], leaveDays: number, sundayOT: number, totalShifts: number }> = {};
     const partTimeStats: Record<string, { work: string[] }> = {};
 
-    // Initialize
     groupFullTime.forEach(c => fullTimeStats[c.id] = { off: [], leaveDays: 0, sundayOT: 0, totalShifts: 0 });
     groupPartTime.forEach(c => partTimeStats[c.id] = { work: [] });
 
     for (let d = 1; d <= daysCount; d++) {
+        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
         const dateObj = new Date(year, month, d);
         const dayOfWeek = dateObj.getDay(); // 0 is Sunday
-        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        
         const config = getStaffConfig(dateStr);
         const dayLabel = String(d);
 
@@ -82,28 +112,22 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
             if (isOff) {
                 fullTimeStats[c.id].off.push(dayLabel);
             } else if (leaveEntry) {
-                // Calculate Leave Duration
                 const duration = leaveEntry.type.includes('(半)') ? 0.5 : 1.0;
                 fullTimeStats[c.id].leaveDays += duration;
             } else {
-                // Working or Overtime
-                if (dayOfWeek === 0) { // Sunday Logic
+                // Logic: Working logic
+                if (dayOfWeek === 0) { // Sunday
                     if (overtimeEntry) {
                         const otDuration = overtimeEntry.type.includes('(半)') ? 0.5 : 1.0;
                         fullTimeStats[c.id].sundayOT += otDuration;
                         fullTimeStats[c.id].totalShifts += otDuration;
                     } else {
-                        // If not OFF and not in Overtime array on Sunday, assume Full Overtime (Legacy compatibility or user didn't specify)
-                        // Or strict: If not in overtime array, maybe they forgot to mark off? 
-                        // Current Modal logic forces a choice. We assume full shift if simply omitted from OFF list on Sunday?
-                        // Let's assume Full Shift (1.0) if not OFF.
+                        // Implicit full shift if not OFF on Sunday? 
+                        // Assuming yes for now based on previous requirements
                         fullTimeStats[c.id].sundayOT += 1.0;
                         fullTimeStats[c.id].totalShifts += 1.0;
                     }
                 } else {
-                    // Regular Day
-                    // If regular day and has overtime entry? (Rare, but possible if used for extra shifts)
-                    // Currently assume full regular shift
                     fullTimeStats[c.id].totalShifts += 1.0;
                 }
             }
@@ -148,9 +172,9 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                   
                   const newConfig: StaffScheduleConfig = {
                       off: fullTimeIds,
-                      leave: [], // Clear leaves as clinic is closed
-                      work: [],   // No part-time work
-                      overtime: [] // Clear overtime
+                      leave: [], 
+                      work: [],
+                      overtime: [] 
                   };
 
                   const existingIdx = updatedSchedules.findIndex(s => s.date === dateStr && s.clinicId === selectedClinicId);
@@ -161,7 +185,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                       updatedSchedules.push({
                           date: dateStr,
                           clinicId: selectedClinicId,
-                          isClosed: true, // Also force clinic closed status
+                          isClosed: true,
                           shifts: { Morning: [], Afternoon: [], Evening: [] },
                           staffConfiguration: newConfig
                       });
@@ -219,6 +243,17 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
         </div>
       </div>
 
+      {/* Missing Data Warning */}
+      {consultants.length === 0 && (
+          <div className="bg-amber-50 border border-amber-200 text-amber-800 p-4 rounded-xl flex items-center gap-3">
+              <AlertTriangle size={24} />
+              <div>
+                  <h3 className="font-bold">警告：未偵測到人員資料</h3>
+                  <p className="text-sm">請前往「人員管理 (HR)」新增資料，或檢查網路連線。若資料存在但未顯示，請嘗試重新整理頁面。</p>
+              </div>
+          </div>
+      )}
+
       {/* Calendar Grid */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
          <div className="grid grid-cols-7 bg-slate-50 border-b border-slate-200 text-center py-2 text-sm font-bold text-slate-500">
@@ -231,16 +266,11 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                  const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                  const config = getStaffConfig(dateStr);
                  
-                 const offNames = groupFullTime.filter(s => config.off.includes(s.id)).map(s => s.name);
-                 const leaveItems = config.leave.map(l => {
-                     const s = activeConsultants.find(c => c.id === l.id);
-                     return s ? { name: s.name, type: l.type } : null;
-                 }).filter(Boolean) as {name: string, type: string}[];
-                 const workNames = groupPartTime.filter(s => config.work.includes(s.id)).map(s => s.name);
-                 const overtimeItems = (config.overtime || []).map(o => {
-                     const s = activeConsultants.find(c => c.id === o.id);
-                     return s ? { name: s.name, type: o.type } : null;
-                 }).filter(Boolean) as {name: string, type: string}[];
+                 // Use getStaffName helper for rendering
+                 const offNames = config.off.map(id => getStaffName(id));
+                 const leaveItems = config.leave.map(l => ({ name: getStaffName(l.id), type: l.type }));
+                 const workNames = config.work.map(id => getStaffName(id));
+                 const overtimeItems = (config.overtime || []).map(o => ({ name: getStaffName(o.id), type: o.type }));
 
                  return (
                      <div 
@@ -256,8 +286,8 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                          <div className="space-y-1">
                              {offNames.length > 0 && (
                                  <div className="flex flex-wrap gap-1">
-                                     {offNames.map(name => (
-                                         <span key={name} className="text-[10px] bg-rose-50 text-rose-600 px-1.5 py-0.5 rounded border border-rose-100 font-bold truncate">
+                                     {offNames.map((name, i) => (
+                                         <span key={i} className="text-[10px] bg-rose-50 text-rose-600 px-1.5 py-0.5 rounded border border-rose-100 font-bold truncate">
                                              休 {name}
                                          </span>
                                      ))}
@@ -283,8 +313,8 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                              )}
                              {workNames.length > 0 && (
                                  <div className="flex flex-wrap gap-1">
-                                     {workNames.map(name => (
-                                         <span key={name} className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-100 font-bold truncate">
+                                     {workNames.map((name, i) => (
+                                         <span key={i} className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-100 font-bold truncate">
                                              工 {name}
                                          </span>
                                      ))}
@@ -319,6 +349,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                       <tbody className="divide-y divide-slate-100">
                           {groupFullTime.map(c => {
                               const s = stats.fullTimeStats[c.id];
+                              if (!s) return null;
                               return (
                                   <tr key={c.id} className="hover:bg-slate-50">
                                       <td className="px-3 py-3 font-bold text-slate-700">{c.name}</td>
@@ -337,7 +368,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                                   </tr>
                               );
                           })}
-                          {groupFullTime.length === 0 && <tr><td colSpan={5} className="p-4 text-center text-slate-400">無正職人員</td></tr>}
+                          {groupFullTime.length === 0 && <tr><td colSpan={5} className="p-4 text-center text-slate-400">無正職人員 (請檢查 Console Log)</td></tr>}
                       </tbody>
                   </table>
               </div>
@@ -361,6 +392,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                       <tbody className="divide-y divide-slate-100">
                           {groupPartTime.map(c => {
                               const s = stats.partTimeStats[c.id];
+                              if (!s) return null;
                               return (
                                   <tr key={c.id} className="hover:bg-slate-50">
                                       <td className="px-3 py-3 font-bold text-slate-700">{c.name}</td>
@@ -371,7 +403,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                                   </tr>
                               );
                           })}
-                          {groupPartTime.length === 0 && <tr><td colSpan={3} className="p-4 text-center text-slate-400">無打工人員</td></tr>}
+                          {groupPartTime.length === 0 && <tr><td colSpan={3} className="p-4 text-center text-slate-400">無打工人員 (請檢查 Console Log)</td></tr>}
                       </tbody>
                   </table>
               </div>

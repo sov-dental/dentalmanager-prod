@@ -1,13 +1,17 @@
 
-import React, { useState, useEffect } from 'react';
+
+
+import React, { useState, useEffect, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { 
   Calendar, Users, Menu, X, Cloud, Loader2, Check, AlertCircle, 
   LogOut, Calculator, Briefcase, Settings, Building2, 
   Microscope, TrendingUp, BarChart2, Image as ImageIcon, 
-  Gift, DollarSign, ChevronDown, UserCheck, CreditCard
+  Gift, DollarSign, ChevronDown, UserCheck, CreditCard, Shield,
+  Contact
 } from 'lucide-react';
-import { UserRole } from '../contexts/AuthContext';
+import { UserRole } from '../types';
+import { getRolePermissions } from '../services/firebase';
 
 export type SaveStatus = 'idle' | 'saved' | 'saving' | 'error' | 'unsaved';
 
@@ -24,7 +28,7 @@ type MenuItem = {
   path: string;
   icon: any;
   label: string;
-  roles: UserRole[]; // Roles allowed to see this item
+  roles: UserRole[]; // Fallback roles if config missing
 };
 
 type MenuCategory = {
@@ -32,27 +36,22 @@ type MenuCategory = {
   label: string;
   icon?: any;
   items: MenuItem[];
-  roles: UserRole[]; // Roles allowed to see this category
+  roles: UserRole[]; // Fallback roles
   defaultOpen?: boolean;
 };
 
+// Extracted Component for cleaner render logic
 interface SidebarItemProps {
   item: MenuItem;
-  userRole: UserRole;
   currentPath: string;
   isChild?: boolean;
 }
 
-// Extracted component to avoid "key" prop issues on inline components
 const SidebarItem: React.FC<SidebarItemProps> = ({ 
   item, 
-  userRole, 
   currentPath, 
   isChild = false 
 }) => {
-  const hasAccess = (allowedRoles: UserRole[]) => allowedRoles.includes(userRole);
-  if (!hasAccess(item.roles)) return null;
-  
   const isActive = currentPath === item.path || currentPath.startsWith(item.path + '/');
   const Icon = item.icon;
 
@@ -79,8 +78,14 @@ export const Layout: React.FC<Props> = ({
 }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({});
+  const [rolePermissions, setRolePermissions] = useState<Record<string, string[]> | null>(null);
   
   const location = useLocation();
+
+  // Load Dynamic Permissions
+  useEffect(() => {
+      getRolePermissions().then(perms => setRolePermissions(perms)).catch(() => setRolePermissions({}));
+  }, []);
 
   const toggleCategory = (id: string) => {
     setOpenCategories(prev => ({ ...prev, [id]: !prev[id] }));
@@ -90,62 +95,74 @@ export const Layout: React.FC<Props> = ({
     setIsMobileMenuOpen(false);
   }, [location.pathname]);
 
-  // --- MENU CONFIGURATION ---
+  // --- ACCESS CONTROL LOGIC ---
+  const hasAccess = (path: string, fallbackRoles: UserRole[]) => {
+      if (userRole === 'admin') return true;
+      
+      // If config loaded, use it
+      if (rolePermissions && rolePermissions[userRole]) {
+          return rolePermissions[userRole].includes(path);
+      }
+      
+      // Fallback to static code definition (Legacy/Safety)
+      return fallbackRoles.includes(userRole);
+  };
+
+  // --- MENU CONFIGURATION (Structure) ---
   
-  // Top Level Items (Root Menu - Top)
   const topLevelItems: MenuItem[] = [
     { path: '/group-dashboard', icon: BarChart2, label: '集團營運儀表板', roles: ['admin'] },
-    { path: '/appointments', icon: Calendar, label: '約診日曆', roles: ['admin', 'staff'] },
-    { path: '/accounting', icon: Calculator, label: '每日帳務', roles: ['admin', 'staff'] },
-    { path: '/monthly-report', icon: TrendingUp, label: '月營收報表', roles: ['admin', 'staff'] },
-    { path: '/lab-reconciliation', icon: Microscope, label: '技工所對帳', roles: ['admin', 'staff'] },
+    // Operations
+    { path: '/appointments', icon: Calendar, label: '約診日曆', roles: ['admin', 'manager', 'staff'] },
+    { path: '/patients', icon: Contact, label: '病歷管理 (CRM)', roles: ['admin', 'manager', 'staff'] },
+    { path: '/accounting', icon: Calculator, label: '每日帳務', roles: ['admin', 'manager', 'staff'] },
+    { path: '/monthly-report', icon: TrendingUp, label: '月營收報表', roles: ['admin', 'manager', 'staff'] },
+    { path: '/lab-reconciliation', icon: Microscope, label: '技工所對帳', roles: ['admin', 'manager', 'staff'] },
   ];
 
-  // Categorized Items
   const categories: MenuCategory[] = [
      {
       id: 'financials',
       label: '薪資報表',
       icon: DollarSign,
-      roles: ['admin'], // STRICTLY ADMIN ONLY
+      roles: ['admin', 'manager'],
       items: [
-        { path: '/salary', icon: DollarSign, label: '醫師薪資', roles: ['admin'] },
-        { path: '/assistant-bonus', icon: Gift, label: '助理獎金', roles: ['admin'] },
-        { path: '/assistant-salary', icon: CreditCard, label: '助理薪資', roles: ['admin'] },
+        { path: '/salary', icon: DollarSign, label: '醫師薪資', roles: ['admin', 'manager'] },
+        { path: '/assistant-bonus', icon: Gift, label: '助理獎金', roles: ['admin', 'manager'] },
+        { path: '/assistant-salary', icon: CreditCard, label: '助理薪資', roles: ['admin', 'manager'] },
       ]
     },
     {
       id: 'schedule',
       label: '排班作業',
       icon: Calendar,
-      roles: ['admin', 'staff', 'marketing'],
+      roles: ['admin', 'manager', 'staff', 'marketing'],
       items: [
-        { path: '/marketing-schedule', icon: ImageIcon, label: '預覽與發布', roles: ['admin', 'marketing'] }, // Marketing Primary
-        { path: '/schedule', icon: Calendar, label: '醫師排班', roles: ['admin', 'staff', 'marketing'] },
-        { path: '/assistant-scheduling', icon: Users, label: '助理排班', roles: ['admin', 'staff'] },
+        { path: '/marketing-schedule', icon: ImageIcon, label: '預覽與發布', roles: ['admin', 'marketing'] },
+        { path: '/schedule', icon: Calendar, label: '醫師排班', roles: ['admin', 'manager', 'staff', 'marketing'] },
+        { path: '/assistant-scheduling', icon: Users, label: '助理排班', roles: ['admin', 'manager', 'staff'] },
       ]
     },
     {
       id: 'settings',
       label: '人員與診所設定',
       icon: Settings,
-      roles: ['admin', 'staff'], // Hidden from Marketing
+      roles: ['admin', 'manager', 'staff'],
       items: [
-        { path: '/clinics', icon: Building2, label: '診所管理', roles: ['admin'] }, // Security: Admin only
-        { path: '/doctors', icon: UserCheck, label: '醫師管理', roles: ['admin', 'staff'] },
-        { path: '/consultants', icon: Briefcase, label: '人員管理', roles: ['admin', 'staff'] },
-        { path: '/laboratories', icon: Microscope, label: '技工所管理', roles: ['admin', 'staff'] },
-        { path: '/sov-referrals', icon: Users, label: 'SOV轉介名單', roles: ['admin', 'staff'] },
+        { path: '/clinics', icon: Building2, label: '診所管理', roles: ['admin'] }, 
+        { path: '/doctors', icon: UserCheck, label: '醫師管理', roles: ['admin', 'manager', 'staff'] },
+        { path: '/consultants', icon: Briefcase, label: '人員管理', roles: ['admin', 'manager', 'staff'] },
+        { path: '/laboratories', icon: Microscope, label: '技工所管理', roles: ['admin', 'manager', 'staff'] },
+        { path: '/sov-referrals', icon: Users, label: 'SOV轉介名單', roles: ['admin', 'manager', 'staff'] },
+        // NEW Permission Manager
+        { path: '/permission-manager', icon: Shield, label: '權限管理 (Admin)', roles: ['admin'] },
       ]
     }
   ];
 
-  // Bottom Level Items (Root Menu - Bottom)
   const bottomLevelItems: MenuItem[] = [
-    { path: '/integrations', icon: Cloud, label: '整合設定', roles: ['admin', 'staff'] },
+    { path: '/integrations', icon: Cloud, label: '整合設定', roles: ['admin', 'manager', 'staff'] },
   ];
-
-  const hasAccess = (allowedRoles: UserRole[]) => allowedRoles.includes(userRole);
 
   return (
     <div className="flex min-h-screen bg-slate-50">
@@ -157,12 +174,12 @@ export const Layout: React.FC<Props> = ({
         />
       )}
 
-      {/* Sidebar - RESTORED DARK THEME */}
+      {/* Sidebar */}
       <aside className={`
         fixed lg:sticky top-0 left-0 z-50 h-screen w-72 bg-slate-900 text-white flex flex-col transition-transform duration-300 shadow-xl
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       `}>
-        {/* Sidebar Header */}
+        {/* Header */}
         <div className="p-6 flex items-center justify-between border-b border-slate-800 bg-slate-900">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-teal-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-teal-900/20">
@@ -180,13 +197,12 @@ export const Layout: React.FC<Props> = ({
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto py-4 custom-scrollbar">
           
-          {/* Top Level Items */}
+          {/* Top Level */}
           <div className="mb-2">
-            {topLevelItems.map(item => (
+            {topLevelItems.map(item => hasAccess(item.path, item.roles) && (
               <SidebarItem 
                 key={item.path} 
                 item={item} 
-                userRole={userRole} 
                 currentPath={location.pathname} 
               />
             ))}
@@ -194,10 +210,10 @@ export const Layout: React.FC<Props> = ({
 
           {/* Categories */}
           {categories.map(cat => {
-            if (!hasAccess(cat.roles)) return null;
+            // Filter children first
+            const visibleItems = cat.items.filter(i => hasAccess(i.path, i.roles));
             
-            // Check if there are any visible items in this category for the current user
-            const visibleItems = cat.items.filter(i => hasAccess(i.roles));
+            // Show category if it has visible items OR if user is admin (admin sees empty categories? optional, keeping strict)
             if (visibleItems.length === 0) return null;
 
             const isOpen = openCategories[cat.id];
@@ -227,7 +243,6 @@ export const Layout: React.FC<Props> = ({
                       <SidebarItem 
                         key={item.path} 
                         item={item} 
-                        userRole={userRole} 
                         currentPath={location.pathname}
                         isChild
                       />
@@ -238,13 +253,12 @@ export const Layout: React.FC<Props> = ({
             );
           })}
 
-          {/* Bottom Level Items */}
+          {/* Bottom Level */}
           <div className="mt-2">
-            {bottomLevelItems.map(item => (
+            {bottomLevelItems.map(item => hasAccess(item.path, item.roles) && (
               <SidebarItem 
                 key={item.path} 
                 item={item} 
-                userRole={userRole} 
                 currentPath={location.pathname} 
               />
             ))}
@@ -276,7 +290,7 @@ export const Layout: React.FC<Props> = ({
 
       {/* Main Content Area */}
       <main className="flex-1 min-w-0 flex flex-col min-h-screen">
-        {/* Top Mobile Bar */}
+        {/* Mobile Header */}
         <header className="lg:hidden bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-30 shadow-md">
           <div className="flex items-center gap-3">
             <button onClick={() => setIsMobileMenuOpen(true)} className="text-slate-300">
@@ -291,7 +305,7 @@ export const Layout: React.FC<Props> = ({
           </div>
         </header>
 
-        {/* Desktop Top Bar (Status Only) */}
+        {/* Desktop Status Bar */}
         <div className="hidden lg:flex justify-end items-center px-8 py-2 bg-white border-b border-slate-200 gap-4 h-12">
             <div className="flex items-center gap-2 text-xs font-medium">
                 {saveStatus === 'saving' && (

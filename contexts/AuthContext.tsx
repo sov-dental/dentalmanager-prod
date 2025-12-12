@@ -2,8 +2,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, db, auth } from '../services/firebase';
 import firebase from "firebase/compat/app";
-
-export type UserRole = 'admin' | 'staff' | 'marketing' | 'guest';
+import { UserRole } from '../types';
 
 interface AuthContextType {
   currentUser: firebase.User | null;
@@ -47,33 +46,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const userRef = db.collection('users').doc(user.uid);
         
         // Use Real-time Listener (onSnapshot) instead of one-time get()
-        // This ensures the UI updates immediately when syncUserPermissions writes to DB
         unsubscribeSnapshot = userRef.onSnapshot(async (doc) => {
             if (doc.exists) {
                 const data = doc.data();
-                const role = data?.role;
+                const role = data?.role as UserRole;
                 const clinicId = data?.clinicId;
                 const allowed = Array.isArray(data?.allowedClinics) ? data.allowedClinics : [];
                 
                 console.log("[AuthContext] Snapshot Update - Role:", role, "Allowed:", allowed);
 
-                // Strict role checking
-                if (role === 'admin') {
-                    setUserRole('admin');
-                } else if (role === 'marketing') {
-                    setUserRole('marketing');
-                } else {
-                    setUserRole('staff');
-                }
-                
+                // Role Assignment
+                setUserRole(role || 'staff');
                 setUserClinicId(clinicId || null);
                 setAllowedClinics(allowed);
                 setLoading(false);
             } else {
                 console.log("[AuthContext] User doc missing. Attempting legacy whitelist check...");
                 
-                // Auto-provisioning Logic for Single-Doc Structure
-                // If the user doc doesn't exist, we check the master doc whitelist
+                // Auto-provisioning Logic
                 try {
                     const masterDocRef = db.collection('clinics').doc('demo-clinic');
                     const masterDocSnap = await masterDocRef.get();
@@ -105,10 +95,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     }
 
                     if (isWhitelisted) {
-                        const initialRole: UserRole = targetEmail.includes('marketing') ? 'marketing' : 'staff';
-                        console.log("[AuthContext] Whitelisted! Creating profile. Role:", initialRole);
+                        // DEFAULT NEW USER ROLE: 'staff' (Simplified Logic)
+                        const initialRole: UserRole = 'staff'; 
+                        console.log("[AuthContext] Whitelisted! Creating profile. Default Role:", initialRole);
                         
-                        // Creating the document will trigger this snapshot listener again with doc.exists = true
                         await userRef.set({
                             email: user.email,
                             role: initialRole,
@@ -117,7 +107,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                             name: user.displayName || user.email!.split('@')[0],
                             createdAt: new Date().toISOString()
                         });
-                        // Do not set loading=false here; wait for the next snapshot update
+                        // Don't set loading=false here; wait for snapshot update
                     } else {
                         console.warn("[AuthContext] Access Denied: User not found in any whitelist.");
                         setUserRole('guest');
@@ -135,7 +125,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
         }, (error) => {
             console.error("[AuthContext] Snapshot Listener Error:", error);
-            // Fallback in case of permission error
             setUserRole('guest');
             setLoading(false);
         });

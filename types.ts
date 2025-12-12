@@ -11,6 +11,19 @@ export enum DayOfWeek {
   Saturday = 6
 }
 
+export type UserRole = 'admin' | 'manager' | 'staff' | 'marketing' | 'guest';
+
+export interface User {
+    uid: string;
+    email: string;
+    name: string;
+    role: UserRole;
+    allowedClinics: string[];
+    clinicId?: string;
+    createdAt?: string;
+    lastSyncedAt?: string;
+}
+
 export interface DailyHours {
     Morning: boolean;
     Afternoon: boolean;
@@ -46,6 +59,12 @@ export interface Clinic {
   styleConfig?: ClinicStyleConfig;
   googleCalendarMapping?: Record<string, string>;
   allowedUsers?: string[];
+
+  // Embedded Data Fields
+  doctors?: Doctor[];
+  laboratories?: Laboratory[];
+  sovReferrals?: SOVReferral[];
+  schedules?: DailySchedule[];
 }
 
 export interface Doctor {
@@ -96,10 +115,18 @@ export interface InsuranceGrade {
   healthFee: number;
 }
 
+export interface LabPricingItem {
+    id: string;
+    name: string;
+    price: number;
+    isPercentage?: boolean; // NEW: If true, price is a percentage (0-100)
+}
+
 export interface Laboratory {
     id: string;
     name: string;
     clinicId: string;
+    pricingList?: LabPricingItem[]; // NEW: Pricing List
 }
 
 export interface SOVReferral {
@@ -176,12 +203,24 @@ export interface AccountingRow {
     startTime?: string;
     originalDate?: string; 
     matchStatus?: 'none' | 'matched' | 'manual' | 'saved';
+    
+    // CRM Fields (Hidden)
+    chartId?: string;
+    patientStatus?: string;
 }
 
 export interface Expenditure {
     id: string;
     item: string;
     amount: number;
+}
+
+export interface AuditLogEntry {
+    timestamp: string;
+    userId: string;
+    userName: string;
+    action: 'LOCK' | 'UNLOCK' | 'UPDATE';
+    details?: string;
 }
 
 export interface DailyAccountingRecord {
@@ -192,6 +231,19 @@ export interface DailyAccountingRecord {
     initialCash?: number;
     reportImageUrl?: string | null;
     lastUpdated?: number;
+    
+    // Locking & Audit
+    isLocked?: boolean;
+    auditLog?: AuditLogEntry[];
+}
+
+export interface LabOrderDetail {
+    id: string;
+    name: string;
+    toothPos: string;
+    qty: number;
+    price: number;
+    subtotal: number;
 }
 
 // NEW: Technician Reconciliation Record
@@ -201,7 +253,11 @@ export interface TechnicianRecord {
     labName: string;
     date: string; // YYYY-MM-DD
     type: 'linked' | 'manual';
-    amount: number;
+    
+    // Financials
+    amount: number; // Final Net Fee (after discount)
+    details?: LabOrderDetail[]; // NEW: Multi-item details
+    discount?: number; // NEW: Discount Amount
     
     // For Linked (from Daily Accounting)
     linkedRowId?: string;

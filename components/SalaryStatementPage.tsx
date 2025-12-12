@@ -1,8 +1,8 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Clinic, Doctor, AccountingRow, DailyAccountingRecord, TechnicianRecord, NHIRecord, SalaryAdjustment } from '../types';
-import { loadDailyAccounting, getTechnicianRecords, getNHIRecords, getClinicSalaryAdjustments, addSalaryAdjustment, deleteSalaryAdjustment } from '../services/firebase';
+import { loadDailyAccounting, getTechnicianRecords, getNHIRecords, getClinicSalaryAdjustments, addSalaryAdjustment, deleteSalaryAdjustment, CLINIC_ORDER } from '../services/firebase';
 import { NHIClaimsModal } from './NHIClaimsModal';
 import { 
   Calculator, ChevronDown, 
@@ -74,8 +74,17 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
     const navigate = useNavigate();
     const [activeTab, setActiveTab] = useState<'individual' | 'summary'>('individual');
     
+    // Sort Clinics
+    const sortedClinics = useMemo(() => {
+        return [...clinics].sort((a, b) => {
+            const orderA = CLINIC_ORDER[a.name] ?? 999;
+            const orderB = CLINIC_ORDER[b.name] ?? 999;
+            return orderA - orderB;
+        });
+    }, [clinics]);
+
     // Shared State
-    const [selectedClinicId, setSelectedClinicId] = useState<string>(clinics[0]?.id || '');
+    const [selectedClinicId, setSelectedClinicId] = useState<string>(sortedClinics[0]?.id || '');
     const [selectedMonth, setSelectedMonth] = useState<string>(new Date().toISOString().slice(0, 7)); // YYYY-MM
     
     // Individual Tab State
@@ -101,6 +110,13 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
     const [adjAmount, setAdjAmount] = useState('');
     const [adjNote, setAdjNote] = useState('');
     const [isSavingAdj, setIsSavingAdj] = useState(false);
+
+    // Ensure selectedClinicId is valid if sortedClinics changes
+    useEffect(() => {
+        if (!selectedClinicId && sortedClinics.length > 0) {
+            setSelectedClinicId(sortedClinics[0].id);
+        }
+    }, [sortedClinics, selectedClinicId]);
 
     // Filter doctors safely
     const clinicDocs = doctors.filter(d => {
@@ -603,7 +619,7 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                             value={selectedClinicId}
                             onChange={e => setSelectedClinicId(e.target.value)}
                         >
-                            {clinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                            {sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                         </select>
                     </div>
                     <div>

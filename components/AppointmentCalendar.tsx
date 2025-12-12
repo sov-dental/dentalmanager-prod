@@ -1,11 +1,13 @@
 
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Clinic, Doctor, DailySchedule, ShiftType, Consultant, StaffScheduleConfig, ConsultantRole, Laboratory } from '../types';
-import { listEvents, initGoogleClient, GoogleEvent } from '../services/googleCalendar';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, AlertCircle, RefreshCw, Building2, Filter, Briefcase, X, Loader2, Users, Check, CalendarDays, Eye, EyeOff, LayoutGrid, Columns, PlusCircle, ChevronDown, PlugZap, UserMinus, UserCheck, Timer, Trash, Search } from 'lucide-react';
+import { Clinic, Doctor, DailySchedule, Consultant, StaffScheduleConfig, Laboratory } from '../types';
+import { listEvents, initGoogleClient, handleAuthClick } from '../services/googleCalendar';
+import { parseCalendarEvent } from '../utils/eventParser';
+import { Patient } from '../services/firebase';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, RefreshCw, Building2, Filter, Briefcase, Check, LayoutGrid, Columns, Search, PlugZap } from 'lucide-react';
 import { StaffScheduleModal } from './StaffScheduleModal';
-import { AppointmentDetailModal } from './AppointmentDetailModal';
+import { PatientHistoryModal } from './PatientHistoryModal';
 import { PatientSearch } from './PatientSearch';
 import { ClinicSelector } from './ClinicSelector';
 import { useClinic } from '../contexts/ClinicContext';
@@ -27,7 +29,7 @@ interface AppEvent {
   doctorId: string;
   color: string;
   allDay: boolean;
-  calendarId?: string; // Track which calendar this came from for write-back
+  calendarId?: string; 
 }
 
 interface VisualEvent extends AppEvent {
@@ -56,7 +58,7 @@ const toLocalISODate = (date: Date): string => {
 
 const WEEKDAYS_ZH = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
 
-export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consultants = [], laboratories = [], schedules = [], onSave }) => {
+export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consultants = [], schedules = [], onSave }) => {
   const navigate = useNavigate();
   // Global Clinic State
   const { selectedClinicId, selectedClinic } = useClinic();
@@ -83,7 +85,10 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
   
   // --- Modals ---
   const [editingStaffDate, setEditingStaffDate] = useState<string | null>(null);
-  const [selectedEvent, setSelectedEvent] = useState<AppEvent | null>(null);
+  
+  // History Modal State
+  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
   // Time Line State
   const [now, setNow] = useState(new Date());
@@ -162,12 +167,11 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
             }
         }
     }, 800);
-    return () => clearTimeout(timer);
+    return () => clearInterval(timer);
   }, [currentDate, viewMode]);
 
   // 4. Fetch Events
   const fetchEvents = async () => {
-    // Skip fetching if in search mode
     if (viewMode === 'search') return;
 
     const mapping = selectedClinic?.googleCalendarMapping;
@@ -194,7 +198,6 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
         start.setHours(0, 0, 0, 0);
         end.setHours(23, 59, 59, 999);
         
-        // Smart Sync Filter: Only fetch for doctors that have a mapped calendar ID
         const linkedDocs = activeClinicDocs.filter(doc => !!mapping[doc.id]);
 
         const promises = linkedDocs.map(async (doc) => {
@@ -250,7 +253,6 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
 
   const handleDateChange = (offset: number) => {
     const newDate = new Date(currentDate);
-    // If week view, jump by 7 days, else 1 day
     const jump = viewMode === 'week' ? offset * 7 : offset;
     newDate.setDate(newDate.getDate() + jump);
     newDate.setHours(0, 0, 0, 0);
@@ -266,14 +268,30 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
       setViewMode(mode);
   };
 
-  // --- Filtering Logic (Refined for Exclusive Selection) ---
+  // --- CRM INTEGRATION: OPEN HISTORY ---
+  const handleSelectEvent = (event: AppEvent) => {
+      const parsed = parseCalendarEvent(event.title);
+      // Construct a temporary patient object for history lookup
+      // If parsing fails, we use the raw title as name (better than nothing)
+      const name = parsed ? parsed.name : event.title;
+      
+      const tempPatient: Patient = {
+          docId: 'temp_calendar_view', // Placeholder, only need clinicId/chartId/name for history
+          clinicId: selectedClinicId,
+          chartId: parsed?.chartId || null,
+          name: name,
+          lastVisit: toLocalISODate(event.start)
+      };
+
+      setSelectedPatient(tempPatient);
+      setIsHistoryOpen(true);
+  };
+
+  // --- Filtering Logic ---
   const activeDocIdsInView = useMemo(() => {
     const todayStr = toLocalISODate(currentDate);
     const relevantEvents = events.filter(e => {
-         // In week view, we consider all events in the fetched range (which is already the full week)
          if (viewMode === 'week') return true; 
-         
-         // In day view, strictly today
          if (e.allDay) return true;
          return toLocalISODate(e.start) === todayStr;
     });
@@ -304,7 +322,6 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
 
   // --- Visual Calculations ---
   const getVisualEvents = (dayEvents: AppEvent[], isAllDayRow: boolean = false): VisualEvent[] => {
-      // Filter based on row type
       const relevantEvents = isAllDayRow 
         ? dayEvents.filter(e => e.allDay)
         : dayEvents.filter(e => !e.allDay);
@@ -312,7 +329,6 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
       if (relevantEvents.length === 0) return [];
 
       if (isAllDayRow) {
-          // Stacked flow for all-day row (Dynamic Height)
           return relevantEvents.map((ev, idx) => ({
               ...ev,
               style: {
@@ -325,7 +341,6 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
           }));
       }
 
-      // Timed events packing
       const sortedTimed = [...relevantEvents].sort((a, b) => {
           if (a.start.getTime() !== b.start.getTime()) return a.start.getTime() - b.start.getTime();
           return b.end.getTime() - a.end.getTime();
@@ -396,7 +411,6 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
       
       let config: StaffScheduleConfig;
 
-      // Logic mirrored from load, but purely for display calculation
       if (schedule?.staffConfiguration) {
           config = schedule.staffConfiguration;
       } else if (schedule?.consultantOffs) {
@@ -434,103 +448,107 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
       }
   };
   
-  // Decide whether to show the "Public/Assistant" column.
   const shouldShowPublicColumn = showPublicEvents || activeClinicStaff.length > 0;
 
   return (
     <div className="flex flex-col h-full space-y-4">
         {/* TOP BAR */}
-        <div className="flex flex-col xl:flex-row justify-between items-center gap-4 bg-white p-3 rounded-xl shadow-sm border border-slate-200 shrink-0 relative">
+        <div className="flex flex-col xl:flex-row items-center justify-between gap-4 bg-white p-3 rounded-xl shadow-sm border border-slate-200 shrink-0 relative">
             
-            {/* LEFT BLOCK: Clinic Selector & Title */}
-            <div className="flex items-center gap-3 w-full xl:w-auto">
-                 <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hidden md:block">
-                     <CalendarIcon size={20} />
-                 </div>
-                 <div>
-                    <h1 className="text-lg font-bold text-slate-800 leading-tight">約診日曆</h1>
-                    <div className="flex items-center gap-1 text-xs text-slate-500">
-                        <span className="font-medium text-slate-400">診所:</span>
-                        <ClinicSelector />
-                    </div>
-                 </div>
-            </div>
-
-            {/* MIDDLE BLOCK: View Toggles */}
-            <div className="flex bg-slate-100 rounded-lg p-1 shadow-inner w-full xl:w-auto justify-center">
-                <button 
-                    onClick={() => handleSetViewMode('day')}
-                    className={`flex-1 xl:flex-none px-6 py-1.5 text-sm font-bold rounded-md flex items-center justify-center gap-2 transition-all ${viewMode === 'day' ? 'bg-white shadow text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
-                >
-                    <Columns size={16} /> 日檢視
-                </button>
-                <button 
-                    onClick={() => handleSetViewMode('week')}
-                    className={`flex-1 xl:flex-none px-6 py-1.5 text-sm font-bold rounded-md flex items-center justify-center gap-2 transition-all ${viewMode === 'week' ? 'bg-white shadow text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
-                >
-                    <LayoutGrid size={16} /> 週檢視
-                </button>
-                <button 
-                    onClick={() => handleSetViewMode('search')}
-                    className={`flex-1 xl:flex-none px-6 py-1.5 text-sm font-bold rounded-md flex items-center justify-center gap-2 transition-all ${viewMode === 'search' ? 'bg-white shadow text-teal-600' : 'text-slate-400 hover:text-slate-600'}`}
-                >
-                    <Search size={16} /> 病歷搜尋
-                </button>
-            </div>
-
-            {/* RIGHT BLOCK: Date Navigation & Actions */}
-            {viewMode !== 'search' && (
-                <div className="flex items-center gap-2 w-full xl:w-auto justify-between xl:justify-end">
-                    {/* Date Nav */}
-                    <div className="flex items-center bg-slate-100 rounded-lg p-1 flex-1 xl:flex-none justify-between xl:justify-start">
-                        <button onClick={() => handleDateChange(-1)} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500 transition-all"><ChevronLeft size={20}/></button>
-                        <div 
-                            className="relative flex items-center justify-center cursor-pointer hover:bg-white hover:shadow-sm rounded px-3 py-1 transition-all group flex-1 xl:flex-none xl:min-w-[140px]"
-                            onClick={triggerDatePicker}
-                            title="點擊選擇日期"
-                        >
-                            <input 
-                                ref={dateInputRef}
-                                type="date" 
-                                className="opacity-0 absolute inset-0 w-full h-full cursor-pointer z-10"
-                                onChange={(e) => {
-                                    if (e.target.value) {
-                                        const [y, m, d] = e.target.value.split('-').map(Number);
-                                        const newDate = new Date(y, m - 1, d);
-                                        setCurrentDate(newDate);
-                                    }
-                                }}
-                            />
-                            <span className="font-mono font-bold text-slate-700 text-base text-center w-full">
-                                {viewMode === 'day' ? todayStr : `${toLocalISODate(weekDays[0])} - ${toLocalISODate(weekDays[6]).slice(5)}`}
-                            </span>
+            {/* LEFT GROUP: Title, Clinic, View Switcher */}
+            <div className="flex flex-col md:flex-row items-center gap-4 w-full xl:w-auto">
+                 <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-start">
+                     <div className="flex items-center gap-3">
+                        <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hidden md:block">
+                            <CalendarIcon size={20} />
                         </div>
-                        <button onClick={() => handleDateChange(1)} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500 transition-all"><ChevronRight size={20}/></button>
-                    </div>
+                        <div>
+                            <h1 className="text-lg font-bold text-slate-800 leading-tight">約診日曆</h1>
+                            <div className="flex items-center gap-1 text-xs text-slate-500">
+                                <span className="font-medium text-slate-400">診所:</span>
+                                <ClinicSelector />
+                            </div>
+                        </div>
+                     </div>
+                 </div>
 
-                    <div className="flex items-center gap-2">
-                        <button 
-                            onClick={handleJumpToToday}
-                            className="px-4 py-2 text-sm font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap"
-                        >
-                            今日
-                        </button>
-                        
-                        <button 
-                            onClick={() => fetchEvents()} 
-                            disabled={isLoading}
-                            className="p-2 text-slate-400 hover:text-teal-600 hover:bg-teal-50 rounded-full transition-colors"
-                            title="重新整理"
-                        >
-                            <RefreshCw size={20} className={isLoading ? 'animate-spin' : ''} />
-                        </button>
-                    </div>
+                 <div className="flex bg-slate-100 rounded-lg p-1 shadow-inner w-full md:w-auto">
+                    <button 
+                        onClick={() => handleSetViewMode('day')}
+                        className={`flex-1 md:flex-none px-4 py-1.5 text-sm font-bold rounded-md flex items-center justify-center gap-2 transition-all ${viewMode === 'day' ? 'bg-white shadow text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                        <Columns size={16} /> 日檢視
+                    </button>
+                    <button 
+                        onClick={() => handleSetViewMode('week')}
+                        className={`flex-1 md:flex-none px-4 py-1.5 text-sm font-bold rounded-md flex items-center justify-center gap-2 transition-all ${viewMode === 'week' ? 'bg-white shadow text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                        <LayoutGrid size={16} /> 週檢視
+                    </button>
+                    <button 
+                        onClick={() => handleSetViewMode('search')}
+                        className={`flex-1 md:flex-none px-4 py-1.5 text-sm font-bold rounded-md flex items-center justify-center gap-2 transition-all ${viewMode === 'search' ? 'bg-white shadow text-teal-600' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                        <Search size={16} /> 病歷搜尋
+                    </button>
                 </div>
-            )}
+            </div>
+
+            {/* RIGHT GROUP: Date Navigation & Actions */}
+            <div className="flex items-center gap-2 w-full xl:w-auto justify-between xl:justify-end">
+                {viewMode !== 'search' ? (
+                    <>
+                        <div className="flex items-center bg-slate-100 rounded-lg p-1 flex-1 xl:flex-none justify-between xl:justify-start">
+                            <button onClick={() => handleDateChange(-1)} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500 transition-all"><ChevronLeft size={20}/></button>
+                            <div 
+                                className="relative flex items-center justify-center cursor-pointer hover:bg-white hover:shadow-sm rounded px-3 py-1 transition-all group flex-1 xl:flex-none xl:min-w-[140px]"
+                                onClick={triggerDatePicker}
+                                title="點擊選擇日期"
+                            >
+                                <input 
+                                    ref={dateInputRef}
+                                    type="date" 
+                                    className="opacity-0 absolute inset-0 w-full h-full cursor-pointer z-10"
+                                    onChange={(e) => {
+                                        if (e.target.value) {
+                                            const [y, m, d] = e.target.value.split('-').map(Number);
+                                            const newDate = new Date(y, m - 1, d);
+                                            setCurrentDate(newDate);
+                                        }
+                                    }}
+                                />
+                                <span className="font-mono font-bold text-slate-700 text-base text-center w-full">
+                                    {viewMode === 'day' ? todayStr : `${toLocalISODate(weekDays[0])} - ${toLocalISODate(weekDays[6]).slice(5)}`}
+                                </span>
+                            </div>
+                            <button onClick={() => handleDateChange(1)} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500 transition-all"><ChevronRight size={20}/></button>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                            <button 
+                                onClick={handleJumpToToday}
+                                className="px-4 py-2 text-sm font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap"
+                            >
+                                今日
+                            </button>
+                            
+                            <button 
+                                onClick={() => fetchEvents()} 
+                                disabled={isLoading}
+                                className="p-2 text-slate-400 hover:text-teal-600 hover:bg-teal-50 rounded-full transition-colors"
+                                title="重新整理"
+                            >
+                                <RefreshCw size={20} className={isLoading ? 'animate-spin' : ''} />
+                            </button>
+                        </div>
+                    </>
+                ) : (
+                    <div />
+                )}
+            </div>
 
             {errorMsg && (
                 <div className="absolute top-full right-0 mt-2 bg-rose-50 border border-rose-200 text-rose-600 px-4 py-2 rounded-lg flex items-center gap-2 text-sm z-50 shadow-md">
-                    <AlertCircle size={16} />
                     {errorMsg}
                 </div>
             )}
@@ -541,16 +559,11 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
             <PatientSearch 
                 doctors={activeClinicDocs} 
                 mapping={selectedClinic?.googleCalendarMapping || {}}
-                onEventClick={(ev) => {
-                    const doc = activeClinicDocs.find(d => d.id === ev.doctorId);
-                    const color = doc?.avatarBgColor || doc?.color || '#3b82f6';
-                    setSelectedEvent({ ...ev, color });
-                }}
+                onEventClick={(ev) => handleSelectEvent(ev)}
             />
         ) : (
             <div className="flex-1 relative flex flex-col gap-4 min-h-0">
                 
-                {/* OVERLAY: Block Interaction if Disconnected */}
                 {isGapiReady && !isLoggedIn && (
                     <div className="absolute inset-0 z-50 bg-white/60 backdrop-blur-md flex flex-col items-center justify-center text-center p-6 rounded-xl animate-fade-in">
                         <div className="w-24 h-24 bg-slate-50 rounded-full flex items-center justify-center mb-6 shadow-inner ring-4 ring-white">
@@ -561,10 +574,10 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
                             請先完成帳號連動，系統才能讀取並顯示醫師的約診資訊。
                         </p>
                         <button 
-                            onClick={() => navigate('/integrations')}
+                            onClick={handleAuthClick}
                             className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-bold text-lg shadow-lg shadow-indigo-200 hover:shadow-indigo-300 transition-all flex items-center gap-2 active:scale-95"
                         >
-                            前往整合設定 <ChevronRight size={20} />
+                            連結 Google Calendar
                         </button>
                     </div>
                 )}
@@ -782,7 +795,7 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
                                             {showPublicEvents && getVisualEvents(events.filter(e => e.doctorId === CLINIC_SHARED_ID), true).map(ev => (
                                                 <div 
                                                     key={ev.id} 
-                                                    onClick={() => setSelectedEvent(ev)}
+                                                    onClick={() => handleSelectEvent(ev)}
                                                     className="text-xs bg-slate-200 text-slate-700 px-2 py-1 rounded border border-slate-300 truncate mb-1 cursor-pointer hover:bg-slate-300 transition-colors" 
                                                     title={ev.title}
                                                 >
@@ -800,7 +813,7 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
                                                 {allDayEvents.map(ev => (
                                                     <div 
                                                         key={ev.id} 
-                                                        onClick={() => setSelectedEvent(ev)}
+                                                        onClick={() => handleSelectEvent(ev)}
                                                         className="text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded mb-1 truncate border border-indigo-100 font-medium cursor-pointer hover:bg-indigo-100 transition-colors" 
                                                         title={ev.title}
                                                     >
@@ -835,7 +848,7 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
                                             {dayEvents.map(ev => (
                                                 <div 
                                                     key={ev.id} 
-                                                    onClick={() => setSelectedEvent(ev)}
+                                                    onClick={() => handleSelectEvent(ev)}
                                                     className="text-[10px] px-1.5 py-0.5 rounded truncate border cursor-pointer hover:opacity-80"
                                                     style={{ 
                                                         backgroundColor: ev.doctorId === CLINIC_SHARED_ID ? '#e2e8f0' : '#e0e7ff',
@@ -878,7 +891,7 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
                                             {showPublicEvents && getVisualEvents(events.filter(e => e.doctorId === CLINIC_SHARED_ID)).map(ev => (
                                                 <div
                                                     key={ev.id}
-                                                    onClick={() => setSelectedEvent(ev)}
+                                                    onClick={() => handleSelectEvent(ev)}
                                                     style={{...ev.style, backgroundColor: '#f1f5f9', borderLeft: '3px solid #64748b' }}
                                                     className="absolute p-1 rounded-r shadow-sm overflow-hidden hover:z-20 text-xs text-slate-600 border border-slate-200 cursor-pointer"
                                                     title={`${ev.title}\n${ev.start.toLocaleTimeString()} - ${ev.end.toLocaleTimeString()}`}
@@ -906,7 +919,7 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
                                                 {visualEvents.map(ev => (
                                                     <div
                                                         key={ev.id}
-                                                        onClick={() => setSelectedEvent(ev)}
+                                                        onClick={() => handleSelectEvent(ev)}
                                                         style={{...ev.style, backgroundColor: `${doc.avatarBgColor}20`, borderLeft: `3px solid ${doc.avatarBgColor}` }}
                                                         className="absolute p-1 rounded-r shadow-sm overflow-hidden hover:z-20 text-xs border border-slate-100 group cursor-pointer hover:shadow-md transition-shadow"
                                                         title={`${ev.title}\n${ev.start.toLocaleTimeString()} - ${ev.end.toLocaleTimeString()}`}
@@ -969,7 +982,7 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
                                                 return (
                                                     <div
                                                         key={ev.id}
-                                                        onClick={() => setSelectedEvent(ev)}
+                                                        onClick={() => handleSelectEvent(ev)}
                                                         style={{...ev.style, backgroundColor: isShared ? '#f1f5f9' : `${color}20`, borderLeft: `3px solid ${color}` }}
                                                         className="absolute p-1 rounded-r shadow-sm overflow-hidden hover:z-20 text-xs border border-slate-100 group cursor-pointer hover:shadow-md transition-shadow"
                                                         title={`${ev.title}\n${isShared ? '公用' : doc?.name}\n${ev.start.toLocaleTimeString()} - ${ev.end.toLocaleTimeString()}`}
@@ -1015,15 +1028,11 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
             onSave={onSave || (async () => {})}
         />
 
-        {/* EVENT DETAIL MODAL (New) */}
-        <AppointmentDetailModal 
-            isOpen={!!selectedEvent}
-            onClose={() => setSelectedEvent(null)}
-            event={selectedEvent}
-            clinicId={selectedClinicId}
-            consultants={consultants}
-            doctors={doctors}
-            laboratories={laboratories}
+        {/* PATIENT HISTORY MODAL (Replaces AppointmentDetailModal) */}
+        <PatientHistoryModal 
+            isOpen={isHistoryOpen}
+            onClose={() => setIsHistoryOpen(false)}
+            patient={selectedPatient}
         />
     </div>
   );

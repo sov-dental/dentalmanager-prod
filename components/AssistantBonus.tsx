@@ -1,10 +1,9 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
-import { Clinic, Consultant, AccountingRow } from '../types';
-import { loadDailyAccounting, hydrateRow, db, saveBonusSettings, getBonusSettings } from '../services/firebase';
+import { Clinic, Consultant, AccountingRow, DailyAccountingRecord } from '../types';
+import { hydrateRow, db, saveBonusSettings, getBonusSettings, CLINIC_ORDER } from '../services/firebase';
 import { 
   Calculator, Loader2, DollarSign, Save, Users, 
-  PieChart, Wallet, ChevronRight, Gift, CheckCircle
+  PieChart, Wallet, ChevronRight, Gift
 } from 'lucide-react';
 import { BonusDetailModal } from './BonusDetailModal';
 
@@ -29,7 +28,16 @@ interface CalculatedStaff {
 }
 
 export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
-    const [selectedClinicId, setSelectedClinicId] = useState<string>(clinics[0]?.id || '');
+    // Sort Clinics
+    const sortedClinics = useMemo(() => {
+        return [...clinics].sort((a, b) => {
+            const orderA = CLINIC_ORDER[a.name] ?? 999;
+            const orderB = CLINIC_ORDER[b.name] ?? 999;
+            return orderA - orderB;
+        });
+    }, [clinics]);
+
+    const [selectedClinicId, setSelectedClinicId] = useState<string>(sortedClinics[0]?.id || '');
     const [selectedMonth, setSelectedMonth] = useState<string>(new Date().toISOString().slice(0, 7)); // YYYY-MM
     
     // Calculation State
@@ -44,6 +52,13 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
     // Modal State
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [selectedDetailStaff, setSelectedDetailStaff] = useState<{id: string, name: string} | null>(null);
+
+    // Ensure selectedClinicId is valid if sortedClinics changes
+    useEffect(() => {
+        if (!selectedClinicId && sortedClinics.length > 0) {
+            setSelectedClinicId(sortedClinics[0].id);
+        }
+    }, [sortedClinics, selectedClinicId]);
 
     // Load Pool Rate Setting using new getBonusSettings
     useEffect(() => {
@@ -68,14 +83,12 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
         if (!selectedClinicId || !selectedMonth) return;
         setIsSavingSettings(true);
         try {
-            // Updated call signature: (clinicId, month, settings)
             await saveBonusSettings(selectedClinicId, selectedMonth, { poolRate: Number(poolRate) });
             
             // Optionally trigger a silent recalc to ensure UI is in sync if data exists
             if (calculatedData.length > 0) {
                 handleCalculate();
             }
-            // Optional: Success Toast could go here
         } catch (e) {
             alert("Save Error: " + (e as Error).message);
         } finally {
@@ -84,7 +97,10 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
     };
 
     const handleCalculate = async () => {
-        if (!selectedClinicId || !selectedMonth) return;
+        if (!selectedClinicId || !selectedMonth) {
+            alert("請選擇診所與月份");
+            return;
+        }
 
         setIsLoading(true);
         setCalculatedData([]);
@@ -94,18 +110,26 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
             const [year, month] = selectedMonth.split('-').map(Number);
             const daysInMonth = new Date(year, month, 0).getDate();
             
-            // 1. Fetch Daily Data
-            const promises = [];
-            for (let d = 1; d <= daysInMonth; d++) {
-                const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-                promises.push(loadDailyAccounting(selectedClinicId, dateStr));
-            }
+            // Construct Date Range for Firestore Query
+            const startStr = `${year}-${String(month).padStart(2, '0')}-01`;
+            const endStr = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
 
-            const dailyRecords = await Promise.all(promises);
+            console.log(`[AssistantBonus] Fetching range: ${startStr} to ${endStr} for Clinic: ${selectedClinicId}`);
+
+            const snapshot = await db.collection('daily_accounting')
+                .where('clinicId', '==', selectedClinicId)
+                .where('date', '>=', startStr)
+                .where('date', '<=', endStr)
+                .get();
+
+            if (snapshot.empty) {
+                console.warn("[AssistantBonus] No accounting records found for this period.");
+            }
             
-            // 2. Flatten Rows
+            // Flatten Rows
             const allRows: AccountingRow[] = [];
-            dailyRecords.forEach(rec => {
+            snapshot.forEach(doc => {
+                const rec = doc.data() as DailyAccountingRecord;
                 if (rec && rec.rows) {
                     rec.rows.forEach(r => {
                         const hydrated = hydrateRow(r);
@@ -116,40 +140,53 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
             });
             setRawRows(allRows);
 
-            // 3. Filter Staff for this Clinic (Roles: Consultant, Trainee, Assistant)
-            // Note: We use getStaffList inside the component or rely on props. 
-            // Assuming props.consultants is up to date or we fetch fresh if needed.
-            // For now, using props.consultants filtered by ID.
+            // Filter Staff
             const allowedRoles = ['consultant', 'trainee', 'assistant'];
             const clinicStaff = consultants.filter(c => 
                 c.clinicId === selectedClinicId && 
                 allowedRoles.includes(c.role || 'consultant')
             );
 
-            // 4. Calculate Base Metrics per Staff
-            // Note: We map ALL eligible staff, even if they have 0 revenue.
+            // 4. Calculate Base Metrics
+            // --- 修正開始: 支援 ID 與 Name 雙重比對 ---
             let tempStaffData = clinicStaff.map(staff => {
                 let selfPayTotal = 0;
                 let retailTotal = 0;
 
+                const staffName = (staff.name || '').trim();
+
                 allRows.forEach(row => {
-                    // Self Pay
                     const t = row.treatments;
+                    const r = row.retail;
+
+                    // 1. 自費項目 (Self Pay) 比對
+                    // 資料庫可能是 ID，也可能是名字 (如截圖中的 "SYUW")
+                    const rowConsultant = (t.consultant || '').trim();
+                    const isTreatmentMatch = (
+                        rowConsultant === staff.id || 
+                        rowConsultant === staffName
+                    );
+
+                    // 計算金額
                     const sp = (t.prostho || 0) + (t.implant || 0) + (t.ortho || 0) + 
                                (t.sov || 0) + (t.perio || 0) + (t.whitening || 0) + 
                                (t.inv || 0) + (t.otherSelfPay || 0);
                     
-                    if (sp > 0 && t.consultant === staff.id) {
+                    if (sp > 0 && isTreatmentMatch) {
                         selfPayTotal += sp;
                     }
 
-                    // Retail
-                    const r = row.retail;
+                    // 2. 販售項目 (Retail) 比對
+                    // 如果沒有指定銷售人員 (staff)，則預設歸屬給諮詢師 (consultant)
+                    const rowRetailer = (r.staff || t.consultant || '').trim();
+                    const isRetailMatch = (
+                        rowRetailer === staff.id || 
+                        rowRetailer === staffName
+                    );
+
                     const ret = (r.products || 0) + (r.diyWhitening || 0);
-                    // Use staff field if present, otherwise fallback to consultant
-                    const ownerId = r.staff || t.consultant;
                     
-                    if (ret > 0 && ownerId === staff.id) {
+                    if (ret > 0 && isRetailMatch) {
                         retailTotal += ret;
                     }
                 });
@@ -164,7 +201,7 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
                     selfPayRevenue: selfPayTotal,
                     retailRevenue: retailTotal,
                     baseBonus,
-                    personalRate: 100, // Placeholder
+                    personalRate: 100, 
                     personalKeep: 0,
                     poolContribution: 0,
                     poolShare: 0,
@@ -172,26 +209,22 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
                     isEligibleForPool: false
                 };
             });
+            // --- 修正結束 ---
 
-            // 5. Apply Pool Logic
+            // Apply Pool Logic
             let totalPool = 0;
             let eligibleCount = 0;
 
             tempStaffData = tempStaffData.map(s => {
-                // Rule: Only 'consultant' role contributes to pool. 
-                // 'trainee', 'assistant' keep 100%.
                 const isConsultant = s.role === 'consultant';
-                
                 let pRate = 100;
                 let contrib = 0;
 
                 if (isConsultant) {
                     pRate = 100 - poolRate;
-                    // Only contribute if there is base bonus
                     if (s.baseBonus > 0) {
                         contrib = Math.round(s.baseBonus * (poolRate / 100));
                     }
-                    // Consultants are eligible for pool share regardless of revenue (as long as they are active)
                     eligibleCount++;
                 }
 
@@ -206,7 +239,7 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
                 };
             });
 
-            // 6. Distribute Pool
+            // Distribute Pool
             const sharePerPerson = eligibleCount > 0 ? Math.round(totalPool / eligibleCount) : 0;
 
             const finalData = tempStaffData.map(s => {
@@ -221,8 +254,8 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
             setCalculatedData(finalData);
 
         } catch (error) {
-            console.error(error);
-            alert("計算失敗");
+            console.error("Assistant Bonus Calculation Failed", error);
+            alert("計算失敗: " + (error as Error).message);
         } finally {
             setIsLoading(false);
         }
@@ -241,35 +274,29 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
     return (
         <div className="space-y-6 pb-12">
             
-            {/* 1. COMPACT HEADER ROW */}
+            {/* Header */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col xl:flex-row items-center gap-4">
-                
-                {/* Brand / Title */}
                 <div className="flex items-center gap-2 mr-auto">
                     <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center text-purple-600">
                         <Gift size={20} />
                     </div>
                     <div>
-                        <h2 className="text-lg font-bold text-slate-800">獎金計算引擎</h2>
+                        <h2 className="text-lg font-bold text-slate-800">獎金計算引擎 (Name Match)</h2>
                         <p className="text-xs text-slate-500">Assistant Bonus Engine</p>
                     </div>
                 </div>
 
-                {/* Controls Container */}
                 <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto justify-center xl:justify-end">
-                    
-                    {/* Clinic Selector */}
                     <div className="w-full sm:w-auto min-w-[160px]">
                         <select 
                             className="w-full border border-slate-300 rounded-lg px-3 py-2 font-bold text-slate-700 bg-white outline-none focus:ring-2 focus:ring-purple-500"
                             value={selectedClinicId}
                             onChange={e => setSelectedClinicId(e.target.value)}
                         >
-                            {clinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                            {sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                         </select>
                     </div>
 
-                    {/* Group Pool Settings (Compact) */}
                     <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
                         <span className="text-xs font-bold text-slate-600 whitespace-nowrap">團體公積金 %</span>
                         <input 
@@ -288,7 +315,6 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
                         </button>
                     </div>
 
-                    {/* Month Selector */}
                     <input 
                         type="month" 
                         className="border border-slate-300 rounded-lg px-3 py-2 font-bold text-slate-700 bg-white outline-none focus:ring-2 focus:ring-purple-500"
@@ -296,7 +322,6 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
                         onChange={e => setSelectedMonth(e.target.value)}
                     />
 
-                    {/* Calculate Button */}
                     <button 
                         onClick={handleCalculate}
                         disabled={isLoading}

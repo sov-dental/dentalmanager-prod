@@ -3,12 +3,10 @@ import firebase from "firebase/compat/app";
 import "firebase/compat/auth";
 import "firebase/compat/firestore";
 import "firebase/compat/storage";
-import { AppData, DailyAccountingRecord, AccountingRow, TechnicianRecord, MonthlyTarget, Clinic, NHIRecord, SalaryAdjustment, Consultant, InsuranceGrade } from '../types';
+import { AppData, DailyAccountingRecord, AccountingRow, TechnicianRecord, MonthlyTarget, Clinic, NHIRecord, SalaryAdjustment, Consultant, InsuranceGrade, User, UserRole, Doctor, Laboratory, SOVReferral, DailySchedule, AuditLogEntry } from '../types';
 
 // --- CONFIGURATION STRATEGY: HOSTNAME BASED ---
 
-// 1. Development Configuration
-// (Paste your Development/Test Project keys here)
 const devConfig = {
   apiKey: "AIzaSyC77kXgBNUGdyNV-JJ-Lkn5qYNDJwVKSrE", 
   authDomain: "sunlight-schedule-data.firebaseapp.com",
@@ -18,8 +16,6 @@ const devConfig = {
   appId: "1:534278828682:web:681029e46b7b0a3ef1f373"
 };
 
-// 2. Production Configuration
-// (Paste your Production/Live Project keys here)
 const prodConfig = {
   apiKey: "AIzaSyD252Ef1MRy9m-k1IEtYUhGQVeP9gd1KYw",
   authDomain: "sunlight-schedule-data-prod.firebaseapp.com",
@@ -29,34 +25,31 @@ const prodConfig = {
   appId: "1:102873326358:web:86d41907668f845c572637"
 };
 
-// 3. Switching Logic
-// Detects environment based on the browser's URL hostname
 const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
-
-// Logic: If the URL contains '-prod', it is the Production Environment.
-// Everything else (including localhost, or the original url) is Development.
 const isProd = hostname.includes('-prod');
-
-console.log("Current Hostname:", hostname);
-console.log("Config Mode:", isProd ? "PRODUCTION" : "DEVELOPMENT");
-
 const firebaseConfig = isProd ? prodConfig : devConfig;
 
-// --- SINGLETON INITIALIZATION (COMPAT) ---
-const app = !firebase.apps.length 
-  ? firebase.initializeApp(firebaseConfig) 
-  : firebase.app();
+const app = !firebase.apps.length ? firebase.initializeApp(firebaseConfig) : firebase.app();
 
 export const db = firebase.firestore();
 export const auth = firebase.auth();
 export const storage = firebase.storage();
 
-// Explicitly set persistence
 auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch((error) => {
   console.error("Firebase Auth Persistence Error:", error);
 });
 
 export const googleProvider = new firebase.auth.GoogleAuthProvider();
+
+// --- CONSTANTS ---
+export const CLINIC_ORDER: Record<string, number> = {
+  '日亞美': 1,
+  '台南蒔光': 2,
+  '新竹橙蒔': 3,
+  '台中日蒔': 4,
+  '古亭蒔光': 5,
+  '古亭蒔穗': 5
+};
 
 // --- AUTH HELPERS ---
 export const signInWithPopup = (authInstance: any, provider: any) => authInstance.signInWithPopup(provider);
@@ -68,12 +61,30 @@ export const onAuthStateChanged = (cb: (user: firebase.User | null) => void) => 
 
 const DOC_ID = 'demo-clinic';
 
-// --- DATA HELPERS ---
+// --- DATA HELPERS --- (Sanitize, Hydrate, Sort, Upload...)
+
+export const deepSanitize = (obj: any): any => {
+  if (obj === undefined) return null;
+  if (obj === null) return null;
+  if (typeof obj !== 'object') return obj;
+  if (obj instanceof Date) return obj; 
+  
+  if (Array.isArray(obj)) {
+    return obj.map(deepSanitize);
+  }
+  
+  const result: any = {};
+  for (const key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      result[key] = deepSanitize(obj[key]);
+    }
+  }
+  return result;
+};
 
 export const sanitizeRow = (row: AccountingRow): AccountingRow => {
     const num = (v: any) => (typeof v === 'number' && !isNaN(v)) ? v : 0;
     const str = (v: any) => (v ? String(v) : '');
-    
     return {
         id: str(row.id),
         patientName: str(row.patientName),
@@ -115,17 +126,19 @@ export const sanitizeRow = (row: AccountingRow): AccountingRow => {
         labFee: num(row.labFee),
         isManual: !!row.isManual,
         isManualName: !!row.isManualName,
-        // Ensure we save the new field 'attendance'.
         attendance: row.attendance !== undefined ? row.attendance : true,
         startTime: row.startTime || null,
         originalDate: row.originalDate || null, 
-        matchStatus: row.matchStatus || null
+        matchStatus: row.matchStatus || null,
+        chartId: str(row.chartId),
+        patientStatus: str(row.patientStatus)
     } as any;
 };
 
 export const hydrateRow = (row: any): AccountingRow => {
     return {
         ...row,
+        chartId: row.chartId || "",
         treatments: {
             regFee: 0, copayment: 0, sov: 0, ortho: 0, prostho: 0, 
             implant: 0, whitening: 0, perio: 0, inv: 0, otherSelfPay: 0, consultant: '',
@@ -140,630 +153,242 @@ export const hydrateRow = (row: any): AccountingRow => {
             ...(row.paymentBreakdown || {})
         },
         actualCollected: Number(row.actualCollected) || 0,
-        // CRITICAL FIX: Map legacy 'isArrived' to 'attendance' if 'attendance' is undefined.
-        // If both are missing, default to true.
-        attendance: row.attendance !== undefined ? row.attendance : (row.isArrived !== undefined ? row.isArrived : true),
-        startTime: row.startTime || new Date().toISOString()
+        attendance: row.attendance !== undefined ? row.attendance : true,
     };
-};
-
-export const sortAccountingRows = (rows: AccountingRow[]): AccountingRow[] => {
-    return [...rows].sort((a, b) => {
-        const docA = a.doctorName || "未指定";
-        const docB = b.doctorName || "未指定";
-        
-        const isUnassigned = (name: string) => 
-            name === "未指定" || name === "" || name === "診所公用" || name === "Clinic Shared";
-
-        const unassignedA = isUnassigned(docA);
-        const unassignedB = isUnassigned(docB);
-
-        if (!unassignedA && unassignedB) return -1;
-        if (unassignedA && !unassignedB) return 1;
-
-        const docDiff = docA.localeCompare(docB, 'zh-TW');
-        if (docDiff !== 0) return docDiff;
-
-        const aIsManual = !!a.isManual;
-        const bIsManual = !!b.isManual;
-
-        if (!aIsManual && bIsManual) return -1;
-        if (aIsManual && !bIsManual) return 1;
-
-        const timeA = a.startTime || "";
-        const timeB = b.startTime || "";
-        
-        if (timeA !== timeB) {
-            return timeA.localeCompare(timeB);
-        }
-
-        return (a.id || '').localeCompare(b.id || '');
-    });
 };
 
 export const uploadImage = async (file: File, path: string): Promise<string> => {
-    const storageRef = storage.ref();
-    const fileRef = storageRef.child(path);
-    await fileRef.put(file);
-    return await fileRef.getDownloadURL();
+  const ref = storage.ref(path);
+  await ref.put(file);
+  return await ref.getDownloadURL();
 };
 
-export const uploadReportImage = async (file: File, clinicId: string, date: string): Promise<string> => {
-    const extension = file.name.split('.').pop();
-    const path = `reports/${clinicId}/${date}_${Date.now()}.${extension}`;
-    return uploadImage(file, path);
-};
-
-// --- SYNC PERMISSIONS SYSTEM ---
-
-export const syncUserPermissions = async (user: firebase.User) => {
-    if (!user.email) return;
-    const email = user.email.trim().toLowerCase();
-    
-    console.log(`[Permission Sync] Pulling permissions for ${email}...`);
-
-    try {
-        const clinicsSnapshot = await db.collection('clinics').get();
-        const allowedClinicNames: string[] = [];
-
-        clinicsSnapshot.forEach(doc => {
-            const data = doc.data();
-            if (doc.id === DOC_ID || Array.isArray(data.clinics)) return;
-
-            const clinicAllowed = Array.isArray(data.allowedUsers) ? data.allowedUsers : [];
-            if (clinicAllowed.some((u: any) => String(u).trim().toLowerCase() === email)) {
-                if (data.name) allowedClinicNames.push(data.name);
-            }
-        });
-
-        const userRef = db.collection('users').doc(user.uid);
-        const userSnap = await userRef.get();
-
-        if (userSnap.exists) {
-            await userRef.update({
-                allowedClinics: allowedClinicNames,
-                lastSyncedAt: new Date().toISOString()
-            });
-        } else {
-            const role = email.includes('marketing') ? 'marketing' : 'staff';
-            await userRef.set({
-                email: user.email,
-                name: user.displayName || email.split('@')[0],
-                role: role,
-                allowedClinics: allowedClinicNames,
-                createdAt: new Date().toISOString(),
-                lastSyncedAt: new Date().toISOString()
-            });
-        }
-
-    } catch (error) {
-        console.error("[Permission Sync] Failed:", error);
-    }
-};
-
-const pushPermissionUpdates = async (oldClinics: Clinic[], newClinics: Clinic[]) => {
-    const oldMap = new Map(oldClinics.map(c => [c.id, c]));
-
-    for (const newClinic of newClinics) {
-        const oldClinic = oldMap.get(newClinic.id);
-        const normalize = (e: string) => String(e).trim().toLowerCase();
-
-        const newEmailsRaw = newClinic.allowedUsers || [];
-        const oldEmailsRaw = oldClinic?.allowedUsers || [];
-
-        const newEmailsNormalized = new Set(newEmailsRaw.map(normalize));
-        const oldEmailsNormalized = new Set(oldEmailsRaw.map(normalize));
-
-        const addedEmails = newEmailsRaw.filter(e => !oldEmailsNormalized.has(normalize(e)));
-        const removedEmails = oldEmailsRaw.filter(e => !newEmailsNormalized.has(normalize(e)));
-
-        if (addedEmails.length === 0 && removedEmails.length === 0) continue;
-
-        await Promise.all(addedEmails.map(async (email) => {
-            try {
-                let userQuery = await db.collection('users').where('email', '==', email).limit(1).get();
-                if (userQuery.empty && email !== email.toLowerCase()) {
-                     userQuery = await db.collection('users').where('email', '==', email.toLowerCase()).limit(1).get();
-                }
-
-                if (!userQuery.empty) {
-                    const userDoc = userQuery.docs[0];
-                    await userDoc.ref.update({
-                        allowedClinics: firebase.firestore.FieldValue.arrayUnion(newClinic.name)
-                    });
-                }
-            } catch (e) {
-                console.error(`[Permission Sync] ERROR adding ${email}:`, e);
-            }
-        }));
-
-        await Promise.all(removedEmails.map(async (email) => {
-            try {
-                let userQuery = await db.collection('users').where('email', '==', email).limit(1).get();
-                if (userQuery.empty && email !== email.toLowerCase()) {
-                     userQuery = await db.collection('users').where('email', '==', email.toLowerCase()).limit(1).get();
-                }
-
-                if (!userQuery.empty) {
-                    const userDoc = userQuery.docs[0];
-                    await userDoc.ref.update({
-                        allowedClinics: firebase.firestore.FieldValue.arrayRemove(newClinic.name)
-                    });
-                }
-            } catch (e) {
-                console.error(`[Permission Sync] ERROR removing ${email}:`, e);
-            }
-        }));
-    }
-};
-
-// --- APP DATA FUNCTIONS ---
-
-const CLINIC_ORDER_MAP: Record<string, number> = {
-  '日亞美': 1,
-  '台南蒔光': 2,
-  '新竹橙蒔': 3,
-  '台中日蒔': 4,
-  '古亭蒔光': 5,
-  '古亭蒔穗': 5
-};
+// --- CORE APP DATA ---
 
 export const getClinics = async (): Promise<Clinic[]> => {
     try {
-        console.log("Fetching independent clinics...");
-        const snapshot = await db.collection('clinics').get();
-        const clinics: Clinic[] = [];
-        
-        snapshot.forEach(doc => {
+        const snap = await db.collection('clinics').get();
+        return snap.docs.map(doc => {
             const data = doc.data();
-            if (doc.id === DOC_ID || Array.isArray(data.clinics)) {
-                return; 
-            }
-            clinics.push({ id: doc.id, ...data } as Clinic);
-        });
-
-        return clinics.sort((a, b) => {
-            const orderA = CLINIC_ORDER_MAP[a.name] || 999;
-            const orderB = CLINIC_ORDER_MAP[b.name] || 999;
-            return orderA - orderB;
-        });
+            if (!data.name || Array.isArray(data.clinics)) return null;
+            return {
+                id: doc.id,
+                name: data.name || doc.id,
+                doctors: data.doctors || [],
+                laboratories: data.laboratories || [],
+                sovReferrals: data.sovReferrals || [],
+                schedules: data.schedules || [],
+                weeklyHours: data.weeklyHours || Array(7).fill({ Morning: true, Afternoon: true, Evening: true }),
+                themeColor: data.themeColor || '#0d9488',
+                ...data
+            } as Clinic;
+        }).filter(Boolean) as Clinic[];
     } catch (error) {
-        console.error("Error fetching clinics:", error);
+        console.error("Error getting clinics:", error);
         return [];
-    }
-};
-
-export const saveClinic = async (clinic: Clinic) => {
-    if (!clinic) return;
-    
-    const docId = clinic.id || db.collection('clinics').doc().id;
-    const docRef = db.collection('clinics').doc(docId);
-    
-    let oldClinic: Clinic | undefined;
-    try {
-        const snap = await docRef.get();
-        if (snap.exists) oldClinic = snap.data() as Clinic;
-    } catch(e) { console.warn("Could not fetch old clinic for diff", e); }
-
-    const clinicToSave = { ...clinic, id: docId };
-
-    console.log(`Saving clinic ${docId} to root collection...`);
-    await docRef.set(clinicToSave, { merge: true });
-    
-    await pushPermissionUpdates(oldClinic ? [oldClinic] : [], [clinicToSave]);
-};
-
-// --- STAFF PROFILES FUNCTIONS ---
-
-export const getStaffList = async (clinicId: string): Promise<Consultant[]> => {
-    try {
-        let query = db.collection('staff_profiles').where('clinicId', '==', clinicId);
-        const snapshot = await query.get();
-        return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Consultant));
-    } catch (error) {
-        console.error(`Error fetching staff for clinic ${clinicId}:`, error);
-        return [];
-    }
-};
-
-export const getAllStaff = async (): Promise<Consultant[]> => {
-    try {
-        const snapshot = await db.collection('staff_profiles').get();
-        return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Consultant));
-    } catch (error) {
-        console.error("Error fetching all staff:", error);
-        return [];
-    }
-};
-
-export const saveStaff = async (staff: Consultant) => {
-    if (!staff.clinicId) throw new Error("Missing Clinic ID");
-    
-    const docId = staff.id || db.collection('staff_profiles').doc().id;
-    
-    const dataToSave = {
-        id: docId,
-        clinicId: staff.clinicId,
-        name: staff.name || '',
-        role: staff.role || 'consultant',
-        isActive: staff.isActive ?? true,
-        onboardDate: staff.onboardDate || null,
-        baseSalary: Number(staff.baseSalary) || 0,
-        allowance: Number(staff.allowance) || 0,
-        insuredSalary: Number(staff.insuredSalary) || 0,
-        dependents: Number(staff.dependents) || 0,
-        annualLeave: Number(staff.annualLeave) || 0,
-        insuranceGradeLevel: Number(staff.insuranceGradeLevel) || 0,
-        monthlyInsuranceCost: Number(staff.monthlyInsuranceCost) || 0
-    };
-
-    console.log(`[saveStaff] Saving to staff_profiles/${docId}`, dataToSave);
-    await db.collection('staff_profiles').doc(docId).set(dataToSave, { merge: true });
-};
-
-export const deleteStaff = async (id: string) => {
-    if (!id) return;
-    console.log(`[deleteStaff] Deleting staff_profiles/${id}`);
-    await db.collection('staff_profiles').doc(id).delete();
-};
-
-// --- INSURANCE TABLE FUNCTIONS ---
-
-export const getInsuranceTable = async (): Promise<InsuranceGrade[]> => {
-    try {
-        const doc = await db.collection('settings').doc('insurance_table').get();
-        if (doc.exists) {
-            return (doc.data()?.grades || []) as InsuranceGrade[];
-        }
-        return [];
-    } catch (e) {
-        console.error("Error loading insurance table", e);
-        return [];
-    }
-};
-
-export const saveInsuranceTable = async (grades: InsuranceGrade[]) => {
-    try {
-        await db.collection('settings').doc('insurance_table').set({ grades }, { merge: true });
-    } catch (e) {
-        console.error("Error saving insurance table", e);
-        throw e;
-    }
-};
-
-// --- BONUS SETTINGS FUNCTIONS ---
-
-export const saveBonusSettings = async (clinicId: string, month: string, settings: any) => {
-    if (!clinicId || !month) throw new Error("Invalid ID params: ClinicId or Month is missing");
-    if (settings.poolRate !== undefined) {
-        settings.poolRate = Number(settings.poolRate);
-    }
-    const docId = `${clinicId}_${month}`;
-    await db.collection('bonus_settings').doc(docId).set(settings, { merge: true });
-    return true;
-};
-
-export const getBonusSettings = async (clinicId: string, month: string) => {
-    if (!clinicId || !month) return null;
-    const docId = `${clinicId}_${month}`;
-    try {
-        const doc = await db.collection('bonus_settings').doc(docId).get();
-        return doc.exists ? doc.data() : null;
-    } catch (error) {
-        console.error("Error fetching bonus settings:", error);
-        return null;
     }
 };
 
 export const loadAppData = async (): Promise<AppData> => {
-  const user = auth.currentUser;
-  if (!user || !user.email) throw new Error("必須先登入才能存取資料");
-
-  console.log(`[loadAppData] User: ${user.email} loading data...`);
-
-  syncUserPermissions(user).catch(e => console.warn("Background sync failed", e));
-
-  const [independentClinics, allStaff] = await Promise.all([
-      getClinics(),
-      getAllStaff()
-  ]);
-
-  let mainData: any = {};
-  try {
-      const masterDoc = await db.collection('clinics').doc(DOC_ID).get();
-      if (masterDoc.exists) {
-          mainData = masterDoc.data();
-      }
-  } catch(e) { console.error("Legacy load failed", e); }
+  // 1. Load Main Doc (Legacy Root)
+  const docRef = db.collection('clinics').doc(DOC_ID);
+  const doc = await docRef.get();
   
-  return {
-    clinics: independentClinics,
-    doctors: mainData.doctors || [],
-    consultants: allStaff, 
-    laboratories: mainData.laboratories || [],
-    sovReferrals: mainData.sovReferrals || [],
-    schedules: mainData.schedules || [],
-    allowedUsers: mainData.allowedUsers || [user.email]
+  let data: AppData = { 
+      clinics: [], doctors: [], consultants: [], laboratories: [], sovReferrals: [], schedules: [], allowedUsers: [] 
   };
-};
 
-export const saveAppData = async (newData: AppData) => {
-  const user = auth.currentUser;
-  if (!user) throw new Error("Not authenticated");
-
-  try {
-      const clinicPromises = newData.clinics.map(c => saveClinic(c));
-      await Promise.all(clinicPromises);
-
-      const { clinics, consultants, ...otherData } = newData;
-      await db.collection('clinics').doc(DOC_ID).set(otherData, { merge: true });
-      
-  } catch (e: any) {
-      console.error("Save Failed:", e);
-      throw e;
+  if (doc.exists) {
+    data = doc.data() as AppData;
   }
-};
 
-export const seedTestEnvironment = async () => {
-    console.log("Seeding triggered (No-op)");
-};
-
-// --- DAILY ACCOUNTING FUNCTIONS ---
-
-export const loadDailyAccounting = async (clinicId: string, date: string): Promise<DailyAccountingRecord | null> => {
-  if (!clinicId || !date) return null;
-  const docId = `${clinicId}_date`;
-  try {
-      const docSnap = await db.collection('daily_accounting').doc(docId).get();
-      if (docSnap.exists) {
-          return docSnap.data() as DailyAccountingRecord;
+  // 2. Load Real Clinics Collection (Hybrid)
+  const realClinics = await getClinics();
+  if (realClinics.length > 0) {
+      data.clinics = realClinics;
+      data.doctors = realClinics.flatMap(c => c.doctors || []);
+      data.laboratories = realClinics.flatMap(c => c.laboratories || []);
+      data.sovReferrals = realClinics.flatMap(c => c.sovReferrals || []);
+      
+      const clinicSchedules = realClinics.flatMap(c => c.schedules || []);
+      if (clinicSchedules.length > 0) {
+          const existingIds = new Set(data.schedules.map(s => `${s.date}_${s.clinicId}`));
+          const newSchedules = clinicSchedules.filter(s => !existingIds.has(`${s.date}_${s.clinicId}`));
+          data.schedules = [...data.schedules, ...newSchedules];
       }
-      return null;
-  } catch (error) {
-      console.error("Error loading daily accounting:", error);
-      return null;
   }
-};
 
-export const saveDailyAccounting = async (record: DailyAccountingRecord) => {
+  // 3. CRITICAL: Load Staff Profiles Collection
   try {
-      if (!record.clinicId || !record.date) throw new Error("Invalid Record ID (Missing clinicId or date)");
-      const docId = `${record.clinicId}_${record.date}`;
+      const staffSnap = await db.collection('staff_profiles')
+          .where('isActive', '==', true)
+          .get();
       
-      const cleanRecord = {
-          ...record,
-          reportImageUrl: record.reportImageUrl || null,
-          rows: record.rows.map(sanitizeRow),
-          expenditures: record.expenditures || [],
-          lastUpdated: Date.now()
-      };
-
-      await db.collection('daily_accounting').doc(docId).set(cleanRecord, { merge: true });
-  } catch (error: any) {
-      alert("Save Error: " + (error.message || JSON.stringify(error)));
-      console.error("saveDailyAccounting Error:", error);
-      throw error;
+      if (!staffSnap.empty) {
+          const staffList = staffSnap.docs.map(d => ({ id: d.id, ...d.data() } as Consultant));
+          data.consultants = staffList;
+      }
+  } catch (e) {
+      console.error("[loadAppData] Failed to load staff profiles", e);
   }
+
+  return data;
 };
 
-// --- MONTHLY REPORT FUNCTION ---
+export const saveAppData = async (data: AppData) => {
+  const docRef = db.collection('clinics').doc(DOC_ID);
+  await docRef.set(data, { merge: true });
+};
 
-export const getMonthlyAccounting = async (clinicId: string, yearMonth: string): Promise<AccountingRow[]> => {
-    const startId = `${clinicId}_${yearMonth}-01`;
-    const endId = `${clinicId}_${yearMonth}-31` + '\uf8ff';
+export const saveDoctors = async (clinicId: string, doctors: Doctor[]) => {};
+export const saveLaboratories = async (clinicId: string, labs: Laboratory[]) => {
+    // Only update the lab array inside the clinic doc if using legacy storage
+    // But since we are moving towards independent collections or embedded arrays, 
+    // for now we stick to embedded array update in 'clinics' collection.
+    await db.collection('clinics').doc(clinicId).update({ laboratories: labs });
+};
 
+export const saveSchedules = async (clinicId: string, schedules: DailySchedule[]) => {
     try {
-        const snapshot = await db.collection('daily_accounting')
-            .where(firebase.firestore.FieldPath.documentId(), '>=', startId)
-            .where(firebase.firestore.FieldPath.documentId(), '<=', endId)
-            .get();
-
-        const flattenedRows: AccountingRow[] = [];
-
-        snapshot.docs.forEach(doc => {
-            const data = doc.data() as DailyAccountingRecord;
-            const recordDate = data.date; 
-            
-            if (data.rows && Array.isArray(data.rows)) {
-                data.rows.forEach(row => {
-                    const hydrated = hydrateRow(row);
-                    flattenedRows.push({
-                        ...hydrated,
-                        originalDate: recordDate
-                    });
-                });
-            }
-        });
-
-        return flattenedRows;
+        await db.collection('clinics').doc(clinicId).update({ schedules });
     } catch (error) {
-        console.error("Error fetching monthly accounting:", error);
+        console.error(`[saveSchedules] Failed to save schedules for clinic ${clinicId}:`, error);
         throw error;
     }
 };
 
-// --- TECHNICIAN RECONCILIATION FUNCTIONS ---
+export const saveSOVReferrals = async (clinicId: string, referrals: SOVReferral[]) => {};
 
-export const getTechnicianRecords = async (clinicId: string, labName: string | null, yearMonth: string): Promise<TechnicianRecord[]> => {
-    if (!clinicId || !yearMonth) return [];
-    
-    console.log(`[getTechnicianRecords] Fetching for Clinic: ${clinicId}, Lab: ${labName || 'ALL'}, Month: ${yearMonth}`);
+// --- NEW COLLECTIONS ---
 
-    try {
-        const snapshot = await db.collection('technician_records')
-            .where('clinicId', '==', clinicId)
-            .get();
+export const getStaffList = async (clinicId: string): Promise<Consultant[]> => {
+    const snap = await db.collection('staff_profiles')
+        .where('clinicId', '==', clinicId)
+        .where('isActive', '==', true)
+        .get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() } as Consultant));
+};
 
-        const records = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as TechnicianRecord));
-        
-        const filtered = records.filter(r => {
-            const dateMatch = r.date && r.date.startsWith(yearMonth);
-            const labMatch = labName ? (r.labName && r.labName.trim() === labName.trim()) : true;
-            return dateMatch && labMatch;
-        });
+export const saveStaff = async (staff: Consultant) => {
+    await db.collection('staff_profiles').doc(staff.id).set(staff, { merge: true });
+};
 
-        return filtered;
-    } catch (error) {
-        console.error("Error fetching technician records:", error);
-        return [];
+export const deleteStaff = async (staffId: string) => {
+    await db.collection('staff_profiles').doc(staffId).update({ isActive: false });
+};
+
+export const getInsuranceTable = async (): Promise<InsuranceGrade[]> => {
+    const doc = await db.collection('settings').doc('insurance_table').get();
+    if (doc.exists) {
+        return doc.data()?.grades || [];
     }
+    return [];
+};
+
+export const saveInsuranceTable = async (grades: InsuranceGrade[]) => {
+    await db.collection('settings').doc('insurance_table').set({ grades });
+};
+
+export const getAllUsers = async (): Promise<User[]> => {
+    const snap = await db.collection('users').get();
+    return snap.docs.map(d => ({ uid: d.id, ...d.data() } as User));
+};
+
+export const updateUserRole = async (uid: string, role: UserRole) => {
+    await db.collection('users').doc(uid).update({ role });
+};
+
+export const updateUserClinicAccess = async (user: User, allowedClinics: string[]) => {
+    await db.collection('users').doc(user.uid).update({ allowedClinics });
+};
+
+export const getRolePermissions = async (): Promise<Record<string, string[]>> => {
+    const doc = await db.collection('settings').doc('role_permissions').get();
+    return doc.exists ? doc.data() as Record<string, string[]> : {};
+};
+
+export const saveRolePermissions = async (perms: Record<string, string[]>) => {
+    await db.collection('settings').doc('role_permissions').set(perms);
+};
+
+// 5. Daily Accounting
+
+export const loadDailyAccounting = async (clinicId: string, date: string): Promise<DailyAccountingRecord | null> => {
+    const docId = `${clinicId}_${date}`;
+    const doc = await db.collection('daily_accounting').doc(docId).get();
+    if (doc.exists) {
+        return doc.data() as DailyAccountingRecord;
+    }
+    return null;
+};
+
+export const saveDailyAccounting = async (record: DailyAccountingRecord, auditEntry?: AuditLogEntry) => {
+    const docId = `${record.clinicId}_${record.date}`;
+    const payload: any = deepSanitize(record);
+    if (auditEntry) {
+        payload.auditLog = firebase.firestore.FieldValue.arrayUnion(auditEntry);
+    }
+    await db.collection('daily_accounting').doc(docId).set(payload, { merge: true });
+
+    const updates = record.rows.filter(r => r.patientName).map(r => 
+        upsertPatientFromEvent(record.clinicId, {
+            chartId: r.chartId || null,
+            name: r.patientName,
+            lastVisitDate: record.date
+        })
+    );
+    Promise.all(updates).catch(err => console.error("Background CRM Sync Error:", err));
+};
+
+export const getMonthlyAccounting = async (clinicId: string, month: string): Promise<AccountingRow[]> => {
+    const startId = `${clinicId}_${month}-01`;
+    const endId = `${clinicId}_${month}-31`;
+    const snap = await db.collection('daily_accounting')
+        .where(firebase.firestore.FieldPath.documentId(), '>=', startId)
+        .where(firebase.firestore.FieldPath.documentId(), '<=', endId)
+        .get();
+
+    const allRows: AccountingRow[] = [];
+    snap.forEach(doc => {
+        const data = doc.data() as DailyAccountingRecord;
+        if (data.rows) {
+            data.rows.forEach(r => {
+                const hydrated = hydrateRow(r);
+                hydrated.originalDate = data.date;
+                allRows.push(hydrated);
+            });
+        }
+    });
+    return allRows;
+};
+
+// 6. Technician Records
+export const getTechnicianRecords = async (clinicId: string, labName: string | null, month: string): Promise<TechnicianRecord[]> => {
+    let query = db.collection('technician_records')
+        .where('clinicId', '==', clinicId)
+        .where('date', '>=', `${month}-01`)
+        .where('date', '<=', `${month}-31`);
+        
+    const snap = await query.get();
+    let results = snap.docs.map(d => ({ id: d.id, ...d.data() } as TechnicianRecord));
+    
+    // Client-side filtering if labName is provided
+    if (labName) {
+        results = results.filter(r => r.labName === labName);
+    }
+    return results;
 };
 
 export const saveTechnicianRecord = async (record: TechnicianRecord) => {
-    try {
-        if (!record.clinicId) throw new Error("Missing Clinic ID");
-
-        const dataToSave = {
-            ...record,
-            updatedAt: Date.now()
-        };
-
-        if (record.id) {
-            await db.collection('technician_records').doc(record.id).set(dataToSave, { merge: true });
-        } else {
-            const newRef = db.collection('technician_records').doc();
-            await newRef.set({ ...dataToSave, id: newRef.id });
-        }
-    } catch (error) {
-        console.error("Error saving technician record:", error);
-        throw error;
-    }
+    const id = record.id || crypto.randomUUID();
+    await db.collection('technician_records').doc(id).set({ ...record, id }, { merge: true });
 };
 
 export const deleteTechnicianRecord = async (id: string) => {
-    try {
-        if (!id) throw new Error("Missing Record ID");
-        await db.collection('technician_records').doc(id).delete();
-    } catch (error) {
-        console.error("Error deleting technician record:", error);
-        throw error;
-    }
+    await db.collection('technician_records').doc(id).delete();
 };
 
-// --- NHI CLAIMS FUNCTIONS ---
-
-export const getNHIRecords = async (clinicId: string, month: string): Promise<NHIRecord[]> => {
-    if (!clinicId || !month) return [];
-    try {
-        const snapshot = await db.collection('nhi_records')
-            .where('clinicId', '==', clinicId)
-            .where('month', '==', month)
-            .get();
-        return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as NHIRecord));
-    } catch (error) {
-        console.error("Error fetching NHI records:", error);
-        return [];
-    }
-};
-
-export const saveNHIRecord = async (record: NHIRecord) => {
-    try {
-        if (!record.clinicId || !record.month || !record.doctorId) {
-            throw new Error("Missing required NHI record fields");
-        }
-        
-        const docId = `${record.clinicId}_${record.month}_${record.doctorId}`;
-        
-        const dataToSave = {
-            ...record,
-            id: docId,
-            updatedAt: Date.now()
-        };
-
-        await db.collection('nhi_records').doc(docId).set(dataToSave, { merge: true });
-    } catch (error) {
-        console.error("Error saving NHI record:", error);
-        throw error;
-    }
-};
-
-export const saveBatchNHIRecords = async (records: NHIRecord[]) => {
-    try {
-        const promises = records.map(record => saveNHIRecord(record));
-        await Promise.all(promises);
-    } catch (error) {
-        console.error("Error batch saving NHI records:", error);
-        throw error;
-    }
-};
-
-// --- SALARY ADJUSTMENT FUNCTIONS ---
-
-export const getSalaryAdjustments = async (clinicId: string, doctorId: string, month: string): Promise<SalaryAdjustment[]> => {
-    try {
-        const snapshot = await db.collection('salary_adjustments')
-            .where('clinicId', '==', clinicId)
-            .where('doctorId', '==', doctorId)
-            .where('month', '==', month)
-            .get();
-        return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SalaryAdjustment));
-    } catch (error) {
-        console.error("Error fetching salary adjustments:", error);
-        return [];
-    }
-};
-
-export const getClinicSalaryAdjustments = async (clinicId: string, month: string): Promise<SalaryAdjustment[]> => {
-    try {
-        const snapshot = await db.collection('salary_adjustments')
-            .where('clinicId', '==', clinicId)
-            .where('month', '==', month)
-            .get();
-        return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SalaryAdjustment));
-    } catch (error) {
-        console.error("Error fetching clinic salary adjustments:", error);
-        return [];
-    }
-};
-
-export const addSalaryAdjustment = async (adjustment: SalaryAdjustment) => {
-    try {
-        const docRef = db.collection('salary_adjustments').doc();
-        await docRef.set({ ...adjustment, id: docRef.id, updatedAt: Date.now() });
-    } catch (error) {
-        console.error("Error adding salary adjustment:", error);
-        throw error;
-    }
-};
-
-export const deleteSalaryAdjustment = async (id: string) => {
-    try {
-        await db.collection('salary_adjustments').doc(id).delete();
-    } catch (error) {
-        console.error("Error deleting salary adjustment:", error);
-        throw error;
-    }
-};
-
-// --- GROUP DASHBOARD & TARGET FUNCTIONS ---
-
-export const saveMonthlyTarget = async (clinicId: string, yearMonth: string, targets: MonthlyTarget) => {
-    const docId = `${clinicId}_${yearMonth}`;
-    try {
-        await db.collection('monthly_targets').doc(docId).set(targets, { merge: true });
-    } catch (e) {
-        console.error("Error saving targets", e);
-        throw e;
-    }
-};
-
-export const getMonthlyTargets = async (clinicId: string, yearMonth: string): Promise<MonthlyTarget> => {
-    const docId = `${clinicId}_${yearMonth}`;
-    try {
-        const snap = await db.collection('monthly_targets').doc(docId).get();
-        if (snap.exists) {
-            return snap.data() as MonthlyTarget;
-        }
-    } catch (e) {
-        console.error("Error fetching targets (likely permission or missing doc):", e);
-    }
-    return {
-        revenueTarget: 0,
-        visitTarget: 0,
-        selfPayTarget: 0
-    };
-};
-
+// 7. Dashboard & BI
 export interface ClinicMonthlySummary {
     clinicId: string;
     clinicName: string;
@@ -773,75 +398,517 @@ export interface ClinicMonthlySummary {
     targets: MonthlyTarget;
 }
 
-const getClinicMonthlySummary = async (clinic: Clinic, yearMonth: string): Promise<ClinicMonthlySummary> => {
-    const [rows, targets, nhiRecords] = await Promise.all([
-        getMonthlyAccounting(clinic.id, yearMonth),
-        getMonthlyTargets(clinic.id, yearMonth),
-        getNHIRecords(clinic.id, yearMonth)
-    ]);
+export const fetchDashboardSnapshot = async (clinics: Clinic[], month: string): Promise<{
+    current: ClinicMonthlySummary[],
+    lastMonth: ClinicMonthlySummary[],
+    lastYear: ClinicMonthlySummary[]
+}> => {
+    const processMonth = async (m: string) => {
+        const summaries: ClinicMonthlySummary[] = [];
+        
+        for (const clinic of clinics) {
+            const targetDoc = await db.collection('monthly_targets').doc(`${clinic.id}_${m}`).get();
+            const targets = targetDoc.exists ? targetDoc.data() as MonthlyTarget : { revenueTarget: 0, visitTarget: 0, selfPayTarget: 0 };
 
-    let revenue = 0;
-    let visits = 0;
-    let selfPay = 0;
-
-    rows.forEach(row => {
-        if (row.npStatus !== '爽約') {
-            visits++;
-            revenue += (row.actualCollected || 0);
+            const rows = await getMonthlyAccounting(clinic.id, m);
             
-            const t = row.treatments;
-            const sp = (t.prostho || 0) + (t.implant || 0) + (t.ortho || 0) + 
-                       (t.sov || 0) + (t.perio || 0) + (t.whitening || 0) + 
-                       (t.inv || 0) + (t.otherSelfPay || 0);
-            selfPay += sp;
+            let revenue = 0;
+            let selfPay = 0;
+            let visits = 0;
+
+            rows.forEach(row => {
+                if (row.attendance) visits++;
+                revenue += (row.actualCollected || 0);
+                const t = row.treatments;
+                const sp = (t.prostho || 0) + (t.implant || 0) + (t.ortho || 0) + (t.sov || 0) + (t.inv || 0) + (t.whitening || 0) + (t.perio || 0) + (t.otherSelfPay || 0);
+                selfPay += sp;
+            });
+
+            const nhiRecords = await getNHIRecords(clinic.id, m);
+            const nhiTotal = nhiRecords.reduce((sum, r) => sum + r.amount, 0);
+            revenue += nhiTotal;
+
+            summaries.push({
+                clinicId: clinic.id,
+                clinicName: clinic.name,
+                actualRevenue: revenue,
+                actualVisits: visits,
+                actualSelfPay: selfPay,
+                targets
+            });
         }
-    });
-
-    const nhiTotal = nhiRecords.reduce((sum, r) => sum + (r.amount || 0), 0);
-    revenue += nhiTotal;
-
-    return {
-        clinicId: clinic.id,
-        clinicName: clinic.name,
-        actualRevenue: revenue,
-        actualVisits: visits,
-        actualSelfPay: selfPay,
-        targets
+        return summaries;
     };
-};
 
-export const fetchGroupData = async (clinics: Clinic[], yearMonth: string): Promise<ClinicMonthlySummary[]> => {
-    try {
-        const promises = clinics.map(c => getClinicMonthlySummary(c, yearMonth));
-        return await Promise.all(promises);
-    } catch (e) {
-        console.error("Error fetching group data", e);
-        return [];
-    }
-};
-
-export interface DashboardSnapshot {
-    current: ClinicMonthlySummary[];
-    lastMonth: ClinicMonthlySummary[];
-    lastYear: ClinicMonthlySummary[];
-}
-
-export const fetchDashboardSnapshot = async (clinics: Clinic[], currentYearMonth: string): Promise<DashboardSnapshot> => {
-    const d = new Date(currentYearMonth + '-01');
-    d.setMonth(d.getMonth() - 1);
-    const lastMonthStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-
-    const d2 = new Date(currentYearMonth + '-01');
-    d2.setFullYear(d2.getFullYear() - 1);
-    const lastYearStr = `${d2.getFullYear()}-${String(d2.getMonth() + 1).padStart(2, '0')}`;
-
-    console.log(`Fetching Dashboard: ${currentYearMonth} vs ${lastMonthStr} (MoM) vs ${lastYearStr} (YoY)`);
+    const [y, mStr] = month.split('-').map(Number);
+    const lmDate = new Date(y, mStr - 2, 1); 
+    const lastMonthStr = `${lmDate.getFullYear()}-${String(lmDate.getMonth() + 1).padStart(2, '0')}`;
+    const lyDate = new Date(y - 1, mStr - 1, 1);
+    const lastYearStr = `${lyDate.getFullYear()}-${String(lyDate.getMonth() + 1).padStart(2, '0')}`;
 
     const [current, lastMonth, lastYear] = await Promise.all([
-        fetchGroupData(clinics, currentYearMonth),
-        fetchGroupData(clinics, lastMonthStr),
-        fetchGroupData(clinics, lastYearStr)
+        processMonth(month),
+        processMonth(lastMonthStr),
+        processMonth(lastYearStr)
     ]);
 
     return { current, lastMonth, lastYear };
+};
+
+export const saveMonthlyTarget = async (clinicId: string, month: string, target: MonthlyTarget) => {
+    await db.collection('monthly_targets').doc(`${clinicId}_${month}`).set(target, { merge: true });
+};
+
+// 8. NHI Records
+export const getNHIRecords = async (clinicId: string, month: string): Promise<NHIRecord[]> => {
+    const snap = await db.collection('nhi_records')
+        .where('clinicId', '==', clinicId)
+        .where('month', '==', month)
+        .get();
+    return snap.docs.map(d => d.data() as NHIRecord);
+};
+
+export const saveBatchNHIRecords = async (records: NHIRecord[]) => {
+    const batch = db.batch();
+    records.forEach(rec => {
+        const id = `${rec.clinicId}_${rec.month}_${rec.doctorId}`;
+        const ref = db.collection('nhi_records').doc(id);
+        batch.set(ref, { ...rec, id }, { merge: true });
+    });
+    await batch.commit();
+};
+
+// 9. Salary Adjustments
+export const getClinicSalaryAdjustments = async (clinicId: string, month: string): Promise<SalaryAdjustment[]> => {
+    const snap = await db.collection('salary_adjustments')
+        .where('clinicId', '==', clinicId)
+        .where('month', '==', month)
+        .get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() } as SalaryAdjustment));
+};
+
+export const addSalaryAdjustment = async (adj: SalaryAdjustment) => {
+    await db.collection('salary_adjustments').add(adj);
+};
+
+export const deleteSalaryAdjustment = async (id: string) => {
+    await db.collection('salary_adjustments').doc(id).delete();
+};
+
+// 10. Bonus Settings
+export const getBonusSettings = async (clinicId: string, month: string): Promise<any> => {
+    const doc = await db.collection('bonus_settings').doc(`${clinicId}_${month}`).get();
+    return doc.exists ? doc.data() : null;
+};
+
+export const saveBonusSettings = async (clinicId: string, month: string, settings: any) => {
+    await db.collection('bonus_settings').doc(`${clinicId}_${month}`).set(settings, { merge: true });
+};
+
+// --- CRM / PATIENT LOGIC ---
+
+export interface Patient {
+    docId: string;
+    clinicId: string;
+    chartId: string | null;
+    name: string;
+    lastVisit: string;
+    purchasedItems?: string[]; // Auto-generated from Payment Records
+    visitHistory?: any[];     // Optional full history
+    totalSpending?: number;
+    aliases?: string[]; // Added: For Smart Search
+    updatedAt?: any;
+}
+
+// --- NEW: MARKETING / NP RECORDS ---
+export interface NPRecord {
+    id?: string;
+    date: string; // YYYY-MM-DD
+    clinicId: string;
+    clinicName?: string; // Enhanced: For Dashboard Filtering
+    patientName: string;
+    treatment: string;
+    doctor?: string; // Legacy ID or Name
+    doctorName?: string; // Enhanced: For Dashboard Filtering
+    marketingTag?: string; // e.g. "植牙", "矯正"
+    source?: string; // 'FB', 'Line', '電話', '介紹', '過路客', '其他'
+    isVisited: boolean;
+    isClosed: boolean; // Deal closed
+    dealAmount?: number;
+    consultant?: string;
+    note?: string;
+    updatedAt: any;
+}
+
+// --- NEW: MARKETING TAGS HELPERS ---
+export const getMarketingTags = async (): Promise<string[]> => {
+    const doc = await db.collection('settings').doc('marketing_tags').get();
+    if (doc.exists) {
+        return (doc.data()?.tags || []);
+    }
+    // Default Tags if not found
+    return ['植牙', '矯正', '貼片/美白', '牙周', '一般健保', '其他'];
+};
+
+export const saveMarketingTags = async (tags: string[]) => {
+    await db.collection('settings').doc('marketing_tags').set({ tags }, { merge: true });
+};
+
+// --- NEW: NP RECORDS HELPERS (For Dashboard) ---
+export const getNPRecordsRange = async (clinicId: string, startStr: string, endStr: string): Promise<NPRecord[]> => {
+    // Note: NP Records ID format is `clinicId_date_patientName`
+    const startId = `${clinicId}_${startStr}`;
+    const endId = `${clinicId}_${endStr}\uf8ff`; // \uf8ff ensures we get everything starting with the date
+
+    const snap = await db.collection('np_records')
+        .where(firebase.firestore.FieldPath.documentId(), '>=', startId)
+        .where(firebase.firestore.FieldPath.documentId(), '<=', endId)
+        .get();
+
+    return snap.docs.map(d => ({ id: d.id, ...d.data() } as NPRecord));
+};
+
+export const saveNPRecord = async (record: NPRecord) => {
+    const safeName = (record.patientName || 'Unknown').replace(/\s+/g, '_');
+    const id = `${record.clinicId}_${record.date}_${safeName}`;
+    const docRef = db.collection('np_records').doc(id);
+    
+    const payload = JSON.parse(JSON.stringify({ 
+        ...record, 
+        id,
+        updatedAt: new Date().toISOString() // Use ISO string for safety
+    }));
+
+    await docRef.set(payload, { merge: true });
+};
+
+export const deleteNPRecord = async (clinicId: string, date: string, patientName: string) => {
+    const safeName = (patientName || 'Unknown').replace(/\s+/g, '_');
+    const id = `${clinicId}_${date}_${safeName}`;
+    await db.collection('np_records').doc(id).delete();
+};
+
+export const getNPRecord = async (clinicId: string, date: string, patientName: string) => {
+    const safeName = (patientName || 'Unknown').replace(/\s+/g, '_');
+    const id = `${clinicId}_${date}_${safeName}`;
+    const doc = await db.collection('np_records').doc(id).get();
+    return doc.exists ? doc.data() as NPRecord : null;
+};
+
+export const getPatients = async (clinicId: string, lastDoc?: any, searchTerm?: string) => {
+    let query: firebase.firestore.Query = db.collection('patients')
+        .where('clinicId', '==', clinicId);
+
+    if (searchTerm) {
+        const isDigits = /^\d+$/.test(searchTerm);
+        if (isDigits) {
+            query = query.where('chartId', '==', searchTerm);
+        } else {
+            query = query
+                .where('name', '>=', searchTerm)
+                .where('name', '<=', searchTerm + '\uf8ff')
+                .orderBy('name');
+        }
+    } else {
+        query = query.orderBy('lastVisit', 'desc');
+        if (lastDoc) {
+            query = query.startAfter(lastDoc);
+        }
+    }
+
+    query = query.limit(50);
+
+    const snap = await query.get();
+    const patients = snap.docs.map(d => ({ docId: d.id, ...d.data() } as Patient));
+    
+    return {
+        patients,
+        lastVisible: snap.docs[snap.docs.length - 1]
+    };
+};
+
+export const findPatientIdByName = async (name: string, clinicId: string): Promise<string | null> => {
+    const q1 = await db.collection('patients')
+        .where('clinicId', '==', clinicId)
+        .where('name', '==', name)
+        .limit(1)
+        .get();
+    
+    if (!q1.empty) return q1.docs[0].data().chartId || null;
+
+    const q2 = await db.collection('patients')
+        .where('clinicId', '==', clinicId)
+        .where('aliases', 'array-contains', name)
+        .limit(1)
+        .get();
+
+    if (!q2.empty) return q2.docs[0].data().chartId || null;
+
+    return null;
+}
+
+export const upsertPatientFromEvent = async (clinicId: string, event: { chartId: string | null, name: string, lastVisitDate: string }) => {
+    if (!clinicId || !event.name) return;
+    let docId = '';
+    if (event.chartId) {
+        docId = `${clinicId}_${event.chartId}`;
+    } else {
+        docId = `${clinicId}_NAME_${event.name.replace(/\s+/g, '_')}`;
+    }
+    const docRef = db.collection('patients').doc(docId);
+    
+    const docSnap = await docRef.get();
+    
+    if (docSnap.exists) {
+        const existing = docSnap.data() as Patient;
+        const updateData: any = {
+            clinicId,
+            chartId: event.chartId || null,
+            lastVisit: (event.lastVisitDate > existing.lastVisit) ? event.lastVisitDate : existing.lastVisit,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+
+        if (existing.name !== event.name) {
+            updateData.name = event.name;
+            const oldAliases = existing.aliases || [];
+            if (!oldAliases.includes(existing.name)) {
+                updateData.aliases = firebase.firestore.FieldValue.arrayUnion(existing.name);
+            }
+        }
+        await docRef.update(updateData);
+    } else {
+        await docRef.set({
+            clinicId,
+            chartId: event.chartId || null,
+            name: event.name,
+            lastVisit: event.lastVisitDate,
+            aliases: [],
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+    }
+};
+
+// SMART MERGE LOGIC
+export const migratePatientId = async (oldDocId: string, newChartId: string, clinicId: string) => {
+    const oldRef = db.collection('patients').doc(oldDocId);
+    const oldSnap = await oldRef.get();
+    
+    if (!oldSnap.exists) throw new Error("Patient not found");
+    const oldData = oldSnap.data() as Patient;
+
+    // Target Doc ID
+    const newDocId = `${clinicId}_${newChartId}`;
+    const newRef = db.collection('patients').doc(newDocId);
+    const newSnap = await newRef.get();
+
+    if (newSnap.exists) {
+        const newData = newSnap.data() as Patient;
+        const mergedPurchased = Array.from(new Set([...(newData.purchasedItems || []), ...(oldData.purchasedItems || [])]));
+        const mergedHistory = [...(newData.visitHistory || []), ...(oldData.visitHistory || [])];
+        const lastVisit = (newData.lastVisit > oldData.lastVisit) ? newData.lastVisit : oldData.lastVisit;
+        const totalSpending = (newData.totalSpending || 0) + (oldData.totalSpending || 0);
+
+        let aliases = newData.aliases || [];
+        if (oldData.name !== newData.name && !aliases.includes(oldData.name)) {
+            aliases.push(oldData.name);
+        }
+        if (oldData.aliases) {
+            aliases = [...new Set([...aliases, ...oldData.aliases])];
+        }
+
+        await newRef.update({
+            purchasedItems: mergedPurchased,
+            visitHistory: mergedHistory,
+            lastVisit,
+            totalSpending,
+            aliases,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+    } else {
+        await newRef.set({
+            ...oldData,
+            chartId: newChartId,
+            docId: newDocId,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+    }
+    await oldRef.delete();
+};
+
+export const getPatientHistory = async (clinicId: string, name: string, chartId: string | null) => {
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 180); 
+    
+    const startStr = startDate.toISOString().split('T')[0];
+    const endStr = endDate.toISOString().split('T')[0];
+
+    const snap = await db.collection('daily_accounting')
+        .where(firebase.firestore.FieldPath.documentId(), '>=', `${clinicId}_${startStr}`)
+        .where(firebase.firestore.FieldPath.documentId(), '<=', `${clinicId}_${endStr}`)
+        .get();
+
+    const history: any[] = [];
+    
+    snap.forEach(doc => {
+        const data = doc.data() as DailyAccountingRecord;
+        if (!data.rows) return;
+        
+        data.rows.forEach(row => {
+            let match = false;
+            if (chartId && row.chartId === chartId) match = true;
+            else if (row.patientName === name) match = true;
+
+            if (match) {
+                history.push({
+                    date: data.date,
+                    doctor: row.doctorName,
+                    treatment: row.treatmentContent,
+                    amount: row.actualCollected,
+                    items: row.treatments 
+                });
+            }
+        });
+    });
+
+    return history.sort((a,b) => b.date.localeCompare(a.date));
+};
+
+// --- DAILY CLOSING & LOCKING ---
+
+export const checkPreviousUnlocked = async (currentDate: string, clinicId: string): Promise<string[]> => {
+    const pastDate = new Date(currentDate);
+    pastDate.setDate(pastDate.getDate() - 30);
+    const minDateStr = pastDate.toISOString().split('T')[0];
+
+    const snap = await db.collection('daily_accounting')
+        .where(firebase.firestore.FieldPath.documentId(), '>=', `${clinicId}_${minDateStr}`)
+        .where(firebase.firestore.FieldPath.documentId(), '<', `${clinicId}_${currentDate}`)
+        .get();
+
+    const unlockedDates: string[] = [];
+    snap.forEach(doc => {
+        const data = doc.data() as DailyAccountingRecord;
+        if (!data.isLocked) {
+            unlockedDates.push(data.date);
+        }
+    });
+    
+    return unlockedDates.sort();
+};
+
+const extractPurchasedItems = (row: AccountingRow): string[] => {
+    const items: string[] = [];
+    const t = row.treatments as any;
+    
+    if (t.prostho > 0) items.push('假牙');
+    if (t.implant > 0) items.push('植牙');
+    if (t.ortho > 0) items.push('矯正');
+    if (t.sov > 0) items.push('SOV');
+    if (t.inv > 0) items.push('隱適美');
+    if (t.whitening > 0) items.push('美白');
+    if (t.perio > 0) items.push('牙周');
+    
+    // Retail
+    if (row.retail.products > 0) items.push('物販');
+    if (row.retail.diyWhitening > 0) items.push('小金庫');
+
+    return items;
+};
+
+export const lockDailyReport = async (date: string, clinicId: string, rows: AccountingRow[], user: {uid: string, name: string}) => {
+    const docId = `${clinicId}_${date}`;
+    const batch = db.batch();
+    
+    const dailyRef = db.collection('daily_accounting').doc(docId);
+    batch.update(dailyRef, {
+        isLocked: true,
+        auditLog: firebase.firestore.FieldValue.arrayUnion({
+            timestamp: new Date().toISOString(),
+            userId: user.uid,
+            userName: user.name,
+            action: 'LOCK'
+        })
+    });
+
+    const rowPromises = rows.map(async (row) => {
+        let patientDocId = '';
+        if (row.chartId) {
+            patientDocId = `${clinicId}_${row.chartId}`;
+        } else {
+            patientDocId = `${clinicId}_NAME_${row.patientName.replace(/\s+/g, '_')}`;
+        }
+        const ref = db.collection('patients').doc(patientDocId);
+        const snap = await ref.get();
+        return { row, ref, snap };
+    });
+
+    const results = await Promise.all(rowPromises);
+
+    for (const { row, ref, snap } of results) {
+        const visitSummary = {
+            date,
+            doctor: row.doctorName,
+            treatment: row.treatmentContent || '',
+            amount: row.actualCollected || 0
+        };
+
+        const purchased = extractPurchasedItems(row);
+
+        let updateData: any = {
+            clinicId,
+            chartId: row.chartId || null,
+            visitHistory: firebase.firestore.FieldValue.arrayUnion(visitSummary),
+            totalSpending: firebase.firestore.FieldValue.increment(row.actualCollected || 0),
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+
+        if (purchased.length > 0) {
+            updateData.purchasedItems = firebase.firestore.FieldValue.arrayUnion(...purchased);
+        }
+
+        if (snap.exists) {
+            const existing = snap.data() as Patient;
+            
+            if (existing.name !== row.patientName) {
+                updateData.name = row.patientName;
+                const oldAliases = existing.aliases || [];
+                if (!oldAliases.includes(existing.name)) {
+                    updateData.aliases = firebase.firestore.FieldValue.arrayUnion(existing.name);
+                }
+            } else {
+                updateData.name = row.patientName; 
+            }
+            
+            if (!existing.lastVisit || date >= existing.lastVisit) {
+                updateData.lastVisit = date;
+            }
+
+            batch.set(ref, updateData, { merge: true });
+        } else {
+            updateData.name = row.patientName;
+            updateData.lastVisit = date;
+            updateData.aliases = [];
+            batch.set(ref, updateData, { merge: true });
+        }
+    }
+
+    await batch.commit();
+};
+
+export const unlockDailyReport = async (date: string, clinicId: string, user: {uid: string, name: string}) => {
+    const docId = `${clinicId}_${date}`;
+    await db.collection('daily_accounting').doc(docId).update({
+        isLocked: false,
+        auditLog: firebase.firestore.FieldValue.arrayUnion({
+            timestamp: new Date().toISOString(),
+            userId: user.uid,
+            userName: user.name,
+            action: 'UNLOCK'
+        })
+    });
+};
+
+export const seedTestEnvironment = async () => {
+    console.log("Seeding skipped.");
 };

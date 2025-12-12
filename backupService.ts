@@ -1,6 +1,5 @@
 
-import { db, loadAppData } from './firebase';
-import { collection, getDocs } from 'firebase/firestore';
+import { db, loadAppData } from './services/firebase';
 
 export const performFullBackup = async () => {
     try {
@@ -12,8 +11,7 @@ export const performFullBackup = async () => {
         // 2. Fetch All Daily Accounting Records
         // Note: For a production app with thousands of records, we might want to range-limit this.
         // For now, we dump the entire collection as requested.
-        const accCollection = collection(db, 'daily_accounting');
-        const accSnapshot = await getDocs(accCollection);
+        const accSnapshot = await db.collection('daily_accounting').get();
         const accountingRecords = accSnapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data()

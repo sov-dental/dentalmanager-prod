@@ -20,26 +20,36 @@ export const BonusDetailModal: React.FC<Props> = ({ isOpen, onClose, staffName, 
         let selfPayTotal = 0;
         let retailTotal = 0;
 
+        // 正規化目標名字，避免空白鍵干擾
+        const targetName = (staffName || '').trim();
+
         rawRows.forEach(row => {
-            // Self Pay Logic
+            // --- 1. Self Pay Logic ---
             const t = row.treatments;
             const selfPaySum = (t.prostho || 0) + (t.implant || 0) + (t.ortho || 0) + 
                                (t.sov || 0) + (t.perio || 0) + (t.whitening || 0) + 
                                (t.inv || 0) + (t.otherSelfPay || 0);
             
-            if (selfPaySum > 0 && t.consultant === staffId) {
+            // 雙重比對：ID 或 Name
+            const rowConsultant = (t.consultant || '').trim();
+            const isSelfPayMatch = (rowConsultant === staffId || rowConsultant === targetName);
+            
+            if (selfPaySum > 0 && isSelfPayMatch) {
                 selfPay.push(row);
                 selfPayTotal += selfPaySum;
             }
 
-            // Retail Logic
+            // --- 2. Retail Logic ---
             const r = row.retail;
             const retailSum = (r.products || 0) + (r.diyWhitening || 0);
             
             // Logic matches AssistantBonus: Explicit Staff OR Fallback to Consultant
-            const ownerId = r.staff || t.consultant;
+            const rowRetailer = (r.staff || t.consultant || '').trim();
             
-            if (retailSum > 0 && ownerId === staffId) {
+            // 雙重比對：ID 或 Name
+            const isRetailMatch = (rowRetailer === staffId || rowRetailer === targetName);
+            
+            if (retailSum > 0 && isRetailMatch) {
                 retail.push(row);
                 retailTotal += retailSum;
             }
@@ -69,7 +79,7 @@ export const BonusDetailModal: React.FC<Props> = ({ isOpen, onClose, staffName, 
                 grandTotalBonus: selfPayBonus + retailBonus
             }
         };
-    }, [rawRows, staffId]);
+    }, [rawRows, staffId, staffName]); // Added staffName to dependencies
 
     const getRowDate = (r: AccountingRow) => (r.originalDate || r.startTime?.split('T')[0] || '-').slice(5);
 

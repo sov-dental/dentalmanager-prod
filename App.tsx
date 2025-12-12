@@ -1,4 +1,6 @@
 
+
+
 import React, { useEffect, useState } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/Layout';
@@ -7,6 +9,7 @@ import { DoctorManager } from './components/DoctorManager';
 import { ConsultantManager } from './components/ConsultantManager';
 import { LaboratoryManager } from './components/LaboratoryManager';
 import { SOVReferralManager } from './components/SOVReferralManager';
+import { PermissionManager } from './pages/PermissionManager';
 import { MonthlyScheduler } from './components/MonthlyScheduler';
 import { Integrations } from './components/Integrations';
 import { AppointmentCalendar } from './components/AppointmentCalendar';
@@ -19,9 +22,14 @@ import { SalaryStatementPage } from './components/SalaryStatementPage';
 import { MonthlyReport } from './components/MonthlyReport';
 import { ExportView } from './components/ExportView';
 import { GroupDashboard } from './pages/GroupDashboard';
+import { PatientManager } from './pages/PatientManager'; // Imported
 import { 
   loadAppData, 
   saveAppData, 
+  saveDoctors,
+  saveLaboratories,
+  saveSchedules,
+  saveSOVReferrals,
   seedTestEnvironment,
   auth, 
   googleProvider, 
@@ -30,9 +38,9 @@ import {
 } from './services/firebase';
 import { LoginPage } from './components/LoginPage';
 import { UnauthorizedPage } from './components/UnauthorizedPage';
-import { AppData, Clinic, Doctor, DailySchedule, Consultant, Laboratory, SOVReferral } from './types';
+import { AppData, Clinic, Doctor, DailySchedule, Consultant, Laboratory, SOVReferral, UserRole } from './types';
 import { Loader2, Bug, Database } from 'lucide-react';
-import { useAuth, UserRole } from './contexts/AuthContext';
+import { useAuth } from './contexts/AuthContext';
 import { ClinicProvider } from './contexts/ClinicContext';
 
 export type SaveStatus = 'idle' | 'saved' | 'saving' | 'error' | 'unsaved';
@@ -183,7 +191,12 @@ const App: React.FC = () => {
   };
 
   const handleSaveDoctors = async (newDocs: Doctor[]) => {
-    await performSave({ ...data, doctors: newDocs });
+    setData(prev => ({ ...prev, doctors: newDocs }));
+    const promises = data.clinics.map(clinic => {
+        const clinicDocs = newDocs.filter(d => d.clinicId === clinic.id);
+        return saveDoctors(clinic.id, clinicDocs);
+    });
+    await Promise.all(promises);
   };
 
   const handleSaveConsultants = async (newConsultants: Consultant[]) => {
@@ -191,15 +204,30 @@ const App: React.FC = () => {
   };
 
   const handleSaveLaboratories = async (newLabs: Laboratory[]) => {
-    await performSave({ ...data, laboratories: newLabs });
+    setData(prev => ({ ...prev, laboratories: newLabs }));
+    const promises = data.clinics.map(clinic => {
+        const clinicLabs = newLabs.filter(l => l.clinicId === clinic.id);
+        return saveLaboratories(clinic.id, clinicLabs);
+    });
+    await Promise.all(promises);
   };
   
   const handleSaveSOVReferrals = async (newReferrals: SOVReferral[]) => {
-    await performSave({ ...data, sovReferrals: newReferrals });
+    setData(prev => ({ ...prev, sovReferrals: newReferrals }));
+    const promises = data.clinics.map(clinic => {
+        const clinicRefs = newReferrals.filter(r => r.clinicId === clinic.id);
+        return saveSOVReferrals(clinic.id, clinicRefs);
+    });
+    await Promise.all(promises);
   };
 
   const handleSaveSchedules = async (newScheds: DailySchedule[]) => {
-    await performSave({ ...data, schedules: newScheds });
+    setData(prev => ({ ...prev, schedules: newScheds }));
+    const promises = data.clinics.map(clinic => {
+        const clinicScheds = newScheds.filter(s => s.clinicId === clinic.id);
+        return saveSchedules(clinic.id, clinicScheds);
+    });
+    await Promise.all(promises);
   };
 
   const handleRetryLoad = () => {
@@ -304,6 +332,17 @@ const App: React.FC = () => {
             } 
             />
 
+            {/* Settings Routes (Admin + Staff) */}
+            <Route path="/clinics" element={<ProtectedRoute allowedRoles={['admin']} isDataLoading={isDataLoading}><ClinicManager clinics={data.clinics} onSave={handleSaveClinics} /></ProtectedRoute>} />
+            <Route path="/doctors" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><DoctorManager doctors={data.doctors} onSave={handleSaveDoctors} clinics={data.clinics} /></ProtectedRoute>} />
+            <Route path="/consultants" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><ConsultantManager consultants={data.consultants || []} onSave={handleSaveConsultants} clinics={data.clinics} /></ProtectedRoute>} />
+            <Route path="/laboratories" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><LaboratoryManager laboratories={data.laboratories || []} onSave={handleSaveLaboratories} clinics={data.clinics} /></ProtectedRoute>} />
+            <Route path="/sov-referrals" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><SOVReferralManager referrals={data.sovReferrals || []} clinics={data.clinics} onSave={handleSaveSOVReferrals} /></ProtectedRoute>} />
+            <Route path="/integrations" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><Integrations clinics={data.clinics} doctors={data.doctors} onSave={handleSaveClinics} /></ProtectedRoute>} />
+            
+            {/* Permission Manager - Note: Internal check handles strict/case-insensitive Auth */}
+            <Route path="/permission-manager" element={<PermissionManager />} />
+
             {/* Operational Routes (Admin + Staff) */}
             <Route path="/accounting" element={
               <ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}>
@@ -339,6 +378,13 @@ const App: React.FC = () => {
                 </ProtectedRoute>
               } 
             />
+            {/* NEW: Patient Manager (CRM) */}
+            <Route path="/patients" element={
+                <ProtectedRoute allowedRoles={['admin', 'manager', 'staff']} isDataLoading={isDataLoading}>
+                    <PatientManager />
+                </ProtectedRoute>
+              } 
+            />
             <Route path="/assistant-scheduling" element={
               <ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}>
                   <AssistantScheduling 
@@ -350,14 +396,6 @@ const App: React.FC = () => {
               </ProtectedRoute>
             } 
             />
-
-            {/* Settings Routes (Admin + Staff) */}
-            <Route path="/clinics" element={<ProtectedRoute allowedRoles={['admin']} isDataLoading={isDataLoading}><ClinicManager clinics={data.clinics} onSave={handleSaveClinics} /></ProtectedRoute>} />
-            <Route path="/doctors" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><DoctorManager doctors={data.doctors} onSave={handleSaveDoctors} clinics={data.clinics} /></ProtectedRoute>} />
-            <Route path="/consultants" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><ConsultantManager consultants={data.consultants || []} onSave={handleSaveConsultants} clinics={data.clinics} /></ProtectedRoute>} />
-            <Route path="/laboratories" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><LaboratoryManager laboratories={data.laboratories || []} onSave={handleSaveLaboratories} clinics={data.clinics} /></ProtectedRoute>} />
-            <Route path="/sov-referrals" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><SOVReferralManager referrals={data.sovReferrals || []} clinics={data.clinics} onSave={handleSaveSOVReferrals} /></ProtectedRoute>} />
-            <Route path="/integrations" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><Integrations clinics={data.clinics} doctors={data.doctors} onSave={handleSaveClinics} /></ProtectedRoute>} />
 
             {/* Schedule Routes (Admin + Staff + Marketing) */}
             <Route path="/schedule" element={

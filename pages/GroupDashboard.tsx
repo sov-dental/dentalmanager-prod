@@ -32,6 +32,7 @@ interface SelfPayBreakdown {
     whitening: number;
     perio: number;
     other: number;
+    retail: number; // Added: Retail + Vault
 }
 
 // --- HELPER COMPONENTS ---
@@ -101,7 +102,7 @@ const KPICard = ({ title, actual, target, prev, yearPrev, prefix = '', suffix = 
     );
 };
 
-const PIE_COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff8042', '#a4de6c', '#d0ed57', '#8dd1e1', '#0088FE'];
+const PIE_COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff8042', '#a4de6c', '#d0ed57', '#8dd1e1', '#0088FE', '#F87171'];
 
 const CustomTooltip = ({ active, payload, label, valuePrefix = '$' }: any) => {
     if (active && payload && payload.length) {
@@ -325,17 +326,17 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         try {
             // 1. Fetch High-Level Snapshot
             const data = await fetchDashboardSnapshot(clinics, currentMonth);
-            setSnapshot(data);
-
-            // 2. Fetch Granular Data for Self-Pay
+            
+            // 2. Fetch Granular Data for Self-Pay (Include Retail)
             const breakdownMap: Record<string, SelfPayBreakdown> = {};
             await Promise.all(clinics.map(async (clinic) => {
                 const rows = await getMonthlyAccounting(clinic.id, currentMonth);
                 const bd: SelfPayBreakdown = {
-                    total: 0, prostho: 0, implant: 0, ortho: 0, sov: 0, inv: 0, whitening: 0, perio: 0, other: 0
+                    total: 0, prostho: 0, implant: 0, ortho: 0, sov: 0, inv: 0, whitening: 0, perio: 0, other: 0, retail: 0
                 };
                 rows.forEach(row => {
                     const t = row.treatments;
+                    const r = row.retail;
                     bd.prostho += (t.prostho || 0);
                     bd.implant += (t.implant || 0);
                     bd.ortho += (t.ortho || 0);
@@ -344,10 +345,24 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     bd.whitening += (t.whitening || 0);
                     bd.perio += (t.perio || 0);
                     bd.other += (t.otherSelfPay || 0);
+                    
+                    // Added Retail Revenue to Self-Pay logic
+                    const retailSum = (r.products || 0) + (r.diyWhitening || 0);
+                    bd.retail += retailSum;
                 });
-                bd.total = bd.prostho + bd.implant + bd.ortho + bd.sov + bd.inv + bd.whitening + bd.perio + bd.other;
+                
+                bd.total = bd.prostho + bd.implant + bd.ortho + bd.sov + bd.inv + bd.whitening + bd.perio + bd.other + bd.retail;
+                
                 breakdownMap[clinic.id] = bd;
+
+                // PATCH SNAPSHOT: Ensure 'current' snapshot actualSelfPay includes retail
+                const snapshotEntry = data.current.find(d => d.clinicId === clinic.id);
+                if (snapshotEntry) {
+                    snapshotEntry.actualSelfPay = bd.total;
+                }
             }));
+            
+            setSnapshot(data); // Set snapshot with patched Self-Pay values
             setBreakdowns(breakdownMap);
 
             // 3. Fetch NP Records for Marketing Tab
@@ -534,8 +549,8 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
     }, [sortedSnapshot]);
 
     const pieChartData = useMemo(() => {
-        const keys: (keyof SelfPayBreakdown)[] = ['implant', 'ortho', 'prostho', 'sov', 'inv', 'whitening', 'perio', 'other'];
-        const labels = ['植牙', '矯正', '假牙', 'SOV', 'INV', '美白', '牙周', '其他'];
+        const keys: (keyof SelfPayBreakdown)[] = ['implant', 'ortho', 'prostho', 'sov', 'inv', 'whitening', 'perio', 'other', 'retail'];
+        const labels = ['植牙', '矯正', '假牙', 'SOV', 'INV', '美白', '牙周', '其他', '物販/小金庫'];
         const totals = keys.map(() => 0);
 
         Object.keys(breakdowns).forEach(cid => {
@@ -1043,11 +1058,12 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                         <th className="px-4 py-3 text-right">美白 (White)</th>
                                         <th className="px-4 py-3 text-right">牙周 (Perio)</th>
                                         <th className="px-4 py-3 text-right">其他</th>
+                                        <th className="px-4 py-3 text-right text-orange-600 bg-orange-50/30">物販/小金庫</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
                                     {sortedClinics.map(clinic => {
-                                            const bd = breakdowns[clinic.id] || { total:0, prostho:0, implant:0, ortho:0, sov:0, inv:0, whitening:0, perio:0, other:0 };
+                                            const bd = breakdowns[clinic.id] || { total:0, prostho:0, implant:0, ortho:0, sov:0, inv:0, whitening:0, perio:0, other:0, retail:0 };
                                             return (
                                                 <tr key={clinic.id} className="hover:bg-slate-50">
                                                     <td className="px-4 py-3 font-bold text-slate-700 sticky left-0 bg-white border-r border-slate-100">{clinic.name}</td>
@@ -1060,6 +1076,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                                     <td className="px-4 py-3 text-right font-mono text-slate-600">{bd.whitening > 0 ? bd.whitening.toLocaleString() : '-'}</td>
                                                     <td className="px-4 py-3 text-right font-mono text-slate-600">{bd.perio > 0 ? bd.perio.toLocaleString() : '-'}</td>
                                                     <td className="px-4 py-3 text-right font-mono text-slate-400">{bd.other > 0 ? bd.other.toLocaleString() : '-'}</td>
+                                                    <td className="px-4 py-3 text-right font-mono text-orange-600 bg-orange-50/30 font-bold">{bd.retail > 0 ? bd.retail.toLocaleString() : '-'}</td>
                                                 </tr>
                                             );
                                     })}

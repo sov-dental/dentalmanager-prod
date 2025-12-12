@@ -91,6 +91,19 @@ export interface Doctor {
       otherSelfPay: number;
       nhi?: number;
   };
+  // NEW: Lab Fee Self-Pay Configuration
+  // If true for a category, the doctor pays 100% of the lab fee.
+  // If false/undefined, the lab fee is deducted from revenue before split (Shared Cost).
+  labFeeSelfPay?: {
+      prostho?: boolean;
+      implant?: boolean;
+      ortho?: boolean;
+      sov?: boolean;
+      inv?: boolean;
+      perio?: boolean;
+      whitening?: boolean;
+      otherSelfPay?: boolean;
+  };
   isDeleted?: boolean; // Soft delete flag
 }
 

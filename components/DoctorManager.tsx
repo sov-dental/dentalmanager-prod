@@ -47,7 +47,8 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
     avatarText: '',
     avatarBgColor: '#3b82f6',
     recurringShifts: [],
-    commissionRates: { prostho: 0, implant: 0, ortho: 0, sov: 0, inv: 0, perio: 0, whitening: 0, otherSelfPay: 0, nhi: 0 }
+    commissionRates: { prostho: 0, implant: 0, ortho: 0, sov: 0, inv: 0, perio: 0, whitening: 0, otherSelfPay: 0, nhi: 0 },
+    labFeeSelfPay: { prostho: false, implant: false, ortho: false, sov: false, inv: false, perio: false, whitening: false, otherSelfPay: false }
   });
 
   const resetForm = () => {
@@ -57,7 +58,8 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
           avatarText: '', 
           avatarBgColor: '#3b82f6', 
           recurringShifts: [],
-          commissionRates: { prostho: 0, implant: 0, ortho: 0, sov: 0, inv: 0, perio: 0, whitening: 0, otherSelfPay: 0, nhi: 0 }
+          commissionRates: { prostho: 0, implant: 0, ortho: 0, sov: 0, inv: 0, perio: 0, whitening: 0, otherSelfPay: 0, nhi: 0 },
+          labFeeSelfPay: {}
       });
       setFormClinicId('');
       setEditingId(null);
@@ -76,7 +78,7 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
       const avatarBgColor = isString ? '#3b82f6' : (doc.avatarBgColor || color);
       const recurringShifts = isString ? [] : (doc.recurringShifts || []);
       
-      // Ensure whitening and inv are decoupled. If it exists in doc, use it. If not, default to 0.
+      // Ensure whitening and inv are decoupled.
       const commissionRates = (!isString && doc.commissionRates) ? 
           { 
               ...doc.commissionRates, 
@@ -85,6 +87,8 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
           } : 
           { prostho: 0, implant: 0, ortho: 0, sov: 0, inv: 0, perio: 0, whitening: 0, otherSelfPay: 0, nhi: 0 };
           
+      const labFeeSelfPay = (!isString && doc.labFeeSelfPay) ? doc.labFeeSelfPay : {};
+
       const clinicId = (!isString && doc.clinicId) ? doc.clinicId : (selectedClinicId || '');
 
       setNewDoc({
@@ -93,7 +97,8 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
           avatarText,
           avatarBgColor,
           recurringShifts: [...recurringShifts],
-          commissionRates
+          commissionRates,
+          labFeeSelfPay
       });
       setFormClinicId(clinicId);
       setEditingId(id);
@@ -133,6 +138,16 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
       }));
   };
 
+  const handleSelfPayToggle = (key: string) => {
+      setNewDoc(prev => ({
+          ...prev,
+          labFeeSelfPay: {
+              ...prev.labFeeSelfPay,
+              [key]: !prev.labFeeSelfPay?.[key as keyof typeof prev.labFeeSelfPay]
+          }
+      }));
+  };
+
   const handleSaveDoctor = async () => {
     if (!newDoc.name || !formClinicId) return;
     
@@ -144,6 +159,7 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
         const avatarText = newDoc.avatarText || newDoc.name.substring(0, 1);
         const avatarBgColor = newDoc.avatarBgColor || newDoc.color || '#3b82f6';
         const commissionRates = newDoc.commissionRates || { prostho: 0, implant: 0, ortho: 0, sov: 0, inv: 0, perio: 0, whitening: 0, otherSelfPay: 0, nhi: 0 };
+        const labFeeSelfPay = newDoc.labFeeSelfPay || {};
 
         if (editingId) {
             // Update
@@ -159,6 +175,7 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
                         avatarText,
                         avatarBgColor,
                         commissionRates,
+                        labFeeSelfPay,
                         isDeleted: d.isDeleted // Preserve flag if exists
                     } as Doctor;
                 }
@@ -175,7 +192,8 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
                 color: avatarBgColor,
                 avatarText,
                 avatarBgColor,
-                commissionRates
+                commissionRates,
+                labFeeSelfPay
             };
             updatedDoctors = [...doctors, doctor];
         }
@@ -341,84 +359,50 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
 
                         {/* Commission Settings */}
                         <div>
-                            <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center gap-2">
-                                <DollarSign size={16}/> 抽成設定 (Commission Rates %)
-                            </label>
+                            <div className="flex justify-between items-end mb-2">
+                                <label className="block text-sm font-medium text-slate-700 flex items-center gap-2">
+                                    <DollarSign size={16}/> 抽成設定 (Commission Rates %)
+                                </label>
+                                <span className="text-[10px] text-slate-400 bg-slate-50 px-2 py-1 rounded">勾選「技工自付」代表醫師支付全額技工費</span>
+                            </div>
+                            
                             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                {[
+                                    { label: '假牙 (Prostho)', key: 'prostho' },
+                                    { label: '植牙 (Implant)', key: 'implant' },
+                                    { label: '矯正 (Ortho)', key: 'ortho' },
+                                    { label: 'SOV', key: 'sov' },
+                                    { label: '隱適美 (INV)', key: 'inv' },
+                                    { label: '牙周 (Perio)', key: 'perio' },
+                                    { label: '美白 (White)', key: 'whitening' },
+                                    { label: '其他 (Other)', key: 'otherSelfPay' }
+                                ].map(({ label, key }) => (
+                                    <div key={key}>
+                                        <div className="flex justify-between items-center mb-1">
+                                            <label className="block text-xs text-slate-500">{label}</label>
+                                            <label className="flex items-center gap-1 cursor-pointer select-none">
+                                                <input 
+                                                    type="checkbox"
+                                                    className="w-3 h-3 text-rose-500 rounded border-slate-300 focus:ring-rose-500"
+                                                    checked={newDoc.labFeeSelfPay?.[key as keyof typeof newDoc.labFeeSelfPay] || false}
+                                                    onChange={() => handleSelfPayToggle(key)}
+                                                />
+                                                <span className={`text-[10px] font-bold ${newDoc.labFeeSelfPay?.[key as keyof typeof newDoc.labFeeSelfPay] ? 'text-rose-600' : 'text-slate-400'}`}>自付</span>
+                                            </label>
+                                        </div>
+                                        <input 
+                                            type="number" min="0" max="100" step="1"
+                                            className={`w-full border rounded px-2 py-1.5 text-sm focus:ring-2 outline-none ${newDoc.labFeeSelfPay?.[key as keyof typeof newDoc.labFeeSelfPay] ? 'border-rose-200 bg-rose-50 focus:ring-rose-500' : 'focus:ring-purple-500'}`}
+                                            value={newDoc.commissionRates?.[key as keyof typeof newDoc.commissionRates]}
+                                            onChange={e => handleCommissionChange(key as keyof Doctor['commissionRates'], e.target.value)}
+                                        />
+                                    </div>
+                                ))}
+                                
                                 <div>
-                                    <label className="block text-xs text-slate-500 mb-1">假牙 (Prostho)</label>
-                                    <input 
-                                        type="number" min="0" max="100" step="1"
-                                        className="w-full border rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
-                                        value={newDoc.commissionRates?.prostho}
-                                        onChange={e => handleCommissionChange('prostho', e.target.value)}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs text-slate-500 mb-1">植牙 (Implant)</label>
-                                    <input 
-                                        type="number" min="0" max="100" step="1"
-                                        className="w-full border rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
-                                        value={newDoc.commissionRates?.implant}
-                                        onChange={e => handleCommissionChange('implant', e.target.value)}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs text-slate-500 mb-1">矯正 (Ortho)</label>
-                                    <input 
-                                        type="number" min="0" max="100" step="1"
-                                        className="w-full border rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
-                                        value={newDoc.commissionRates?.ortho}
-                                        onChange={e => handleCommissionChange('ortho', e.target.value)}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs text-slate-500 mb-1">SOV</label>
-                                    <input 
-                                        type="number" min="0" max="100" step="1"
-                                        className="w-full border rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
-                                        value={newDoc.commissionRates?.sov}
-                                        onChange={e => handleCommissionChange('sov', e.target.value)}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs text-slate-500 mb-1">隱適美 (INV)</label>
-                                    <input 
-                                        type="number" min="0" max="100" step="1"
-                                        className="w-full border rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
-                                        value={newDoc.commissionRates?.inv}
-                                        onChange={e => handleCommissionChange('inv', e.target.value)}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs text-slate-500 mb-1">牙周 (Perio)</label>
-                                    <input 
-                                        type="number" min="0" max="100" step="1"
-                                        className="w-full border rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
-                                        value={newDoc.commissionRates?.perio}
-                                        onChange={e => handleCommissionChange('perio', e.target.value)}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs text-slate-500 mb-1">美白 (Whitening)</label>
-                                    <input 
-                                        type="number" min="0" max="100" step="1"
-                                        className="w-full border rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
-                                        value={newDoc.commissionRates?.whitening}
-                                        onChange={e => handleCommissionChange('whitening', e.target.value)}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs text-slate-500 mb-1">其他自費 (Other)</label>
-                                    <input 
-                                        type="number" min="0" max="100" step="1"
-                                        className="w-full border rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
-                                        value={newDoc.commissionRates?.otherSelfPay}
-                                        onChange={e => handleCommissionChange('otherSelfPay', e.target.value)}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs text-slate-500 mb-1">健保 (NHI)</label>
+                                    <div className="flex justify-between items-center mb-1">
+                                        <label className="block text-xs text-slate-500">健保 (NHI)</label>
+                                    </div>
                                     <input 
                                         type="number" min="0" max="100" step="1"
                                         className="w-full border rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-purple-500 outline-none font-bold text-blue-600"
@@ -505,6 +489,7 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
                const avatarText = getDocAvatarText(doc);
                const commissionRates = typeof doc !== 'string' ? doc.commissionRates : null;
                const recurringShifts = typeof doc !== 'string' ? (doc.recurringShifts || []) : [];
+               const labFeeSelfPay = typeof doc !== 'string' ? (doc.labFeeSelfPay || {}) : {};
 
                return (
                    <div key={id} className="bg-white rounded-lg shadow-sm border border-slate-200 p-4 hover:shadow-md transition-shadow relative group">
@@ -542,17 +527,17 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
                        <div className="flex flex-wrap gap-1 mt-2 text-[10px] text-slate-500">
                            {commissionRates && (
                                <>
-                                   <span className="bg-slate-100 px-1.5 py-0.5 rounded">植牙: {commissionRates.implant}%</span>
-                                   <span className="bg-slate-100 px-1.5 py-0.5 rounded">矯正: {commissionRates.ortho}%</span>
-                                   <span className="bg-slate-100 px-1.5 py-0.5 rounded">假牙: {commissionRates.prostho}%</span>
-                                   {commissionRates.inv !== undefined && commissionRates.inv > 0 && (
-                                       <span className="bg-slate-100 px-1.5 py-0.5 rounded">INV: {commissionRates.inv}%</span>
-                                   )}
-                                   {commissionRates.whitening !== undefined && commissionRates.whitening > 0 && (
-                                       <span className="bg-slate-100 px-1.5 py-0.5 rounded">美白: {commissionRates.whitening}%</span>
-                                   )}
+                                   <span className={`px-1.5 py-0.5 rounded ${labFeeSelfPay.implant ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-slate-100'}`}>
+                                       植牙:{commissionRates.implant}%
+                                   </span>
+                                   <span className={`px-1.5 py-0.5 rounded ${labFeeSelfPay.ortho ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-slate-100'}`}>
+                                       矯正:{commissionRates.ortho}%
+                                   </span>
+                                   <span className={`px-1.5 py-0.5 rounded ${labFeeSelfPay.prostho ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-slate-100'}`}>
+                                       假牙:{commissionRates.prostho}%
+                                   </span>
                                    {commissionRates.nhi !== undefined && (
-                                       <span className="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded border border-blue-100">健保: {commissionRates.nhi}%</span>
+                                       <span className="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded border border-blue-100">健保:{commissionRates.nhi}%</span>
                                    )}
                                </>
                            )}

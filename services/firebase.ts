@@ -62,76 +62,34 @@ const DOC_ID = 'demo-clinic';
 
 // --- DATA HELPERS --- (Sanitize, Hydrate, Sort, Upload...)
 
+/**
+ * Recursively converts undefined values to null to satisfy Firestore requirements.
+ * Handles Objects, Arrays, and Primitives.
+ */
 export const deepSanitize = (obj: any): any => {
   if (obj === undefined) return null;
   if (obj === null) return null;
-  if (typeof obj !== 'object') return obj;
-  if (obj instanceof Date) return obj; 
+  if (obj instanceof Date) return obj.toISOString(); // Convert Dates to string for consistency
   
   if (Array.isArray(obj)) {
     return obj.map(deepSanitize);
   }
   
-  const result: any = {};
-  for (const key in obj) {
-    if (Object.prototype.hasOwnProperty.call(obj, key)) {
-      result[key] = deepSanitize(obj[key]);
+  if (typeof obj === 'object') {
+    const result: any = {};
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        result[key] = deepSanitize(obj[key]);
+      }
     }
+    return result;
   }
-  return result;
+  
+  return obj;
 };
 
 export const sanitizeRow = (row: AccountingRow): AccountingRow => {
-    const num = (v: any) => (typeof v === 'number' && !isNaN(v)) ? v : 0;
-    const str = (v: any) => (v ? String(v) : '');
-    return {
-        id: str(row.id),
-        patientName: str(row.patientName),
-        doctorName: str(row.doctorName),
-        doctorId: str(row.doctorId),
-        treatments: {
-            regFee: num(row.treatments?.regFee),
-            copayment: num(row.treatments?.copayment),
-            sov: num(row.treatments?.sov),
-            ortho: num(row.treatments?.ortho),
-            prostho: num(row.treatments?.prostho),
-            implant: num(row.treatments?.implant),
-            whitening: num(row.treatments?.whitening),
-            perio: num(row.treatments?.perio),
-            inv: num(row.treatments?.inv),
-            otherSelfPay: num(row.treatments?.otherSelfPay),
-            consultant: str(row.treatments?.consultant)
-        },
-        retail: {
-            diyWhitening: num(row.retail?.diyWhitening),
-            products: num(row.retail?.products),
-            productNote: str(row.retail?.productNote),
-            staff: str(row.retail?.staff)
-        },
-        technician: str(row.technician),
-        selfPayItem: str(row.selfPayItem), 
-        retailItem: str(row.retailItem),
-        paymentBreakdown: {
-            cash: num(row.paymentBreakdown?.cash),
-            card: num(row.paymentBreakdown?.card),
-            transfer: num(row.paymentBreakdown?.transfer)
-        },
-        actualCollected: num(row.actualCollected),
-        paymentMethod: str(row.paymentMethod) || 'cash',
-        isPaymentManual: !!row.isPaymentManual,
-        npStatus: str(row.npStatus),
-        treatmentContent: str(row.treatmentContent),
-        labName: str(row.labName),
-        labFee: num(row.labFee),
-        isManual: !!row.isManual,
-        isManualName: !!row.isManualName,
-        attendance: row.attendance !== undefined ? row.attendance : true,
-        startTime: row.startTime || null,
-        originalDate: row.originalDate || null, 
-        matchStatus: row.matchStatus || null,
-        chartId: str(row.chartId),
-        patientStatus: str(row.patientStatus)
-    } as any;
+    return deepSanitize(row);
 };
 
 export const hydrateRow = (row: any): AccountingRow => {
@@ -169,7 +127,7 @@ export const getClinics = async (): Promise<Clinic[]> => {
         const snap = await db.collection('clinics').get();
         return snap.docs.map(doc => {
             const data = doc.data();
-            // Safety Check: exclude demo-clinic if it was retrieved (though it shouldn't be if structured correctly)
+            // Safety Check: exclude demo-clinic if it was retrieved (legacy artifact)
             if (doc.id === 'demo-clinic' && !data.name) return null;
             if (!data.name) return null;
             
@@ -202,7 +160,6 @@ export const loadAppData = async (): Promise<AppData> => {
 
   if (doc.exists) {
     const legacyData = doc.data() as AppData;
-    // We preserve other fields but ignore legacy 'clinics' array if it exists
     data = { ...legacyData, clinics: [] };
   }
 
@@ -222,7 +179,7 @@ export const loadAppData = async (): Promise<AppData> => {
       }
   }
 
-  // 3. CRITICAL: Load Staff Profiles Collection
+  // 3. Load Staff Profiles Collection
   try {
       const staffSnap = await db.collection('staff_profiles')
           .where('isActive', '==', true)
@@ -239,37 +196,44 @@ export const loadAppData = async (): Promise<AppData> => {
   return data;
 };
 
-// ** CRITICAL UPDATE: Exclude clinics from the legacy demo-clinic save **
+// ** Exclude clinics from the legacy demo-clinic save **
 export const saveAppData = async (data: AppData) => {
   const docRef = db.collection('clinics').doc(DOC_ID);
-  // Destructure to remove 'clinics' from the payload saved to 'demo-clinic'
-  // This enforces the Multi-Document Architecture by ensuring clinics are only saved via saveClinic
   const { clinics, ...rest } = data; 
-  await docRef.set(rest, { merge: true });
+  // Sanitization here is key for global settings
+  await docRef.set(deepSanitize(rest), { merge: true });
 };
 
-// ** NEW: Single Clinic Save Function (Multi-Document) **
+// ** Single Clinic Save Function (Multi-Document) **
 export const saveClinic = async (clinicData: Partial<Clinic>) => {
     const collectionRef = db.collection('clinics');
     let docRef;
     
-    // 1. Determine Document Reference
-    if (clinicData.id) {
-        docRef = collectionRef.doc(clinicData.id);
-    } else {
-        docRef = collectionRef.doc(); // Auto-generate ID
-        clinicData.id = docRef.id;
+    const isNew = !clinicData.id;
+    const id = clinicData.id || collectionRef.doc().id;
+    docRef = collectionRef.doc(id);
+
+    // Prepare payload with ID ensured
+    const payload: any = { ...clinicData, id };
+
+    // Initialize arrays only if creating new to avoid overwriting existing data with empty arrays on partial updates
+    if (isNew) {
+        if (!payload.doctors) payload.doctors = [];
+        if (!payload.schedules) payload.schedules = [];
+        if (!payload.laboratories) payload.laboratories = [];
+        if (!payload.sovReferrals) payload.sovReferrals = [];
     }
 
-    // 2. Save Document (Merge to preserve sub-collections logic if any, though we overwrite fields)
-    await docRef.set(clinicData, { merge: true });
+    // SANITIZE: Convert all undefined to null
+    const sanitizedPayload = deepSanitize(payload);
 
-    // 3. Permission Sync: Update User documents
+    await docRef.set(sanitizedPayload, { merge: true });
+
+    // Permission Sync logic
     if (clinicData.allowedUsers && clinicData.allowedUsers.length > 0 && clinicData.name) {
         const usersRef = db.collection('users');
         const clinicName = clinicData.name;
         
-        // Find users by email and update their allowedClinics
         const promises = clinicData.allowedUsers.map(async (email) => {
             const q = await usersRef.where('email', '==', email).limit(1).get();
             if (!q.empty) {
@@ -277,7 +241,6 @@ export const saveClinic = async (clinicData: Partial<Clinic>) => {
                 const userData = userDoc.data();
                 const currentAllowed = userData.allowedClinics || [];
                 
-                // Only update if not already present
                 if (!currentAllowed.includes(clinicName)) {
                     await userDoc.ref.update({
                         allowedClinics: firebase.firestore.FieldValue.arrayUnion(clinicName)
@@ -290,17 +253,18 @@ export const saveClinic = async (clinicData: Partial<Clinic>) => {
 };
 
 export const saveDoctors = async (clinicId: string, doctors: Doctor[]) => {
-    // Save as embedded array in the clinic document
-    await db.collection('clinics').doc(clinicId).update({ doctors });
+    // Sanitize the entire array structure
+    const sanitizedDoctors = deepSanitize(doctors);
+    await db.collection('clinics').doc(clinicId).update({ doctors: sanitizedDoctors });
 };
 
 export const saveLaboratories = async (clinicId: string, labs: Laboratory[]) => {
-    await db.collection('clinics').doc(clinicId).update({ laboratories: labs });
+    await db.collection('clinics').doc(clinicId).update({ laboratories: deepSanitize(labs) });
 };
 
 export const saveSchedules = async (clinicId: string, schedules: DailySchedule[]) => {
     try {
-        await db.collection('clinics').doc(clinicId).update({ schedules });
+        await db.collection('clinics').doc(clinicId).update({ schedules: deepSanitize(schedules) });
     } catch (error) {
         console.error(`[saveSchedules] Failed to save schedules for clinic ${clinicId}:`, error);
         throw error;
@@ -308,7 +272,7 @@ export const saveSchedules = async (clinicId: string, schedules: DailySchedule[]
 };
 
 export const saveSOVReferrals = async (clinicId: string, referrals: SOVReferral[]) => {
-    await db.collection('clinics').doc(clinicId).update({ sovReferrals: referrals });
+    await db.collection('clinics').doc(clinicId).update({ sovReferrals: deepSanitize(referrals) });
 };
 
 // --- NEW COLLECTIONS ---
@@ -322,7 +286,7 @@ export const getStaffList = async (clinicId: string): Promise<Consultant[]> => {
 };
 
 export const saveStaff = async (staff: Consultant) => {
-    await db.collection('staff_profiles').doc(staff.id).set(staff, { merge: true });
+    await db.collection('staff_profiles').doc(staff.id).set(deepSanitize(staff), { merge: true });
 };
 
 export const deleteStaff = async (staffId: string) => {
@@ -338,7 +302,7 @@ export const getInsuranceTable = async (): Promise<InsuranceGrade[]> => {
 };
 
 export const saveInsuranceTable = async (grades: InsuranceGrade[]) => {
-    await db.collection('settings').doc('insurance_table').set({ grades });
+    await db.collection('settings').doc('insurance_table').set({ grades: deepSanitize(grades) });
 };
 
 export const getAllUsers = async (): Promise<User[]> => {
@@ -351,7 +315,7 @@ export const updateUserRole = async (uid: string, role: UserRole) => {
 };
 
 export const updateUserClinicAccess = async (user: User, allowedClinics: string[]) => {
-    await db.collection('users').doc(user.uid).update({ allowedClinics });
+    await db.collection('users').doc(user.uid).update({ allowedClinics: deepSanitize(allowedClinics) });
 };
 
 export const getRolePermissions = async (): Promise<Record<string, string[]>> => {
@@ -360,7 +324,7 @@ export const getRolePermissions = async (): Promise<Record<string, string[]>> =>
 };
 
 export const saveRolePermissions = async (perms: Record<string, string[]>) => {
-    await db.collection('settings').doc('role_permissions').set(perms);
+    await db.collection('settings').doc('role_permissions').set(deepSanitize(perms));
 };
 
 // 5. Daily Accounting
@@ -378,7 +342,7 @@ export const saveDailyAccounting = async (record: DailyAccountingRecord, auditEn
     const docId = `${record.clinicId}_${record.date}`;
     const payload: any = deepSanitize(record);
     if (auditEntry) {
-        payload.auditLog = firebase.firestore.FieldValue.arrayUnion(auditEntry);
+        payload.auditLog = firebase.firestore.FieldValue.arrayUnion(deepSanitize(auditEntry));
     }
     await db.collection('daily_accounting').doc(docId).set(payload, { merge: true });
 
@@ -433,7 +397,7 @@ export const getTechnicianRecords = async (clinicId: string, labName: string | n
 
 export const saveTechnicianRecord = async (record: TechnicianRecord) => {
     const id = record.id || crypto.randomUUID();
-    await db.collection('technician_records').doc(id).set({ ...record, id }, { merge: true });
+    await db.collection('technician_records').doc(id).set(deepSanitize({ ...record, id }), { merge: true });
 };
 
 export const deleteTechnicianRecord = async (id: string) => {
@@ -508,7 +472,7 @@ export const fetchDashboardSnapshot = async (clinics: Clinic[], month: string): 
 };
 
 export const saveMonthlyTarget = async (clinicId: string, month: string, target: MonthlyTarget) => {
-    await db.collection('monthly_targets').doc(`${clinicId}_${month}`).set(target, { merge: true });
+    await db.collection('monthly_targets').doc(`${clinicId}_${month}`).set(deepSanitize(target), { merge: true });
 };
 
 // 8. NHI Records
@@ -525,7 +489,7 @@ export const saveBatchNHIRecords = async (records: NHIRecord[]) => {
     records.forEach(rec => {
         const id = `${rec.clinicId}_${rec.month}_${rec.doctorId}`;
         const ref = db.collection('nhi_records').doc(id);
-        batch.set(ref, { ...rec, id }, { merge: true });
+        batch.set(ref, deepSanitize({ ...rec, id }), { merge: true });
     });
     await batch.commit();
 };
@@ -540,7 +504,7 @@ export const getClinicSalaryAdjustments = async (clinicId: string, month: string
 };
 
 export const addSalaryAdjustment = async (adj: SalaryAdjustment) => {
-    await db.collection('salary_adjustments').add(adj);
+    await db.collection('salary_adjustments').add(deepSanitize(adj));
 };
 
 export const deleteSalaryAdjustment = async (id: string) => {
@@ -554,7 +518,7 @@ export const getBonusSettings = async (clinicId: string, month: string): Promise
 };
 
 export const saveBonusSettings = async (clinicId: string, month: string, settings: any) => {
-    await db.collection('bonus_settings').doc(`${clinicId}_${month}`).set(settings, { merge: true });
+    await db.collection('bonus_settings').doc(`${clinicId}_${month}`).set(deepSanitize(settings), { merge: true });
 };
 
 // --- CRM / PATIENT LOGIC ---
@@ -583,7 +547,7 @@ export const getMarketingTags = async (): Promise<string[]> => {
 };
 
 export const saveMarketingTags = async (tags: string[]) => {
-    await db.collection('settings').doc('marketing_tags').set({ tags }, { merge: true });
+    await db.collection('settings').doc('marketing_tags').set({ tags: deepSanitize(tags) }, { merge: true });
 };
 
 // --- NEW: NP RECORDS HELPERS (For Dashboard) ---
@@ -611,7 +575,7 @@ export const saveNPRecord = async (record: NPRecord) => {
         updatedAt: new Date().toISOString() // Use ISO string for safety
     }));
 
-    await docRef.set(payload, { merge: true });
+    await docRef.set(deepSanitize(payload), { merge: true });
 };
 
 export const deleteNPRecord = async (clinicId: string, date: string, patientName: string) => {
@@ -707,16 +671,16 @@ export const upsertPatientFromEvent = async (clinicId: string, event: { chartId:
                 updateData.aliases = firebase.firestore.FieldValue.arrayUnion(existing.name);
             }
         }
-        await docRef.update(updateData);
+        await docRef.update(deepSanitize(updateData));
     } else {
-        await docRef.set({
+        await docRef.set(deepSanitize({
             clinicId,
             chartId: event.chartId || null,
             name: event.name,
             lastVisit: event.lastVisitDate,
             aliases: [],
             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
+        }));
     }
 };
 
@@ -748,21 +712,21 @@ export const migratePatientId = async (oldDocId: string, newChartId: string, cli
             aliases = [...new Set([...aliases, ...oldData.aliases])];
         }
 
-        await newRef.update({
+        await newRef.update(deepSanitize({
             purchasedItems: mergedPurchased,
             visitHistory: mergedHistory,
             lastVisit,
             totalSpending,
             aliases,
             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
+        }));
     } else {
-        await newRef.set({
+        await newRef.set(deepSanitize({
             ...oldData,
             chartId: newChartId,
             docId: newDocId,
             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
+        }));
     }
     await oldRef.delete();
 };
@@ -853,7 +817,7 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
     const batch = db.batch();
     
     const dailyRef = db.collection('daily_accounting').doc(docId);
-    batch.update(dailyRef, {
+    batch.update(dailyRef, deepSanitize({
         isLocked: true,
         auditLog: firebase.firestore.FieldValue.arrayUnion({
             timestamp: new Date().toISOString(),
@@ -861,7 +825,7 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
             userName: user.name,
             action: 'LOCK'
         })
-    });
+    }));
 
     const rowPromises = rows.map(async (row) => {
         let patientDocId = '';
@@ -916,12 +880,12 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
                 updateData.lastVisit = date;
             }
 
-            batch.set(ref, updateData, { merge: true });
+            batch.set(ref, deepSanitize(updateData), { merge: true });
         } else {
             updateData.name = row.patientName;
             updateData.lastVisit = date;
             updateData.aliases = [];
-            batch.set(ref, updateData, { merge: true });
+            batch.set(ref, deepSanitize(updateData), { merge: true });
         }
     }
 
@@ -930,7 +894,7 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
 
 export const unlockDailyReport = async (date: string, clinicId: string, user: {uid: string, name: string}) => {
     const docId = `${clinicId}_${date}`;
-    await db.collection('daily_accounting').doc(docId).update({
+    await db.collection('daily_accounting').doc(docId).update(deepSanitize({
         isLocked: false,
         auditLog: firebase.firestore.FieldValue.arrayUnion({
             timestamp: new Date().toISOString(),
@@ -938,7 +902,7 @@ export const unlockDailyReport = async (date: string, clinicId: string, user: {u
             userName: user.name,
             action: 'UNLOCK'
         })
-    });
+    }));
 };
 
 export const seedTestEnvironment = async () => {

@@ -7,7 +7,7 @@ import { NHIClaimsModal } from './NHIClaimsModal';
 import { 
   Calculator, ChevronDown, 
   Banknote, TrendingUp, DollarSign, Loader2, AlertCircle, FileText, FileEdit, Plus, Trash2, ArrowUpCircle, ArrowDownCircle, FileSpreadsheet,
-  Users, User, X
+  Users, User, X, Info
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -23,7 +23,8 @@ interface CalculatedItem {
     content: string;
     revenue: number;
     labFee: number;
-    netProfit: number;
+    netProfit: number; // For Standard: Rev - Lab
+    displayBase: number; // NEW: For Self-Pay: Rev * Rate, For Standard: Rev - Lab
     income: number;
     originalRowId?: string; 
 }
@@ -33,8 +34,10 @@ interface CategoryResult {
     totalRevenue: number;
     totalLabFee: number;
     totalNetProfit: number;
+    totalDisplayBase: number; // NEW
     totalIncome: number;
     rate: number;
+    isSelfPay: boolean; // NEW
 }
 
 type ReportData = Record<string, CategoryResult>;
@@ -167,16 +170,20 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
             const map = CATEGORY_MAP[catKey];
             let rate = 0;
             if (typeof doctor !== 'string' && doctor.commissionRates) {
-                // Ensure whitening uses its specific key, defaulting to 0 if undefined
                 rate = (doctor.commissionRates as any)[map.rateKey] || 0;
             }
+            // Check Self Pay Flag
+            const isSelfPay = (typeof doctor !== 'string' && doctor.labFeeSelfPay?.[catKey as keyof typeof doctor.labFeeSelfPay]) || false;
+
             tempReport[catKey] = {
                 items: [],
                 totalRevenue: 0,
                 totalLabFee: 0,
                 totalNetProfit: 0,
+                totalDisplayBase: 0,
                 totalIncome: 0,
-                rate: rate
+                rate: rate,
+                isSelfPay: isSelfPay && catKey !== 'nhi' // NHI never self pay logic
             };
         });
 
@@ -190,19 +197,38 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                         Object.keys(CATEGORY_MAP).forEach(cat => {
                             if (cat === 'nhi') return;
                             
-                            // Robust number check
                             const revenue = Number(treatments[cat]) || 0;
                             
                             if (revenue !== 0) {
-                                const rate = tempReport[cat].rate;
-                                const income = revenue * (rate / 100);
-                                tempReport[cat].totalRevenue += revenue;
-                                tempReport[cat].totalNetProfit += revenue;
-                                tempReport[cat].totalIncome += income;
+                                const categoryData = tempReport[cat];
+                                const rate = categoryData.rate;
+                                const isSelfPay = categoryData.isSelfPay;
+
+                                // Income Calculation
+                                // SelfPay: Revenue * Rate
+                                // Standard: Revenue * Rate (Lab impact handled separately or effectively Net * Rate)
+                                // Actually Standard is (Rev - Lab) * Rate. 
+                                // Here we process Revenue contribution positive.
                                 
-                                // Only keep detailed items for individual report to save memory
+                                let income = 0;
+                                let displayBase = 0;
+
+                                if (isSelfPay) {
+                                    income = revenue * (rate / 100);
+                                    displayBase = income; // Base is the Commission Amount
+                                } else {
+                                    income = revenue * (rate / 100);
+                                    displayBase = revenue; // Base is Net Profit (Rev - 0 here)
+                                }
+
+                                categoryData.totalRevenue += revenue;
+                                categoryData.totalNetProfit += revenue; // Net starts with Revenue
+                                categoryData.totalDisplayBase += displayBase;
+                                categoryData.totalIncome += income;
+                                
+                                // Detail Items
                                 if (docId === selectedDoctorId && activeTab === 'individual') {
-                                    tempReport[cat].items.push({
+                                    categoryData.items.push({
                                         type: 'revenue',
                                         date: record.date,
                                         patient: row.patientName,
@@ -210,6 +236,7 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                                         revenue: revenue,
                                         labFee: 0, 
                                         netProfit: revenue, 
+                                        displayBase: displayBase,
                                         income: income, 
                                         originalRowId: row.id
                                     });
@@ -227,8 +254,10 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
             const revenue = myNhi.amount;
             const rate = tempReport['nhi'].rate;
             const income = revenue * (rate / 100);
+            
             tempReport['nhi'].totalRevenue += revenue;
             tempReport['nhi'].totalNetProfit += revenue;
+            tempReport['nhi'].totalDisplayBase += revenue; // NHI is standard
             tempReport['nhi'].totalIncome += income;
 
             if (docId === selectedDoctorId && activeTab === 'individual') {
@@ -238,32 +267,49 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                     patient: '健保局',
                     content: '健保申報總額',
                     revenue: revenue,
-                    labFee: 0, netProfit: revenue, income: income
+                    labFee: 0, 
+                    netProfit: revenue, 
+                    displayBase: revenue,
+                    income: income
                 });
             }
         }
 
-        // 3. Process Lab Fees
+        // 3. Process Lab Fees (Cost Deduction)
         const docTechRecords = techRecords.filter(r => r.doctorName === docName);
         docTechRecords.forEach(record => {
             if (record.category === 'vault' || !record.category) return;
             const catKey = record.category;
+            
             if (tempReport[catKey]) {
                 const cost = record.amount;
-                const rate = tempReport[catKey].rate;
-                
-                const netProfitImpact = -cost;
-                const incomeImpact = netProfitImpact * (rate / 100);
+                const categoryData = tempReport[catKey];
+                const rate = categoryData.rate;
+                const isSelfPay = categoryData.isSelfPay;
 
-                tempReport[catKey].totalLabFee += cost;
-                tempReport[catKey].totalNetProfit += netProfitImpact;
-                tempReport[catKey].totalIncome += incomeImpact;
+                // Impact Calculation
+                const netProfitImpact = -cost; 
+                let incomeImpact = 0;
+                let displayBaseImpact = 0;
 
-                // Detailed merge for individual view
+                if (isSelfPay) {
+                    incomeImpact = -cost; // 100% Doctor Paid
+                    displayBaseImpact = 0; // Lab fee does NOT reduce the Base (Rev*Rate)
+                } else {
+                    incomeImpact = -cost * (rate / 100); // Shared
+                    displayBaseImpact = -cost; // Lab fee reduces the Net Profit Base
+                }
+
+                categoryData.totalLabFee += cost;
+                categoryData.totalNetProfit += netProfitImpact;
+                categoryData.totalDisplayBase += displayBaseImpact;
+                categoryData.totalIncome += incomeImpact;
+
+                // Detailed merge
                 if (docId === selectedDoctorId && activeTab === 'individual') {
                     let merged = false;
                     if (record.type === 'linked') {
-                        const targetRow = tempReport[catKey].items.find(item => 
+                        const targetRow = categoryData.items.find(item => 
                             (record.linkedRowId && item.originalRowId === record.linkedRowId) ||
                             (!record.linkedRowId && item.date === record.date && item.patient === record.patientName)
                         );
@@ -271,8 +317,8 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                             targetRow.type = 'merged';
                             targetRow.labFee += cost;
                             targetRow.netProfit -= cost;
-                            // Re-calculate row income
-                            targetRow.income = targetRow.netProfit * (rate / 100);
+                            targetRow.displayBase += displayBaseImpact;
+                            targetRow.income += incomeImpact;
                             
                             const labLabel = record.labName ? `[${record.labName}]` : '[Lab]';
                             if (!targetRow.content.includes(labLabel)) targetRow.content += ` ${labLabel}`;
@@ -282,7 +328,7 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                     if (!merged) {
                         const sourceType = record.type === 'linked' ? '系統' : '手動';
                         const labInfo = record.labName ? `[${record.labName}]` : '';
-                        tempReport[catKey].items.push({
+                        categoryData.items.push({
                             type: 'cost',
                             date: record.date,
                             patient: record.patientName || '未指定',
@@ -290,6 +336,7 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                             revenue: 0,
                             labFee: cost,
                             netProfit: netProfitImpact,
+                            displayBase: displayBaseImpact,
                             income: incomeImpact
                         });
                     }
@@ -321,21 +368,14 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
         const [year, month] = selectedMonth.split('-').map(Number);
         const daysInMonth = new Date(year, month, 0).getDate();
         
-        // A. Fetch All Daily Records for Month
         const dailyPromises = [];
         for (let d = 1; d <= daysInMonth; d++) {
             const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
             dailyPromises.push(loadDailyAccounting(selectedClinicId, dateStr));
         }
         const dailyRecords = await Promise.all(dailyPromises);
-
-        // B. Fetch All Technician Records
         const techRecords = await getTechnicianRecords(selectedClinicId, '', selectedMonth);
-
-        // C. Fetch NHI Records
         const nhiRecords = await getNHIRecords(selectedClinicId, selectedMonth);
-
-        // D. Fetch Clinic-Wide Adjustments
         const adjRecords = await getClinicSalaryAdjustments(selectedClinicId, selectedMonth);
 
         return { dailyRecords, techRecords, nhiRecords, adjRecords };
@@ -347,7 +387,7 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
 
         try {
             const { dailyRecords, techRecords, nhiRecords, adjRecords } = await fetchAllData();
-            setNhiRecords(nhiRecords); // Update shared NHI state
+            setNhiRecords(nhiRecords); 
 
             if (activeTab === 'individual') {
                 if (!selectedDoctorId) return;
@@ -360,17 +400,13 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                 setGrandTotal(result.totalIncome);
                 setAdjustments(result.adjustments);
             } else {
-                // Summary Mode
                 const summaryList: DoctorSummary[] = [];
-                
                 clinicDocs.forEach(doctor => {
                     const result = calculateDoctorIncome(doctor, dailyRecords, techRecords, nhiRecords, adjRecords);
-                    
                     const categories: Record<string, number> = {};
                     Object.keys(result.reportData).forEach(cat => {
                         categories[cat] = result.reportData[cat].totalIncome;
                     });
-
                     summaryList.push({
                         doctorId: getDocId(doctor),
                         doctorName: getDocName(doctor),
@@ -401,16 +437,14 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
         const wb = XLSX.utils.book_new();
         const wsData: any[][] = [];
 
-        // Header
         wsData.push([`${clinicName} 醫師薪資表`]);
         wsData.push([`醫師: ${docName}`, `月份: ${selectedMonth}`]);
         wsData.push([]);
 
-        // --- Section A: Summary ---
+        // Summary
         wsData.push(["【薪資匯總 Summary】"]);
-        wsData.push(["項目", "總實收", "總技工費", "淨利", "抽成比 (%)", "醫師所得"]);
+        wsData.push(["項目", "總實收", "總技工費", "分潤基數/淨利", "抽成比 (%)", "醫師所得"]);
 
-        // Categories
         Object.keys(CATEGORY_MAP).forEach(key => {
             const data = report[key];
             if (data.totalRevenue === 0 && data.totalLabFee === 0 && data.totalIncome === 0) return;
@@ -419,35 +453,30 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                 CATEGORY_MAP[key].label,
                 data.totalRevenue,
                 data.totalLabFee,
-                data.totalNetProfit,
-                `${data.rate}%`,
+                data.totalDisplayBase,
+                data.isSelfPay ? `${data.rate}% (技工自付)` : `${data.rate}%`,
                 data.totalIncome
             ]);
         });
 
-        // Adjustments
         adjustments.forEach(adj => {
-            wsData.push([
-                `其他: ${adj.category} (${adj.note})`,
-                "-", "-", "-", "-", 
-                adj.amount
-            ]);
+            wsData.push([`其他: ${adj.category} (${adj.note})`, "-", "-", "-", "-", adj.amount]);
         });
 
-        // Grand Total
         wsData.push(["總計", "", "", "", "", grandTotal]);
         wsData.push([]);
         wsData.push([]);
 
-        // --- Section B: Details ---
+        // Details
         wsData.push(["【療程明細 Details】"]);
 
         Object.keys(CATEGORY_MAP).forEach(key => {
             const data = report[key];
             if (data.items.length === 0) return;
 
+            const baseHeader = data.isSelfPay ? "分潤基數 (Base)" : "淨利 (Net)";
             wsData.push([`--- ${CATEGORY_MAP[key].label} ---`]);
-            wsData.push(["日期", "病患", "療程內容", "實收", "技工費", "淨利", "醫師所得"]);
+            wsData.push(["日期", "病患", "療程內容", "實收", "技工費", baseHeader, "醫師所得"]);
 
             data.items.forEach(item => {
                 wsData.push([
@@ -456,34 +485,22 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                     item.content,
                     item.revenue,
                     item.labFee,
-                    item.netProfit,
+                    item.displayBase,
                     item.income
                 ]);
             });
-            // Subtotal row for category
             wsData.push([
                 "小計", "", "", 
                 data.totalRevenue, 
                 data.totalLabFee, 
-                data.totalNetProfit, 
+                data.totalDisplayBase, 
                 data.totalIncome
             ]);
-            wsData.push([]); // Spacer
+            wsData.push([]); 
         });
 
         const ws = XLSX.utils.aoa_to_sheet(wsData);
-        
-        // Column widths
-        ws['!cols'] = [
-            { wch: 15 }, // Date/Item
-            { wch: 15 }, // Patient
-            { wch: 30 }, // Content
-            { wch: 12 }, // Revenue
-            { wch: 12 }, // Lab
-            { wch: 12 }, // Net
-            { wch: 12 }, // Income
-        ];
-
+        ws['!cols'] = [{ wch: 15 }, { wch: 15 }, { wch: 30 }, { wch: 12 }, { wch: 12 }, { wch: 15 }, { wch: 12 }];
         XLSX.utils.book_append_sheet(wb, ws, "Salary Statement");
         XLSX.writeFile(wb, `${docName}_${selectedMonth}_薪資表.xlsx`);
     };
@@ -496,16 +513,13 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
         const wb = XLSX.utils.book_new();
         const wsData: any[][] = [];
 
-        // Header
         wsData.push([`${clinicName} 全院醫師薪資總表`]);
         wsData.push([`月份: ${selectedMonth}`]);
         wsData.push([]);
 
-        // Columns: Category, Doc1, Doc2, ...
         const headerRow = ["項目", ...summaryReport.map(s => s.doctorName)];
         wsData.push(headerRow);
 
-        // Rows: Each Category
         Object.keys(CATEGORY_MAP).forEach(catKey => {
             const row: (string | number)[] = [CATEGORY_MAP[catKey].label];
             let hasValue = false;
@@ -517,12 +531,10 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
             if (hasValue) wsData.push(row);
         });
 
-        // Adjustments Row
         const adjRow: (string | number)[] = ["其他增減項"];
         summaryReport.forEach(doc => adjRow.push(doc.totalAdjustments));
         wsData.push(adjRow);
 
-        // Total Row
         const totalRow: (string | number)[] = ["實領總額"];
         summaryReport.forEach(doc => totalRow.push(doc.totalPayout));
         wsData.push(totalRow);
@@ -532,7 +544,6 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
         XLSX.writeFile(wb, `${clinicName}_${selectedMonth}_全院總表.xlsx`);
     };
 
-    // --- Individual View Handlers ---
     const handleOpenAdjModal = () => {
         setAdjDate(selectedMonth + '-01');
         setAdjType('income');
@@ -563,7 +574,7 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
             };
             await addSalaryAdjustment(adjustment);
             setIsAdjustmentModalOpen(false);
-            handleCalculate(); // Refresh individual view
+            handleCalculate();
         } catch (error) {
             alert("新增失敗: " + (error as Error).message);
         } finally {
@@ -583,9 +594,7 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
 
     return (
         <div className="space-y-6 pb-12">
-            {/* Header & Tabs */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                {/* Global Controls */}
                 <div className="p-6 border-b border-slate-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                     <div>
                         <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
@@ -610,7 +619,6 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                     </div>
                 </div>
 
-                {/* Common Filters */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4 p-6 bg-slate-50 border-b border-slate-200 items-end">
                     <div>
                         <label className="block text-xs font-bold text-slate-500 uppercase mb-1">診所</label>
@@ -632,7 +640,6 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                         />
                     </div>
                     
-                    {/* Tab Specific Filter: Doctor */}
                     {activeTab === 'individual' ? (
                         <div>
                             <label className="block text-xs font-bold text-slate-500 uppercase mb-1">醫師</label>
@@ -647,7 +654,7 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                             </select>
                         </div>
                     ) : (
-                        <div></div> // Spacer
+                        <div></div> 
                     )}
 
                     <button 
@@ -660,7 +667,6 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                     </button>
                 </div>
                 
-                {/* Actions Toolbar */}
                 <div className="p-4 bg-white flex justify-end gap-3">
                     <button 
                         onClick={() => setIsBatchModalOpen(true)}
@@ -689,12 +695,9 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                 </div>
             </div>
 
-            {/* Content Body */}
-            
             {/* VIEW 1: INDIVIDUAL */}
             {activeTab === 'individual' && report && (
                 <div className="space-y-6 animate-fade-in">
-                    {/* Summary Card */}
                     <div className="bg-gradient-to-r from-teal-600 to-emerald-600 rounded-xl shadow-lg p-6 text-white flex justify-between items-center relative overflow-hidden">
                          <div className="relative z-10">
                             <h3 className="text-lg font-medium opacity-90 mb-1">本月總薪資 (Estimated)</h3>
@@ -709,26 +712,41 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                          <Banknote size={100} className="absolute -right-6 -bottom-6 text-white opacity-20 rotate-12" />
                     </div>
 
-                    {/* Detailed Tables per Category */}
                     {Object.keys(report).map(catKey => {
                         const data = report[catKey];
                         if (data.totalRevenue === 0 && data.totalLabFee === 0 && data.totalIncome === 0) return null;
 
+                        const isSelfPayMode = data.isSelfPay;
+                        const headerColor = isSelfPayMode ? 'bg-amber-50 border-b border-amber-200 text-amber-900' : 'bg-slate-50 border-b border-slate-200 text-slate-800';
+                        const badgeColor = isSelfPayMode ? 'bg-amber-100 text-amber-800 border-amber-200' : 'bg-teal-100 text-teal-800 border-teal-200';
+                        const netHeader = isSelfPayMode ? '分潤基數 (Base)' : '淨利 (Net)';
+                        const rowColor = isSelfPayMode ? 'hover:bg-amber-50/30' : 'hover:bg-slate-50';
+
                         return (
                             <div key={catKey} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                                <div className="bg-slate-50 p-4 border-b border-slate-200 flex justify-between items-center">
+                                <div className={`p-4 flex justify-between items-center ${headerColor}`}>
                                     <div className="flex items-center gap-2">
-                                        <TrendingUp className={catKey === 'nhi' ? 'text-blue-500' : 'text-slate-400'} size={20} />
-                                        <h3 className="font-bold text-slate-800 text-lg">
+                                        <TrendingUp className={catKey === 'nhi' ? 'text-blue-500' : isSelfPayMode ? 'text-amber-500' : 'text-slate-400'} size={20} />
+                                        <h3 className="font-bold text-lg">
                                             {CATEGORY_MAP[catKey].label}
                                         </h3>
-                                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${catKey === 'nhi' ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-teal-100 text-teal-800 border-teal-200'}`}>
-                                            抽成: {data.rate}%
-                                        </span>
+                                        <div className={`flex items-center gap-2 text-xs font-bold px-2 py-0.5 rounded-full border ${badgeColor}`}>
+                                            <span>抽成: {data.rate}%</span>
+                                            {isSelfPayMode && <span className="pl-1 border-l border-amber-300">技工自付</span>}
+                                        </div>
+                                        {isSelfPayMode && (
+                                            <div className="group relative flex items-center">
+                                                <Info size={14} className="text-amber-400 cursor-help" />
+                                                <div className="absolute left-6 top-0 hidden group-hover:block bg-slate-800 text-white text-xs rounded p-2 shadow-lg w-48 z-10">
+                                                    公式: (實收 × 分潤) + 技工費<br/>
+                                                    技工費全額由醫師支付
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                     <div className="text-right">
-                                        <span className="text-xs text-slate-500 font-bold uppercase tracking-wider">類別薪資</span>
-                                        <div className="text-xl font-bold text-teal-600 tabular-nums">
+                                        <span className={`text-xs font-bold uppercase tracking-wider ${isSelfPayMode ? 'text-amber-700' : 'text-slate-500'}`}>類別薪資</span>
+                                        <div className={`text-xl font-bold tabular-nums ${isSelfPayMode ? 'text-amber-600' : 'text-teal-600'}`}>
                                             ${Math.round(data.totalIncome).toLocaleString()}
                                         </div>
                                     </div>
@@ -742,13 +760,13 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                                                 <th className="px-4 py-3">內容</th>
                                                 <th className="px-4 py-3 text-right">實收 (Revenue)</th>
                                                 <th className="px-4 py-3 text-right">技工費 (Lab)</th>
-                                                <th className="px-4 py-3 text-right">淨利 (Net)</th>
+                                                <th className="px-4 py-3 text-right">{netHeader}</th>
                                                 <th className="px-4 py-3 text-right">醫師所得</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-slate-50">
                                             {data.items.map((item, idx) => (
-                                                <tr key={idx} className={`hover:bg-slate-50 transition-colors ${item.type === 'cost' ? 'bg-rose-50/30' : item.type === 'merged' ? 'bg-blue-50/10' : ''}`}>
+                                                <tr key={idx} className={`transition-colors ${rowColor} ${item.type === 'cost' ? 'bg-rose-50/30' : item.type === 'merged' ? 'bg-blue-50/10' : ''}`}>
                                                     <td className="px-4 py-3 font-mono text-blue-600 font-bold cursor-pointer hover:underline" onClick={() => catKey !== 'nhi' && navigate(`/accounting?date=${item.date}`)}>
                                                         {item.date.slice(5)}
                                                     </td>
@@ -763,8 +781,12 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                                                     <td className={`px-4 py-3 text-right font-mono ${item.labFee > 0 ? 'text-rose-500 font-bold' : (item.labFee < 0 ? 'text-green-600' : 'text-slate-300')}`}>
                                                         {item.labFee !== 0 ? `-$${Math.round(item.labFee).toLocaleString()}` : '-'}
                                                     </td>
-                                                    <td className="px-4 py-3 text-right font-mono font-bold text-slate-700">${Math.round(item.netProfit).toLocaleString()}</td>
-                                                    <td className="px-4 py-3 text-right font-mono font-bold text-teal-600">${Math.round(item.income).toLocaleString()}</td>
+                                                    <td className="px-4 py-3 text-right font-mono font-bold text-slate-700">
+                                                        ${Math.round(item.displayBase).toLocaleString()}
+                                                    </td>
+                                                    <td className={`px-4 py-3 text-right font-mono font-bold ${isSelfPayMode ? 'text-amber-600' : 'text-teal-600'}`}>
+                                                        ${Math.round(item.income).toLocaleString()}
+                                                    </td>
                                                 </tr>
                                             ))}
                                             <tr className="bg-slate-50/50 font-bold text-slate-700 border-t border-slate-200">
@@ -773,8 +795,10 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                                                 <td className="px-4 py-3 text-right text-rose-500">
                                                     {data.totalLabFee > 0 ? `-$${Math.round(data.totalLabFee).toLocaleString()}` : `$${Math.abs(Math.round(data.totalLabFee)).toLocaleString()}`}
                                                 </td>
-                                                <td className="px-4 py-3 text-right">${Math.round(data.totalNetProfit).toLocaleString()}</td>
-                                                <td className="px-4 py-3 text-right text-teal-600">${Math.round(data.totalIncome).toLocaleString()}</td>
+                                                <td className="px-4 py-3 text-right">${Math.round(data.totalDisplayBase).toLocaleString()}</td>
+                                                <td className={`px-4 py-3 text-right ${isSelfPayMode ? 'text-amber-600' : 'text-teal-600'}`}>
+                                                    ${Math.round(data.totalIncome).toLocaleString()}
+                                                </td>
                                             </tr>
                                         </tbody>
                                     </table>
@@ -783,7 +807,6 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                         );
                     })}
 
-                    {/* Adjustments Section */}
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                         <div className="p-4 bg-amber-50 border-b border-amber-200 flex justify-between items-center">
                             <h3 className="font-bold text-amber-800 flex items-center gap-2">
@@ -837,7 +860,6 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                 </div>
             )}
 
-            {/* VIEW 2: SUMMARY */}
             {activeTab === 'summary' && (
                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden animate-fade-in">
                     {summaryReport.length === 0 ? (
@@ -866,7 +888,6 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                                             ))}
                                         </tr>
                                     ))}
-                                    {/* Adjustments Row */}
                                     <tr className="bg-amber-50/50 hover:bg-amber-50">
                                         <td className="px-4 py-3 font-bold text-amber-800 sticky left-0 bg-amber-50/50 border-r border-amber-100">
                                             其他增減項
@@ -877,7 +898,6 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                                             </td>
                                         ))}
                                     </tr>
-                                    {/* Total Row */}
                                     <tr className="bg-indigo-50/50 font-black text-slate-800 border-t-2 border-indigo-100">
                                         <td className="px-4 py-3 sticky left-0 bg-indigo-50/50 border-r border-indigo-200">
                                             實領總額 (Payout)
@@ -895,7 +915,6 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                 </div>
             )}
 
-            {/* NHI Modal */}
             <NHIClaimsModal 
                 isOpen={isBatchModalOpen}
                 onClose={() => setIsBatchModalOpen(false)}
@@ -904,11 +923,10 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                 doctors={clinicDocs}
                 onSave={() => {
                     refreshNHIData();
-                    if (report) handleCalculate(); // Refresh report if open
+                    if (report) handleCalculate(); 
                 }}
             />
 
-            {/* Adjustment Modal */}
             {isAdjustmentModalOpen && (
                 <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
                     <div className="bg-white rounded-xl shadow-lg w-full max-w-md animate-fade-in overflow-hidden">

@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry } from '../types';
 import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientIdByName } from '../services/firebase';
@@ -137,7 +138,7 @@ const calculateDiff = (oldRow: AccountingRow, newRow: AccountingRow): string | n
     return `${prefix} ${changes.join(', ')}`;
 };
 
-export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratories }) => {
+export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants, laboratories, sovReferrals }) => {
   const { selectedClinicId, selectedClinic } = useClinic();
   const { currentUser, userRole } = useAuth();
   
@@ -490,6 +491,22 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                   const doc = clinicDocs.find(d => d.id === updates.doctorId);
                   if (doc) newRow.doctorName = doc.name;
               }
+
+              // --- AUTO SOV LAB LOGIC START ---
+              if (updates.treatments && typeof updates.treatments.sov === 'number') {
+                  const sovAmount = updates.treatments.sov;
+                  if (sovAmount > 0) {
+                      const pName = (newRow.patientName || '').trim();
+                      // Check matching referral for this clinic
+                      const isReferral = sovReferrals.some(ref => 
+                          ref.name.trim() === pName && 
+                          ref.clinicId === selectedClinicId
+                      );
+                      
+                      newRow.labName = isReferral ? "SOV轉介" : "SOV自約";
+                  }
+              }
+              // --- AUTO SOV LAB LOGIC END ---
 
               diffString = calculateDiff(r, newRow);
               return newRow;
@@ -945,7 +962,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                                                 {isNP ? (
                                                     <button 
                                                         onClick={() => setNpModalData({ row })}
-                                                        className="w-full bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 px-2 py-1 rounded text-xs font-bold flex items-center justify-center gap-1 transition-colors"
+                                                        className="w-full bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 px-1 py-1 rounded text-xs font-bold flex items-center justify-center gap-1 transition-colors"
                                                     >
                                                         <Tag size={12} /> NP
                                                     </button>

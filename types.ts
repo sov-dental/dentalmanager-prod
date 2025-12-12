@@ -309,6 +309,26 @@ export interface MonthlyTarget {
     selfPayTarget: number;
 }
 
+// NEW: Marketing / NP Record
+export interface NPRecord {
+    id?: string;
+    date: string; // YYYY-MM-DD
+    clinicId: string;
+    clinicName?: string; // Enhanced: For Dashboard Filtering
+    patientName: string;
+    treatment: string;
+    doctor?: string; // Legacy ID or Name
+    doctorName?: string; // Enhanced: For Dashboard Filtering
+    marketingTag?: string; // e.g. "植牙", "矯正"
+    source?: string; // 'FB', 'Line', '電話', '介紹', '過路客', '其他'
+    isVisited: boolean;
+    isClosed: boolean; // Deal closed
+    dealAmount?: number;
+    consultant?: string;
+    note?: string;
+    updatedAt: any;
+}
+
 export interface AppData {
   clinics: Clinic[];
   doctors: Doctor[];

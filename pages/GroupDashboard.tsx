@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Clinic, Consultant } from '../types';
-import { fetchDashboardSnapshot, ClinicMonthlySummary, saveMonthlyTarget, auth, getMonthlyAccounting, CLINIC_ORDER, getNPRecordsRange, NPRecord, saveNPRecord, getNPRecord, getStaffList, deleteNPRecord } from '../services/firebase';
+import { Clinic, Consultant, NPRecord } from '../types';
+import { fetchDashboardSnapshot, ClinicMonthlySummary, saveMonthlyTarget, auth, getMonthlyAccounting, CLINIC_ORDER, getNPRecordsRange, saveNPRecord, getNPRecord, getStaffList, deleteNPRecord } from '../services/firebase';
 import { listEvents, handleAuthClick } from '../services/googleCalendar';
 import { parseCalendarEvent } from '../utils/eventParser';
 import { UnauthorizedPage } from '../components/UnauthorizedPage';

@@ -1,20 +1,21 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry } from '../types';
-import { hydrateRow, getStaffList, db, upsertPatientFromEvent, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientIdByName } from '../services/firebase';
+import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientIdByName } from '../services/firebase';
 import { exportDailyReportToExcel } from '../services/excelExport';
 import { listEvents } from '../services/googleCalendar';
 import { parseCalendarEvent } from '../utils/eventParser';
-import { ClinicSelector } from './ClinicSelector';
+import { ClinicSelector } from '../components/ClinicSelector';
 import { useClinic } from '../contexts/ClinicContext';
 import { useAuth } from '../contexts/AuthContext';
-import { ClosingSummaryModal } from './ClosingSummaryModal';
-import { AuditLogModal } from './AuditLogModal';
-import { NPStatusModal } from './NPStatusModal'; // 引入 NP 彈窗 (請確保路徑正確，可能在 components 資料夾)
+import { ClosingSummaryModal } from '../components/ClosingSummaryModal';
+import { AuditLogModal } from '../components/AuditLogModal';
+import { NPStatusModal } from '../components/NPStatusModal';
 import { 
   Save, Plus, Trash2, FileSpreadsheet, Loader2,
   ChevronLeft, ChevronRight, RefreshCw, 
   Wallet, CreditCard, TrendingUp, CheckCircle, Circle, Filter,
-  WifiOff, Lock, Unlock, History, UserPlus
+  WifiOff, Lock, Unlock, History, Tag, UserPlus
 } from 'lucide-react';
 
 interface Props {
@@ -25,7 +26,6 @@ interface Props {
   sovReferrals: SOVReferral[];
 }
 
-// --- Debounced Input Component ---
 const InputCell = ({ 
     initialValue, 
     onCommit, 
@@ -80,6 +80,7 @@ const InputCell = ({
 // Helper
 const safeNum = (val: any) => (isNaN(Number(val)) ? 0 : Number(val));
 
+// --- Date Helpers (Local Time) ---
 const getTodayStr = () => {
     const now = new Date();
     const y = now.getFullYear();
@@ -90,8 +91,8 @@ const getTodayStr = () => {
 
 const getNextDate = (dateStr: string, offset: number) => {
     const [y, m, d] = dateStr.split('-').map(Number);
-    const date = new Date(y, m - 1, d);
-    date.setDate(date.getDate() + offset);
+    const date = new Date(y, m - 1, d); // Construct Local Date
+    date.setDate(date.getDate() + offset); // Mutate safely
     
     const ny = date.getFullYear();
     const nm = String(date.getMonth() + 1).padStart(2, '0');
@@ -99,7 +100,6 @@ const getNextDate = (dateStr: string, offset: number) => {
     return `${ny}-${nm}-${nd}`;
 };
 
-// --- Diff Logic ---
 const TREATMENT_LABELS: Record<string, string> = {
     regFee: '掛號', copayment: '部分', prostho: '假牙', implant: '植牙',
     ortho: '矯正', sov: 'SOV', inv: 'INV', whitening: '美白',
@@ -138,25 +138,11 @@ const calculateDiff = (oldRow: AccountingRow, newRow: AccountingRow): string | n
     return `${prefix} ${changes.join(', ')}`;
 };
 
-// --- NEW HELPER: NP Detection Logic ---
-const isRowNP = (row: AccountingRow): boolean => {
-    const status = (row.npStatus || '').toUpperCase();
-    const content = (row.treatmentContent || '').toUpperCase();
-    // const note = (row.note || '').toUpperCase(); // Un-comment if 'note' field exists
-
-    return (
-        status.includes('NP') || 
-        status.includes('新患') ||
-        content.includes('NP') || 
-        content.includes('初診')
-        // || note.includes('NP')
-    );
-};
-
-export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratories }) => {
+export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants, laboratories, sovReferrals }) => {
   const { selectedClinicId, selectedClinic } = useClinic();
   const { currentUser, userRole } = useAuth();
   
+  // ... (State definitions remain same) ...
   const [currentDate, setCurrentDate] = useState(getTodayStr());
   
   const [dailyRecord, setDailyRecord] = useState<DailyAccountingRecord | null>(null);
@@ -170,14 +156,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
   const [filterDoctorId, setFilterDoctorId] = useState<string>('');
-
-  // Lock & Modal State
   const [isClosingModalOpen, setIsClosingModalOpen] = useState(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
-  
-  // --- NEW: NP Modal State ---
-  const [isNPModalOpen, setIsNPModalOpen] = useState(false);
-  const [selectedNPRow, setSelectedNPRow] = useState<AccountingRow | null>(null);
+  const [npModalData, setNpModalData] = useState<{row: AccountingRow} | null>(null);
 
   const getDocId = (clinicId: string, dateStr: string) => `${clinicId}_${dateStr}`;
 
@@ -342,7 +323,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                               attendance: true,
                               startTime: ev.start.dateTime || new Date().toISOString(),
                               chartId: parsed.chartId || undefined,
-                              patientStatus: parsed.status
+                              patientStatus: parsed.status,
+                              // @ts-ignore
+                              isNP: parsed.isNP
                           });
                       }
                   });
@@ -436,6 +419,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
       setSaveStatus('saving');
       try {
           const cleanRows = prepareDataForSave(currentRows);
+          
           const payload = {
               clinicId: selectedClinicId,
               date: currentDate,
@@ -457,6 +441,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
           }
 
           await saveDailyAccounting(payload, auditEntry);
+          
           setSaveStatus('saved');
           setTimeout(() => setSaveStatus('idle'), 2000);
       } catch (e) {
@@ -490,6 +475,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
       }
 
       let diffString: string | null = null;
+
       const updatedRows = rows.map(r => {
           if (r.id === id) {
               const newRow = { ...r };
@@ -505,6 +491,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                   const doc = clinicDocs.find(d => d.id === updates.doctorId);
                   if (doc) newRow.doctorName = doc.name;
               }
+
               diffString = calculateDiff(r, newRow);
               return newRow;
           }
@@ -527,7 +514,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
           await lockDailyReport(currentDate, selectedClinicId, rows, { uid: currentUser.uid, name: currentUser.email || 'User' });
       } catch (e) {
           alert("結帳失敗，請重試");
-          throw e;
+          throw e; 
       }
   };
 
@@ -582,12 +569,13 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
 
           if (confirmLock) {
               try {
-                  await handleLockDay();
+                  await handleLockDay(); 
               } catch(e) {
                   return;
               }
           }
       }
+      
       setCurrentDate(targetDate);
   };
 
@@ -607,32 +595,29 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
               e.returnValue = ''; 
           }
       };
+      
       window.addEventListener('beforeunload', handleBeforeUnload);
       return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [dailyRecord, currentDate, rows.length]);
 
-  // --- NEW: NP Button Click Handler ---
-  const handleNPClick = (row: AccountingRow) => {
-      setSelectedNPRow(row);
-      setIsNPModalOpen(true);
-  };
-
   return (
     <div className="space-y-6 pb-20">
-        {/* Header & Controls */}
         <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div className="flex items-center gap-3">
                 <ClinicSelector className="border p-2 rounded-lg bg-slate-50 min-w-[150px]" />
                 <div className="flex items-center bg-slate-100 rounded-lg p-1">
                     <button onClick={handlePrevDay} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500"><ChevronLeft size={20}/></button>
+                    
                     <input 
                         type="date" 
                         className="bg-transparent border-none text-center font-bold text-slate-700 outline-none w-32 cursor-pointer" 
                         value={currentDate} 
                         onChange={e => handleSafeDateChange(e.target.value)} 
                     />
+                    
                     <button onClick={handleNextDay} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500"><ChevronRight size={20}/></button>
                 </div>
+                
                 {isLocked ? (
                     <div className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg text-sm font-bold">
                         <Lock size={14} /> 已結帳
@@ -646,6 +631,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                     </button>
                 )}
             </div>
+
             <div className="flex gap-2 items-center">
                 {saveStatus === 'saving' && <span className="text-xs text-slate-400 flex items-center gap-1"><Loader2 size={12} className="animate-spin"/> Saving...</span>}
                 {saveStatus === 'saved' && <span className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle size={12}/> Saved</span>}
@@ -653,25 +639,37 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                 
                 {isLocked && (userRole === 'admin' || userRole === 'manager') && (
                     <button onClick={handleUnlockDay} disabled={isSyncing} className="text-rose-500 hover:bg-rose-50 px-3 py-2 rounded-lg font-bold text-sm border border-rose-200 flex items-center gap-2">
-                        {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <Unlock size={16} />} 解鎖
+                        {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <Unlock size={16} />} 
+                        解鎖
                     </button>
                 )}
+
                 <button onClick={() => setIsAuditModalOpen(true)} className="text-slate-400 hover:text-slate-600 p-2 rounded-full hover:bg-slate-100" title="異動紀錄">
                     <History size={18} />
                 </button>
-                <button onClick={handleManualSave} disabled={isManualSaving || isLocked} className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50">
-                    {isManualSaving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} 儲存
+
+                <button 
+                    onClick={handleManualSave} 
+                    disabled={isManualSaving || isLocked} 
+                    className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50"
+                >
+                    {isManualSaving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} 
+                    儲存
                 </button>
+
                 <button onClick={handleSyncCalendar} disabled={isSyncing || isLocked} className="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-blue-100 transition-colors disabled:opacity-50">
                     {isSyncing ? <Loader2 className="animate-spin" size={16}/> : <RefreshCw size={16}/>} 同步預約
                 </button>
-                <button onClick={() => selectedClinic && exportDailyReportToExcel(selectedClinic.name, currentDate, rows)} className="bg-slate-100 text-slate-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-slate-200 transition-colors">
+                
+                <button 
+                    onClick={() => selectedClinic && exportDailyReportToExcel(selectedClinic.id, selectedClinic.name, currentDate, rows, expenditures, fullStaffList)} 
+                    className="bg-slate-100 text-slate-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-slate-200 transition-colors"
+                >
                     <FileSpreadsheet size={16} /> 匯出
                 </button>
             </div>
         </div>
 
-        {/* Dashboard */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-fade-in">
             <div className="bg-emerald-600 rounded-xl shadow-lg p-5 text-white flex flex-col justify-between relative overflow-hidden">
                 <div className="relative z-10">
@@ -686,6 +684,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                 </div>
                 <Wallet className="absolute -right-4 -bottom-4 text-emerald-500 opacity-20 rotate-12" size={100} />
             </div>
+
             <div className="bg-white border border-slate-200 shadow-sm rounded-xl p-5 flex flex-col justify-between">
                 <div>
                     <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-2">
@@ -694,10 +693,11 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                     <div className="text-3xl font-black text-slate-800 tabular-nums">${totals.nonCash.toLocaleString()}</div>
                 </div>
                 <div className="mt-4 pt-3 border-t border-slate-100 text-[10px] text-slate-400 font-medium flex justify-between">
-                    <span>💳 ${totals.cardRevenue.toLocaleString()}</span>
-                    <span>🏦 ${totals.transferRevenue.toLocaleString()}</span>
+                    <span>💳刷卡 ${totals.cardRevenue.toLocaleString()}</span>
+                    <span>🏦匯款 ${totals.transferRevenue.toLocaleString()}</span>
                 </div>
             </div>
+
             <div className="bg-gradient-to-r from-blue-600 to-indigo-600 shadow-lg rounded-xl p-5 text-white flex flex-col justify-between relative overflow-hidden">
                 <div className="relative z-10">
                     <h4 className="text-xs font-bold text-blue-100 uppercase tracking-wider mb-2 flex items-center gap-2">
@@ -712,7 +712,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
             </div>
         </div>
 
-        {/* Main Table */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
             {!isLoading && rows.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-24 bg-slate-50/50 m-4 border-2 border-dashed border-slate-200 rounded-xl gap-6 animate-fade-in">
@@ -733,13 +732,19 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                                 {isSyncing ? <Loader2 className="animate-spin" /> : <RefreshCw size={20} />}
                                 同步 Google 日曆
                             </button>
+                            
                             <div className="relative flex py-2 items-center">
                                 <div className="flex-grow border-t border-slate-200"></div>
                                 <span className="flex-shrink-0 mx-4 text-slate-300 text-xs font-bold uppercase">OR</span>
                                 <div className="flex-grow border-t border-slate-200"></div>
                             </div>
-                            <button onClick={handleAddRow} className="w-full bg-white border-2 border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-800 py-3 px-6 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors">
-                                <Plus size={18} /> 手動新增一列
+
+                            <button 
+                                onClick={handleAddRow}
+                                className="w-full bg-white border-2 border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-800 py-3 px-6 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors"
+                            >
+                                <Plus size={18} />
+                                手動新增一列
                             </button>
                         </div>
                     )}
@@ -751,20 +756,27 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                             <thead className="bg-gray-50 z-40 shadow-sm font-bold tracking-tight">
                                 <tr className="sticky top-[2px] z-40">
                                     <th className="px-2 py-2 border-r border-gray-200 text-center sticky left-0 bg-gray-50 z-50 min-w-[24px] text-slate-600" rowSpan={2}>#</th>
+                                    
                                     <th className="px-2 py-2 border-r border-gray-200 sticky left-[24px] bg-gray-50 z-50 min-w-[80px] text-left text-slate-600" rowSpan={2}>病歷號</th>
+                                    
                                     <th className="px-2 py-2 border-r border-gray-200 sticky left-[104px] bg-gray-50 z-50 min-w-[100px] text-left text-slate-600" rowSpan={2}>病患姓名</th>
                                     <th className="px-2 py-2 border-r border-gray-200 min-w-[100px] text-right bg-gray-50" rowSpan={2}>
                                         <div className="flex items-center gap-1 justify-end">
                                             <span className="text-slate-600">醫師</span>
                                             <div className="relative group">
                                                 <Filter size={12} className="text-slate-400 cursor-pointer" />
-                                                <select className="absolute top-0 right-0 w-full h-full opacity-0 cursor-pointer" value={filterDoctorId} onChange={e => setFilterDoctorId(e.target.value)}>
+                                                <select 
+                                                    className="absolute top-0 right-0 w-full h-full opacity-0 cursor-pointer"
+                                                    value={filterDoctorId}
+                                                    onChange={e => setFilterDoctorId(e.target.value)}
+                                                >
                                                     <option value="">全部</option>
                                                     {activeDoctorsInTable.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                                                 </select>
                                             </div>
                                         </div>
                                     </th>
+                                    
                                     <th colSpan={2} className="px-2 py-1 border-r border-gray-200 border-t-4 border-blue-400 bg-blue-50 text-center text-slate-700">基本費用 (FEES)</th>
                                     <th colSpan={9} className="px-2 py-1 border-r border-gray-200 border-t-4 border-purple-400 bg-purple-50 text-center text-slate-700">自費療程 (TREATMENT)</th>
                                     <th colSpan={4} className="px-2 py-1 border-r border-gray-200 border-t-4 border-orange-400 bg-orange-50 text-center text-slate-700">小金庫 (RETAIL)</th>
@@ -774,6 +786,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                                 <tr className="sticky top-[25px] z-30 shadow-sm">
                                     <th className="px-2 py-1 border-r border-blue-100 bg-blue-50 text-slate-700 text-center min-w-[60px]">掛號</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-blue-50 text-slate-700 text-center min-w-[60px]">部分</th>
+                                    
                                     <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">假牙</th>
                                     <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">植牙</th>
                                     <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">矯正</th>
@@ -783,13 +796,16 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                                     <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">美白</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-purple-50 text-slate-700 text-center min-w-[70px]">其他</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-purple-50 text-slate-700 text-center min-w-[80px]">諮詢師</th>
+                                    
                                     <th className="px-2 py-1 border-r border-orange-100 bg-orange-50 text-slate-700 text-center min-w-[70px]">小金庫</th>
                                     <th className="px-2 py-1 border-r border-orange-100 bg-orange-50 text-slate-700 text-center min-w-[70px]">物販</th>
                                     <th className="px-2 py-1 border-r border-orange-100 bg-orange-50 text-slate-700 text-center min-w-[100px]">品項</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-orange-50 text-slate-700 text-center min-w-[80px]">經手人</th>
+                                    
                                     <th className="px-2 py-1 border-r border-emerald-100 bg-emerald-50 text-slate-700 text-center min-w-[80px]">實收總計</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-emerald-50 text-slate-700 text-center min-w-[70px]">方式</th>
-                                    <th className="px-2 py-1 border-r border-gray-200 bg-slate-50 text-slate-500 min-w-[50px]">NP</th>
+                                    
+                                    <th className="px-2 py-1 border-r border-gray-200 bg-slate-50 text-slate-500 min-w-[80px]">NP</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-slate-50 text-slate-500 min-w-[120px]">療程內容</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-slate-50 text-slate-500 min-w-[100px]">技工所</th>
                                     <th className="px-2 py-1 bg-slate-50 w-8"></th>
@@ -804,17 +820,27 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                                                     (row.retail.products||0) + (row.retail.diyWhitening||0);
                                     
                                     const isChartIdLocked = isLocked || (!row.isManual && !!row.chartId && row.chartId !== 'NP');
+                                    
+                                    const isNP = 
+                                        (row as any).isNP === true || 
+                                        (row.npStatus && typeof row.npStatus === 'string' && row.npStatus.toUpperCase().includes('NP')) ||
+                                        ((row as any).note && typeof (row as any).note === 'string' && (row as any).note.toUpperCase().includes('NP'));
 
                                     return (
                                         <tr key={row.id} className="hover:bg-blue-50/30 group">
                                             <td className="px-1 py-1 border-r border-gray-200 text-center sticky left-0 bg-white group-hover:bg-blue-50/30 z-30">
                                                 <div className="flex flex-col items-center gap-1">
-                                                    <button onClick={() => updateRow(row.id, { attendance: !row.attendance })} className="transition-colors" disabled={isLocked}>
+                                                    <button 
+                                                        onClick={() => updateRow(row.id, { attendance: !row.attendance })}
+                                                        className="transition-colors"
+                                                        disabled={isLocked}
+                                                    >
                                                         {row.attendance ? <CheckCircle size={14} className="text-emerald-500" /> : <Circle size={14} className="text-slate-300" />}
                                                     </button>
                                                     <span className="text-[9px] text-slate-400">{idx+1}</span>
                                                 </div>
                                             </td>
+                                            
                                             <td className="px-1 py-1 border-r border-gray-200 sticky left-[24px] bg-white group-hover:bg-blue-50/30 z-30 align-middle">
                                                 <InputCell 
                                                     initialValue={row.chartId} 
@@ -824,6 +850,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                                                     disabled={isChartIdLocked}
                                                 />
                                             </td>
+
                                             <td className="px-1 py-1 border-r border-gray-200 sticky left-[104px] bg-white group-hover:bg-blue-50/30 z-30 align-middle">
                                                 <InputCell 
                                                     initialValue={row.patientName} 
@@ -846,15 +873,24 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                                                     </select>
                                                 ) : (
                                                     <div className="flex items-center gap-2 justify-end pr-2">
-                                                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-[14px] text-white font-bold shrink-0" style={{ backgroundColor: getDoctorColor(row.doctorId) }}>
+                                                        <div 
+                                                            className="w-8 h-8 rounded-full flex items-center justify-center text-[14px] text-white font-bold shrink-0"
+                                                            style={{ backgroundColor: getDoctorColor(row.doctorId) }}
+                                                        >
                                                             {getDoctorAvatarText(row.doctorId, row.doctorName)}
                                                         </div>
                                                         <span className="text-xs text-slate-700 font-medium truncate max-w-[60px] text-right">{row.doctorName}</span>
                                                     </div>
                                                 )}
                                             </td>
-                                            <td className="px-1 py-1 border-r border-gray-200 bg-blue-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-blue-600 font-mono text-[14px]" initialValue={row.treatments.regFee} onCommit={(v) => updateRow(row.id, { treatments: { regFee: safeNum(v) } })} /></td>
-                                            <td className="px-1 py-1 border-r border-gray-200 bg-blue-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-blue-600 font-mono text-[14px]" initialValue={row.treatments.copayment} onCommit={(v) => updateRow(row.id, { treatments: { copayment: safeNum(v) } })} /></td>
+
+                                            <td className="px-1 py-1 border-r border-gray-200 bg-blue-50/10">
+                                                <InputCell disabled={isLocked} type="number" align="right" className="text-blue-600 font-mono text-[14px]" initialValue={row.treatments.regFee} onCommit={(v) => updateRow(row.id, { treatments: { regFee: safeNum(v) } })} />
+                                            </td>
+                                            <td className="px-1 py-1 border-r border-gray-200 bg-blue-50/10">
+                                                <InputCell disabled={isLocked} type="number" align="right" className="text-blue-600 font-mono text-[14px]" initialValue={row.treatments.copayment} onCommit={(v) => updateRow(row.id, { treatments: { copayment: safeNum(v) } })} />
+                                            </td>
+
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.prostho} onCommit={(v) => updateRow(row.id, { treatments: { prostho: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.implant} onCommit={(v) => updateRow(row.id, { treatments: { implant: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.ortho} onCommit={(v) => updateRow(row.id, { treatments: { ortho: safeNum(v) } })} /></td>
@@ -864,53 +900,79 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.whitening} onCommit={(v) => updateRow(row.id, { treatments: { whitening: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.otherSelfPay} onCommit={(v) => updateRow(row.id, { treatments: { otherSelfPay: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10">
-                                                <select className="w-full bg-transparent text-xs text-slate-600 outline-none" value={row.treatments.consultant || ''} onChange={(e) => updateRow(row.id, { treatments: { consultant: e.target.value } })} disabled={isLocked}>
+                                                <select 
+                                                    className="w-full bg-transparent text-xs text-slate-600 outline-none"
+                                                    value={row.treatments.consultant || ''}
+                                                    onChange={(e) => updateRow(row.id, { treatments: { consultant: e.target.value } })}
+                                                    disabled={isLocked}
+                                                >
                                                     <option value=""></option>
                                                     {consultantOptions.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
                                                 </select>
                                             </td>
+
                                             <td className="px-1 py-1 border-r border-gray-200 bg-orange-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-orange-600 font-mono text-[14px]" initialValue={row.retail.diyWhitening} onCommit={(v) => updateRow(row.id, { retail: { diyWhitening: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-orange-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-orange-600 font-mono text-[14px]" initialValue={row.retail.products} onCommit={(v) => updateRow(row.id, { retail: { products: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-orange-50/10"><InputCell disabled={isLocked} initialValue={row.retailItem} onCommit={(v) => updateRow(row.id, { retailItem: v })} placeholder="品項" /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-orange-50/10">
-                                                <select className="w-full bg-transparent text-xs text-slate-600 outline-none" value={row.retail.staff || ''} onChange={(e) => updateRow(row.id, { retail: { staff: e.target.value } })} disabled={isLocked}>
+                                                <select 
+                                                    className="w-full bg-transparent text-xs text-slate-600 outline-none"
+                                                    value={row.retail.staff || ''}
+                                                    onChange={(e) => updateRow(row.id, { retail: { staff: e.target.value } })}
+                                                    disabled={isLocked}
+                                                >
                                                     <option value=""></option>
                                                     {staffOptions.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
                                                 </select>
                                             </td>
-                                            <td className="px-2 py-1 border-r border-gray-200 bg-emerald-50/10 text-right font-black text-emerald-600 text-lg font-bold">{totalAmount > 0 ? totalAmount.toLocaleString() : '-'}</td>
+
+                                            <td className="px-2 py-1 border-r border-gray-200 bg-emerald-50/10 text-right font-black text-emerald-600 text-lg font-bold">
+                                                {totalAmount > 0 ? totalAmount.toLocaleString() : '-'}
+                                            </td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-emerald-50/10">
-                                                <select className={`w-full bg-transparent text-[10px] font-bold outline-none uppercase text-center ${row.paymentMethod === 'card' ? 'text-pink-600' : row.paymentMethod === 'transfer' ? 'text-amber-600' : 'text-emerald-600'} ${isLocked ? 'opacity-50' : ''}`} value={row.paymentMethod} onChange={(e) => updateRow(row.id, { paymentMethod: e.target.value })} disabled={isLocked}>
+                                                <select 
+                                                    className={`w-full bg-transparent text-[10px] font-bold outline-none uppercase text-center ${row.paymentMethod === 'card' ? 'text-pink-600' : row.paymentMethod === 'transfer' ? 'text-amber-600' : 'text-emerald-600'} ${isLocked ? 'opacity-50' : ''}`}
+                                                    value={row.paymentMethod}
+                                                    onChange={(e) => updateRow(row.id, { paymentMethod: e.target.value })}
+                                                    disabled={isLocked}
+                                                >
                                                     <option value="cash">CASH</option>
                                                     <option value="card">CARD</option>
                                                     <option value="transfer">TRANS</option>
                                                 </select>
                                             </td>
-                                            
-                                            {/* NP Button Logic */}
-                                            <td className="px-1 py-1 border-r border-gray-200 text-center">
-                                                {isRowNP(row) ? (
-                                                    <div className="flex items-center justify-center gap-1">
-                                                        <span className="text-xs font-bold text-rose-500">NP</span>
-                                                        <button onClick={() => handleNPClick(row)} className="p-1 bg-rose-50 text-rose-600 rounded-full hover:bg-rose-100 hover:scale-110 transition-all shadow-sm" title="填寫 NP 追蹤紀錄">
-                                                            <UserPlus size={14} />
-                                                        </button>
-                                                    </div>
+
+                                            <td className="px-1 py-1 border-r border-gray-200 text-center align-middle">
+                                                {isNP ? (
+                                                    <button 
+                                                        onClick={() => setNpModalData({ row })}
+                                                        className="w-full bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 px-1 py-1 rounded text-xs font-bold flex items-center justify-center gap-1 transition-colors"
+                                                    >
+                                                        <Tag size={14} /> NP
+                                                    </button>
                                                 ) : (
-                                                    <InputCell initialValue={row.npStatus} onCommit={(v) => updateRow(row.id, { npStatus: v })} className="text-center" placeholder="-" />
+                                                    <InputCell 
+                                                        initialValue={row.npStatus || (row as any).note || ""} 
+                                                        onCommit={(v) => updateRow(row.id, { npStatus: v })} 
+                                                    />
                                                 )}
                                             </td>
-                                            
                                             <td className="px-1 py-1 border-r border-gray-200"><InputCell initialValue={row.treatmentContent} onCommit={(v) => updateRow(row.id, { treatmentContent: v })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200">
-                                                <select className="w-full bg-transparent text-xs outline-none text-slate-600" value={row.labName || ''} onChange={(e) => updateRow(row.id, { labName: e.target.value })}>
+                                                <select
+                                                    className="w-full bg-transparent text-xs outline-none text-slate-600"
+                                                    value={row.labName || ''}
+                                                    onChange={(e) => updateRow(row.id, { labName: e.target.value })}
+                                                >
                                                     <option value=""></option>
                                                     {clinicLabs.map(l => <option key={l.id} value={l.name}>{l.name}</option>)}
                                                 </select>
                                             </td>
                                             <td className="px-1 py-1 text-center">
                                                 {row.isManual && !isLocked && (
-                                                    <button onClick={() => handleDeleteRow(row.id)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={14} /></button>
+                                                    <button onClick={() => handleDeleteRow(row.id)} className="text-slate-300 hover:text-rose-500 transition-colors">
+                                                        <Trash2 size={14} />
+                                                    </button>
                                                 )}
                                             </td>
                                         </tr>
@@ -928,7 +990,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
             )}
         </div>
 
-        {/* Expenditure */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="p-4 bg-rose-50 border-b border-rose-100 flex justify-between items-center">
                 <h4 className="font-bold text-rose-700 text-sm">診所支出 (Expenditure)</h4>
@@ -944,10 +1005,29 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
             <div className="p-2 space-y-2 max-h-[200px] overflow-y-auto">
                 {expenditures.map((ex, idx) => (
                     <div key={ex.id} className="flex gap-2 items-center bg-slate-50 p-1.5 rounded border border-slate-100">
-                        <input className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none" value={ex.item} disabled={isLocked} onChange={e => { const newEx = [...expenditures]; newEx[idx].item = e.target.value; handleExpenditureChange(newEx); }} placeholder="項目名稱" />
-                        <input type="number" className="w-24 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none text-right font-bold text-rose-600" value={ex.amount} disabled={isLocked} onChange={e => { const newEx = [...expenditures]; newEx[idx].amount = Number(e.target.value); handleExpenditureChange(newEx); }} placeholder="0" />
+                        <input 
+                            className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none" 
+                            value={ex.item} 
+                            disabled={isLocked}
+                            onChange={e => {
+                                const newEx = [...expenditures]; newEx[idx].item = e.target.value; handleExpenditureChange(newEx);
+                            }} 
+                            placeholder="項目名稱" 
+                        />
+                        <input 
+                            type="number" 
+                            className="w-24 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none text-right font-bold text-rose-600" 
+                            value={ex.amount} 
+                            disabled={isLocked}
+                            onChange={e => {
+                                const newEx = [...expenditures]; newEx[idx].amount = Number(e.target.value); handleExpenditureChange(newEx);
+                            }} 
+                            placeholder="0" 
+                        />
                         {!isLocked && (
-                            <button onClick={() => handleExpenditureChange(expenditures.filter((_, i) => i !== idx))} className="text-slate-400 hover:text-rose-500"><Trash2 size={14} /></button>
+                            <button onClick={() => handleExpenditureChange(expenditures.filter((_, i) => i !== idx))} className="text-slate-400 hover:text-rose-500">
+                                <Trash2 size={14} />
+                            </button>
                         )}
                     </div>
                 ))}
@@ -970,12 +1050,11 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, laboratorie
             logs={dailyRecord?.auditLog || []}
         />
 
-        {/* --- NEW: NP Modal --- */}
-        {selectedNPRow && (
+        {npModalData && (
             <NPStatusModal 
-                isOpen={isNPModalOpen}
-                onClose={() => setIsNPModalOpen(false)}
-                row={selectedNPRow}
+                isOpen={!!npModalData}
+                onClose={() => setNpModalData(null)}
+                row={npModalData.row}
                 clinicId={selectedClinicId}
                 date={currentDate}
             />

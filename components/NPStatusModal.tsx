@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
-import { AccountingRow } from '../types';
-import { getStaffList, saveNPRecord, getNPRecord, NPRecord, getMarketingTags, saveMarketingTags } from '../services/firebase';
+import { AccountingRow, NPRecord } from '../types';
+import { getStaffList, saveNPRecord, getNPRecord, getMarketingTags, saveMarketingTags } from '../services/firebase';
 import { X, Save, Loader2, Tag, MessageCircle, User, DollarSign, Settings, Plus, Trash2, CheckSquare } from 'lucide-react';
 
 interface Props {

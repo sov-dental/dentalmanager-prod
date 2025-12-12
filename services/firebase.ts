@@ -3,7 +3,7 @@ import firebase from "firebase/compat/app";
 import "firebase/compat/auth";
 import "firebase/compat/firestore";
 import "firebase/compat/storage";
-import { AppData, DailyAccountingRecord, AccountingRow, TechnicianRecord, MonthlyTarget, Clinic, NHIRecord, SalaryAdjustment, Consultant, InsuranceGrade, User, UserRole, Doctor, Laboratory, SOVReferral, DailySchedule, AuditLogEntry } from '../types';
+import { AppData, DailyAccountingRecord, AccountingRow, TechnicianRecord, MonthlyTarget, Clinic, NHIRecord, SalaryAdjustment, Consultant, InsuranceGrade, User, UserRole, Doctor, Laboratory, SOVReferral, DailySchedule, AuditLogEntry, NPRecord } from '../types';
 
 // --- CONFIGURATION STRATEGY: HOSTNAME BASED ---
 
@@ -518,26 +518,6 @@ export interface Patient {
     totalSpending?: number;
     aliases?: string[]; // Added: For Smart Search
     updatedAt?: any;
-}
-
-// --- NEW: MARKETING / NP RECORDS ---
-export interface NPRecord {
-    id?: string;
-    date: string; // YYYY-MM-DD
-    clinicId: string;
-    clinicName?: string; // Enhanced: For Dashboard Filtering
-    patientName: string;
-    treatment: string;
-    doctor?: string; // Legacy ID or Name
-    doctorName?: string; // Enhanced: For Dashboard Filtering
-    marketingTag?: string; // e.g. "植牙", "矯正"
-    source?: string; // 'FB', 'Line', '電話', '介紹', '過路客', '其他'
-    isVisited: boolean;
-    isClosed: boolean; // Deal closed
-    dealAmount?: number;
-    consultant?: string;
-    note?: string;
-    updatedAt: any;
 }
 
 // --- NEW: MARKETING TAGS HELPERS ---

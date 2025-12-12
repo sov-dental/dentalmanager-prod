@@ -56,6 +56,11 @@ export interface Clinic {
       afternoon: string;
       evening: string;
   };
+  shiftLabels?: {
+      morning: string;
+      afternoon: string;
+      evening: string;
+  };
   styleConfig?: ClinicStyleConfig;
   googleCalendarMapping?: Record<string, string>;
   allowedUsers?: string[];

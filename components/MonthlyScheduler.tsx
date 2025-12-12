@@ -16,12 +16,6 @@ interface Props {
 const SHIFTS: ShiftType[] = ['Morning', 'Afternoon', 'Evening'];
 const MONTHS = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
 
-const SHIFT_LABELS: Record<ShiftType, string> = {
-    Morning: '早診 (10:00-13:00)',
-    Afternoon: '午診 (14:00-17:00)',
-    Evening: '晚診 (18:00-21:00)'
-};
-
 const SHIFT_BADGE_TEXT: Record<ShiftType, string> = {
     Morning: '早',
     Afternoon: '午',
@@ -407,6 +401,13 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
       Evening: selectedClinic?.shiftColors?.evening || '#818cf8',
   };
 
+  // Dynamic Shift Labels from Clinic Settings
+  const dynamicShiftLabels: Record<ShiftType, string> = {
+      Morning: selectedClinic?.shiftLabels?.morning || '早診 (10:00-13:00)',
+      Afternoon: selectedClinic?.shiftLabels?.afternoon || '午診 (14:00-17:00)',
+      Evening: selectedClinic?.shiftLabels?.evening || '晚診 (18:00-21:00)'
+  };
+
   return (
     <div className="space-y-6">
        <div className="flex flex-col lg:flex-row items-center lg:justify-between gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
@@ -624,7 +625,7 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
                                {SHIFTS.map(shift => (
                                    <ShiftEditorSection 
                                        key={shift}
-                                       label={SHIFT_LABELS[shift]}
+                                       label={dynamicShiftLabels[shift]}
                                        color={shiftColors[shift]}
                                        doctors={doctors.filter(d => d.clinicId === selectedClinicId)}
                                        selectedDocIds={editingSchedule.shifts[shift]}

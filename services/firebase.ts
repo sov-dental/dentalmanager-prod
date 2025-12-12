@@ -47,7 +47,6 @@ export const CLINIC_ORDER: Record<string, number> = {
   '台南蒔光': 2,
   '新竹橙蒔': 3,
   '台中日蒔': 4,
-  '古亭蒔光': 5,
   '古亭蒔穗': 5
 };
 

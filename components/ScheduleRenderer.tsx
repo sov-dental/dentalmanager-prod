@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { Clinic, Doctor, DailySchedule, ShiftType, ClinicStyleConfig } from '../types';
 
@@ -35,6 +36,12 @@ export const ScheduleRenderer: React.FC<ScheduleRendererProps> = ({
         Morning: clinic.shiftColors?.morning || '#fbbf24',
         Afternoon: clinic.shiftColors?.afternoon || '#fb923c',
         Evening: clinic.shiftColors?.evening || '#818cf8',
+    };
+
+    const shiftLabels = clinic.shiftLabels || {
+        morning: '早診 10:00-13:00',
+        afternoon: '午診 14:00-17:00',
+        evening: '晚診 18:00-21:00'
     };
 
     const hasImage = !!clinic.scheduleImageUrl;
@@ -461,13 +468,13 @@ export const ScheduleRenderer: React.FC<ScheduleRendererProps> = ({
                         {shiftDisplay.showTime && (
                             <div className="flex flex-wrap items-center justify-center gap-6 text-sm font-bold opacity-80 mb-4" style={{color: palette.text}}>
                                 <div className="flex items-center gap-2">
-                                    <span className="w-4 h-4 rounded-full shadow-sm" style={{backgroundColor: shiftColors.Morning}}></span> 早診 10:00-13:00
+                                    <span className="w-4 h-4 rounded-full shadow-sm" style={{backgroundColor: shiftColors.Morning}}></span> {shiftLabels.morning}
                                 </div>
                                 <div className="flex items-center gap-2">
-                                    <span className="w-4 h-4 rounded-full shadow-sm" style={{backgroundColor: shiftColors.Afternoon}}></span> 午診 14:00-17:00
+                                    <span className="w-4 h-4 rounded-full shadow-sm" style={{backgroundColor: shiftColors.Afternoon}}></span> {shiftLabels.afternoon}
                                 </div>
                                 <div className="flex items-center gap-2">
-                                    <span className="w-4 h-4 rounded-full shadow-sm" style={{backgroundColor: shiftColors.Evening}}></span> 晚診 18:00-21:00
+                                    <span className="w-4 h-4 rounded-full shadow-sm" style={{backgroundColor: shiftColors.Evening}}></span> {shiftLabels.evening}
                                 </div>
                             </div>
                         )}

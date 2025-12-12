@@ -4,7 +4,7 @@ import { Clinic, DailyHours, ClinicStyleConfig } from '../types';
 import { DEFAULT_STYLE_CONFIG } from '../services/storageService';
 import { uploadImage } from '../services/firebase';
 import { VisualConfigForm } from './VisualConfigForm';
-import { MapPin, Phone, Plus, Check, X, Link as LinkIcon, Image as ImageIcon, Edit2, Palette, Code, Upload, Loader2, Users } from 'lucide-react';
+import { MapPin, Phone, Plus, Check, X, Link as LinkIcon, Image as ImageIcon, Edit2, Palette, Code, Upload, Loader2, Users, Clock } from 'lucide-react';
 import { useClinic } from '../contexts/ClinicContext';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -39,7 +39,12 @@ export const ClinicManager: React.FC<Props> = ({ onSave }) => {
     themeColor: '#0d9488',
     styleConfig: DEFAULT_STYLE_CONFIG,
     googleCalendarMapping: {},
-    allowedUsers: []
+    allowedUsers: [],
+    shiftLabels: {
+        morning: '早診 10:00-13:00',
+        afternoon: '午診 14:00-17:00',
+        evening: '晚診 18:00-21:00'
+    }
   });
 
   const [styleJson, setStyleJson] = useState(JSON.stringify(DEFAULT_STYLE_CONFIG, null, 2));
@@ -60,6 +65,11 @@ export const ClinicManager: React.FC<Props> = ({ onSave }) => {
             morning: '#fbbf24',
             afternoon: '#fb923c',
             evening: '#818cf8'
+        },
+        shiftLabels: {
+            morning: '早診 10:00-13:00',
+            afternoon: '午診 14:00-17:00',
+            evening: '晚診 18:00-21:00'
         },
         styleConfig: DEFAULT_STYLE_CONFIG,
         googleCalendarMapping: {},
@@ -98,6 +108,11 @@ export const ClinicManager: React.FC<Props> = ({ onSave }) => {
             morning: '#fbbf24',
             afternoon: '#fb923c',
             evening: '#818cf8'
+        },
+        shiftLabels: clinic.shiftLabels || {
+            morning: '早診 10:00-13:00',
+            afternoon: '午診 14:00-17:00',
+            evening: '晚診 18:00-21:00'
         },
         styleConfig: config,
         googleCalendarMapping: clinic.googleCalendarMapping || {},
@@ -231,6 +246,7 @@ export const ClinicManager: React.FC<Props> = ({ onSave }) => {
     try {
         const safeWeeklyHours = newClinic.weeklyHours ? JSON.parse(JSON.stringify(newClinic.weeklyHours)) : Array(7).fill({ Morning: true, Afternoon: true, Evening: true });
         const safeShiftColors = newClinic.shiftColors || { morning: '#fbbf24', afternoon: '#fb923c', evening: '#818cf8' };
+        const safeShiftLabels = newClinic.shiftLabels || { morning: '早診 10:00-13:00', afternoon: '午診 14:00-17:00', evening: '晚診 18:00-21:00' };
         const safeStyleConfig = newClinic.styleConfig || DEFAULT_STYLE_CONFIG;
         const safeAllowedUsers = newClinic.allowedUsers || [];
 
@@ -248,6 +264,7 @@ export const ClinicManager: React.FC<Props> = ({ onSave }) => {
                 scheduleImageUrl: newClinic.scheduleImageUrl || '',
                 logoUrl: newClinic.logoUrl || '',
                 shiftColors: safeShiftColors,
+                shiftLabels: safeShiftLabels,
                 styleConfig: safeStyleConfig,
                 googleCalendarMapping: newClinic.googleCalendarMapping || c.googleCalendarMapping || {},
                 allowedUsers: safeAllowedUsers
@@ -264,6 +281,7 @@ export const ClinicManager: React.FC<Props> = ({ onSave }) => {
                 scheduleImageUrl: newClinic.scheduleImageUrl || '',
                 logoUrl: newClinic.logoUrl || '',
                 shiftColors: safeShiftColors,
+                shiftLabels: safeShiftLabels,
                 styleConfig: safeStyleConfig,
                 googleCalendarMapping: {},
                 allowedUsers: safeAllowedUsers
@@ -343,7 +361,7 @@ export const ClinicManager: React.FC<Props> = ({ onSave }) => {
       <div className="flex justify-between items-center mb-6">
         <div>
             <h2 className="text-3xl font-bold text-slate-800">診所管理</h2>
-            <p className="text-slate-500">設定診所地點及其固定營業時間。</p>
+            <p className="text-slate-500">設定診所地點、排班時段顯示及固定營業時間。</p>
         </div>
         {!isAdding && userRole === 'admin' && (
             <button
@@ -406,6 +424,54 @@ export const ClinicManager: React.FC<Props> = ({ onSave }) => {
                        onChange={e => setNewClinic({ ...newClinic, lineUrl: e.target.value })}
                        placeholder="https://line.me/..."
                    />
+              </div>
+
+              {/* Shift Labels Configuration */}
+              <div className="border-t border-slate-100 pt-4 mt-4">
+                  <h4 className="text-sm font-semibold text-slate-800 mb-3 flex items-center gap-2">
+                      <Clock size={16} /> 排班時段顯示設定 (Shift Display)
+                  </h4>
+                  <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 grid grid-cols-3 gap-3">
+                      <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">早診顯示文字</label>
+                          <input 
+                              className="w-full border rounded px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-teal-500"
+                              value={newClinic.shiftLabels?.morning || ''}
+                              onChange={e => setNewClinic({ 
+                                  ...newClinic, 
+                                  shiftLabels: { ...newClinic.shiftLabels!, morning: e.target.value } 
+                              })}
+                              placeholder="早診 10:00-13:00"
+                          />
+                      </div>
+                      <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">午診顯示文字</label>
+                          <input 
+                              className="w-full border rounded px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-teal-500"
+                              value={newClinic.shiftLabels?.afternoon || ''}
+                              onChange={e => setNewClinic({ 
+                                  ...newClinic, 
+                                  shiftLabels: { ...newClinic.shiftLabels!, afternoon: e.target.value } 
+                              })}
+                              placeholder="午診 14:00-17:00"
+                          />
+                      </div>
+                      <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">晚診顯示文字</label>
+                          <input 
+                              className="w-full border rounded px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-teal-500"
+                              value={newClinic.shiftLabels?.evening || ''}
+                              onChange={e => setNewClinic({ 
+                                  ...newClinic, 
+                                  shiftLabels: { ...newClinic.shiftLabels!, evening: e.target.value } 
+                              })}
+                              placeholder="晚診 18:00-21:00"
+                          />
+                      </div>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1 ml-1">
+                      此設定將影響排班表圖片下方的說明文字及編輯器標題。
+                  </p>
               </div>
 
               {/* Authorized Staff Section */}

@@ -86,6 +86,7 @@ export interface Doctor {
       otherSelfPay: number;
       nhi?: number;
   };
+  isDeleted?: boolean; // Soft delete flag
 }
 
 export type ConsultantRole = 'consultant' | 'assistant' | 'part_time' | 'trainee';
@@ -127,6 +128,7 @@ export interface Laboratory {
     name: string;
     clinicId: string;
     pricingList?: LabPricingItem[]; // NEW: Pricing List
+    isDeleted?: boolean; // Soft delete flag
 }
 
 export interface SOVReferral {

@@ -158,7 +158,8 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
                         color: avatarBgColor, // Sync legacy color
                         avatarText,
                         avatarBgColor,
-                        commissionRates
+                        commissionRates,
+                        isDeleted: d.isDeleted // Preserve flag if exists
                     } as Doctor;
                 }
                 // Return as is (handling if it was string, it remains string unless matched)
@@ -189,12 +190,31 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
   };
 
   const handleDeleteDoctor = async (id: string) => {
-      if (!confirm("確定要刪除這位醫師嗎？此動作無法復原。")) return;
+      if (!confirm("確定要刪除這位醫師嗎？此動作將隱藏資料而非永久刪除。")) return;
       
       setIsSaving(true);
       try {
-          // Handle both string and object removal
-          const updatedDoctors = doctors.filter((d: any) => getDocId(d) !== id);
+          // Soft Delete: Map over array and set isDeleted flag
+          const updatedDoctors = doctors.map((d: any) => {
+              const currentId = getDocId(d);
+              if (currentId === id) {
+                  // Handle legacy string case by converting to object
+                  if (typeof d === 'string') {
+                      return {
+                          id: d,
+                          name: d,
+                          clinicId: selectedClinicId,
+                          isDeleted: true,
+                          // Defaults for safety
+                          color: '#3b82f6',
+                          recurringShifts: [],
+                          commissionRates: { prostho: 0, implant: 0, ortho: 0, sov: 0, inv: 0, perio: 0, whitening: 0, otherSelfPay: 0, nhi: 0 }
+                      } as Doctor;
+                  }
+                  return { ...d, isDeleted: true };
+              }
+              return d;
+          });
           await onSave(updatedDoctors);
       } catch (error) {
           alert("刪除失敗: " + (error as Error).message);
@@ -212,9 +232,12 @@ export const DoctorManager: React.FC<Props> = ({ doctors, onSave }) => {
       }));
   };
 
-  // Filter safely
+  // Filter safely - Hide deleted
   const filteredDoctors = doctors.filter((d: any) => {
-      if (typeof d === 'string') return true; // Legacy strings don't have clinicId, so show them everywhere or nowhere. Showing for safety.
+      // Exclude soft deleted
+      if (typeof d !== 'string' && d.isDeleted) return false;
+
+      if (typeof d === 'string') return true; // Legacy strings don't have clinicId, so show them everywhere.
       return d.clinicId === selectedClinicId;
   });
 

@@ -1,10 +1,9 @@
 
 import React, { useState } from 'react';
 import { Laboratory, Clinic, LabPricingItem } from '../types';
-import { Microscope, Plus, Trash2, Edit2, X, Loader2, DollarSign, List, Percent } from 'lucide-react';
+import { Microscope, Plus, Trash2, Edit2, X, Loader2, List, Percent } from 'lucide-react';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from './ClinicSelector';
-import { saveLaboratories } from '../services/firebase';
 
 interface Props {
   laboratories: Laboratory[];
@@ -105,9 +104,6 @@ export const LaboratoryManager: React.FC<Props> = ({ laboratories, onSave }) => 
             updatedList = [...laboratories, newLab];
         }
 
-        // We use saveLaboratories directly via parent callback, which now persists to clinics/
-        // Note: In firebase.ts update saveLaboratories to handle this if using legacy structure.
-        // The parent App.tsx usually wraps this. 
         await onSave(updatedList);
         resetForm();
     } catch (error) {
@@ -122,7 +118,10 @@ export const LaboratoryManager: React.FC<Props> = ({ laboratories, onSave }) => 
 
     setIsSaving(true);
     try {
-        const updatedList = laboratories.filter(l => l.id !== id);
+        // Soft Delete: Mark as deleted instead of filtering out
+        const updatedList = laboratories.map(l => 
+            l.id === id ? { ...l, isDeleted: true } : l
+        );
         await onSave(updatedList);
     } catch (error) {
         alert("刪除失敗: " + (error as Error).message);
@@ -131,7 +130,8 @@ export const LaboratoryManager: React.FC<Props> = ({ laboratories, onSave }) => 
     }
   };
 
-  const filteredLabs = laboratories.filter(l => l.clinicId === selectedClinicId);
+  // Filter out deleted labs
+  const filteredLabs = laboratories.filter(l => l.clinicId === selectedClinicId && !l.isDeleted);
 
   return (
     <div className="space-y-6">

@@ -6,8 +6,8 @@ import { getMonthlyAccounting, getTechnicianRecords, saveTechnicianRecord, delet
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from './ClinicSelector';
 import { 
-    Microscope, Calendar, Save, AlertCircle, Plus, Loader2, 
-    Search, X, FileEdit, Trash2, ArrowRightCircle, List, DollarSign
+    Microscope, Save, Plus, Loader2, 
+    Search, X, FileEdit, Trash2, List
 } from 'lucide-react';
 
 interface Props {
@@ -57,6 +57,47 @@ const MANUAL_CATEGORY_OPTIONS = [
     { value: 'vault', label: '小金庫/物販' },
 ];
 
+// Helper: Inline Input for Table Editing
+const InlineInput = ({ 
+    value, 
+    onChange, 
+    className = "", 
+    placeholder = "",
+    type = "text",
+    list
+}: { 
+    value: string | number | undefined; 
+    onChange: (val: string) => void; 
+    className?: string; 
+    placeholder?: string;
+    type?: string;
+    list?: string;
+}) => {
+    const [localValue, setLocalValue] = useState(value);
+
+    useEffect(() => {
+        setLocalValue(value);
+    }, [value]);
+
+    const handleBlur = () => {
+        if (localValue !== value) {
+            onChange(String(localValue));
+        }
+    };
+
+    return (
+        <input 
+            type={type}
+            className={`w-full bg-transparent border border-transparent hover:border-slate-300 focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 outline-none transition-all ${className}`}
+            value={localValue || ''}
+            onChange={e => setLocalValue(e.target.value)}
+            onBlur={handleBlur}
+            placeholder={placeholder}
+            list={list}
+        />
+    );
+};
+
 export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
     const navigate = useNavigate();
     const { selectedClinicId } = useClinic();
@@ -72,26 +113,18 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
 
     // Order Modal State
     const [orderModalOpen, setOrderModalOpen] = useState(false);
-    const [selectedOrderRowId, setSelectedOrderRowId] = useState<string | null>(null);
-    const [orderRowRevenue, setOrderRowRevenue] = useState(0); // NEW: Revenue for calculation
+    const [activeOrderType, setActiveOrderType] = useState<'linked' | 'manual'>('linked');
+    const [selectedOrderRecordId, setSelectedOrderRecordId] = useState<string | null>(null); // For manual
+    const [selectedOrderRowId, setSelectedOrderRowId] = useState<string | null>(null); // For linked
+    
+    const [orderRowRevenue, setOrderRowRevenue] = useState(0); 
     const [orderItems, setOrderItems] = useState<LabOrderDetail[]>([]);
     const [orderDiscount, setOrderDiscount] = useState(0);
-    // Which lab is the target for the modal?
     const [activeOrderLab, setActiveOrderLab] = useState<Laboratory | undefined>(undefined);
-
-    // Manual Modal State
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [manualDate, setManualDate] = useState('');
-    const [manualPatient, setManualPatient] = useState('');
-    const [manualDoctor, setManualDoctor] = useState('');
-    const [manualCategory, setManualCategory] = useState('prostho'); 
-    const [manualContent, setManualContent] = useState('');
-    const [manualAmount, setManualAmount] = useState<string>('');
-    const [manualNote, setManualNote] = useState('');
 
     useEffect(() => {
         if (selectedClinicId) {
-            // Default to 'all' instead of first lab
+            // Default to 'all'
             setSelectedLabId('all');
             
             // Fetch Doctors for Dropdown
@@ -127,7 +160,6 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
             const dailyData = await getMonthlyAccounting(selectedClinicId, selectedMonth);
             
             // 2. Fetch Existing Technician Records (Write Target)
-            // Pass null to fetch all if "all" selected
             const techData = await getTechnicianRecords(selectedClinicId, labNameFilter, selectedMonth);
 
             // 3. Separate Manual Adjustments
@@ -138,20 +170,18 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
             const linkedTechRecords = techData.filter(r => r.type === 'linked');
             const recordMap = new Map(linkedTechRecords.map(r => [r.linkedRowId, r]));
 
-            // 5. Filter Daily Rows & Process Attribution Logic
+            // 5. Filter Daily Rows
             const merged: LinkedRow[] = dailyData
                 .filter(row => {
                     if (labNameFilter) {
                         return row.labName && row.labName.trim() === labNameFilter.trim();
                     }
-                    // If showing all, ensure it has SOME lab name
-                    return !!row.labName;
+                    return !!row.labName; // Must have lab name
                 })
                 .map(row => {
                     const savedRecord = recordMap.get(row.id);
                     const fee = savedRecord ? savedRecord.amount : 0;
                     
-                    // Logic: Identify Available Categories
                     const availableCats: { key: string; label: string }[] = [];
                     const t = row.treatments as any;
                     Object.keys(CATEGORY_MAP).forEach(key => {
@@ -160,18 +190,16 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
                         }
                     });
 
-                    // New Attribution Logic (Fixed per requirement)
                     const r = row.retail;
                     const isVault = (r.products || 0) + (r.diyWhitening || 0) > 0;
                     
-                    let selectedCat = 'otherSelfPay'; // Fallback
+                    let selectedCat = 'otherSelfPay'; 
 
                     if (savedRecord && savedRecord.category) {
                         selectedCat = savedRecord.category;
                     } else if (isVault) {
                         selectedCat = 'vault';
                     } else if (availableCats.length > 0) {
-                        // Default to first
                         selectedCat = availableCats[0].key;
                     }
 
@@ -200,6 +228,7 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
         }
     };
 
+    // --- Linked Row Handlers ---
     const handleCategoryChange = (rowId: string, cat: string) => {
         setLinkedRows(prev => prev.map(row => {
             if (row.id !== rowId) return row;
@@ -211,21 +240,17 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
         }));
     };
 
-    // Global Save (e.g. for Category changes or mass updates if needed)
     const handleSaveLinked = async () => {
         const dirtyRows = linkedRows.filter(r => r.isDirty);
         if (dirtyRows.length === 0) return;
 
         setIsSaving(true);
-        
         try {
             const promises = dirtyRows.map(row => {
-                const labName = row.labName; 
-                
                 const record: TechnicianRecord = {
                     id: row.recordId || crypto.randomUUID(), 
                     clinicId: selectedClinicId,
-                    labName: labName,
+                    labName: row.labName,
                     date: row.originalDate,
                     type: 'linked',
                     amount: row.currentFee,
@@ -240,11 +265,8 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
                 };
                 return saveTechnicianRecord(record);
             });
-
             await Promise.all(promises);
             alert("儲存成功！");
-            
-            // Refetch to ensure all IDs and states are synced
             fetchData(); 
         } catch (e) {
             console.error(e);
@@ -254,50 +276,48 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
         }
     };
 
-    const handleAddManual = async () => {
-        if (!manualDate || !manualAmount || !manualCategory || !manualPatient) {
-            alert("請填寫日期、金額、類別與病患姓名");
-            return;
-        }
-
+    // --- Manual Row Handlers ---
+    const handleAddManualRow = async () => {
         setIsSaving(true);
-        
-        let labName = '';
-        if (selectedLabId && selectedLabId !== 'all') {
-            labName = getLabName(selectedLabId);
-        }
-        
-        if (!labName) {
-            alert("手動新增請先選擇特定的技工所 (Filters)");
-            setIsSaving(false);
-            return;
-        }
-
         try {
-            const record: TechnicianRecord = {
+            const defaultLab = (selectedLabId && selectedLabId !== 'all') ? getLabName(selectedLabId) : '';
+            const newRecord: TechnicianRecord = {
                 id: crypto.randomUUID(),
                 clinicId: selectedClinicId,
-                labName: labName,
-                date: manualDate,
+                labName: defaultLab,
+                date: `${selectedMonth}-01`,
                 type: 'manual',
-                amount: parseFloat(manualAmount),
-                category: manualCategory,
-                patientName: manualPatient,
-                doctorName: manualDoctor || '未指定',
-                treatmentContent: manualContent,
-                note: manualNote,
+                amount: 0,
+                patientName: '',
+                doctorName: '',
+                category: 'prostho',
+                treatmentContent: '',
                 updatedAt: Date.now()
             };
-
-            await saveTechnicianRecord(record);
-            setIsModalOpen(false);
-            resetModal();
-            fetchData();
-        } catch (e) {
+            
+            // Save immediately to get a persistent ID
+            await saveTechnicianRecord(newRecord);
+            setManualRecords(prev => [...prev, newRecord]);
+        } catch(e) {
             console.error(e);
             alert("新增失敗");
         } finally {
             setIsSaving(false);
+        }
+    };
+
+    const handleUpdateManualRow = async (id: string, updates: Partial<TechnicianRecord>) => {
+        // Optimistic UI Update
+        setManualRecords(prev => prev.map(r => r.id === id ? { ...r, ...updates } : r));
+        
+        // Background Save
+        const record = manualRecords.find(r => r.id === id);
+        if (record) {
+            try {
+                await saveTechnicianRecord({ ...record, ...updates, updatedAt: Date.now() });
+            } catch (e) {
+                console.error("Auto-save failed", e);
+            }
         }
     };
 
@@ -311,83 +331,81 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
         }
     };
 
-    const resetModal = () => {
-        setManualDate(selectedMonth + '-01');
-        setManualPatient('');
-        setManualDoctor('');
-        setManualCategory('prostho');
-        setManualContent('');
-        setManualAmount('');
-        setManualNote('');
-    };
-
-    const openModal = () => {
-        resetModal();
-        setIsModalOpen(true);
-    };
-
-    // --- Order Modal Logic ---
-    const handleOpenOrderModal = (row: LinkedRow) => {
-        setSelectedOrderRowId(row.id);
-        setOrderItems(row.details || []);
-        setOrderDiscount(row.discount || 0);
+    // --- Modal Logic ---
+    const handleOpenOrderModal = (type: 'linked' | 'manual', item: LinkedRow | TechnicianRecord) => {
+        setActiveOrderType(type);
+        setOrderItems(item.details || []);
+        setOrderDiscount(item.discount || 0);
         
-        // Pass revenue for % calculation (actualCollected is sum of treatments+retail)
-        setOrderRowRevenue(row.actualCollected || 0);
-        
-        // Identify Lab
-        const lab = laboratories.find(l => l.name === row.labName && l.clinicId === selectedClinicId);
-        setActiveOrderLab(lab);
+        if (type === 'linked') {
+            const row = item as LinkedRow;
+            setSelectedOrderRowId(row.id);
+            setSelectedOrderRecordId(null);
+            setOrderRowRevenue(row.actualCollected || 0);
+            setActiveOrderLab(laboratories.find(l => l.name === row.labName && l.clinicId === selectedClinicId));
+        } else {
+            const rec = item as TechnicianRecord;
+            setSelectedOrderRecordId(rec.id);
+            setSelectedOrderRowId(null);
+            setOrderRowRevenue(0); // Manual rows don't have linked revenue
+            setActiveOrderLab(laboratories.find(l => l.name === rec.labName && l.clinicId === selectedClinicId));
+        }
         
         setOrderModalOpen(true);
     };
 
     const handleSaveOrder = async () => {
-        if (!selectedOrderRowId) return;
-        
-        const row = linkedRows.find(r => r.id === selectedOrderRowId);
-        if (!row) return;
+        let recordToSave: TechnicianRecord | null = null;
 
-        const subTotal = orderItems.reduce((acc, item) => acc + item.subtotal, 0);
-        const finalTotal = subTotal - orderDiscount;
-
-        // Generate ID if new
-        const recordId = row.recordId || crypto.randomUUID();
-
-        // Construct Record
-        const record: TechnicianRecord = {
-            id: recordId,
-            clinicId: selectedClinicId,
-            labName: row.labName,
-            date: row.originalDate,
-            type: 'linked',
-            amount: finalTotal,
-            linkedRowId: row.id,
-            patientName: row.patientName,
-            doctorName: row.doctorName,
-            treatmentContent: row.treatmentContent,
-            category: row.selectedCategory, // Preserve current category selection
-            details: orderItems,
-            discount: orderDiscount,
-            updatedAt: Date.now()
-        };
-
-        await saveTechnicianRecord(record);
-
-        // Update Local State Immediately
-        setLinkedRows(prev => prev.map(r => {
-            if (r.id !== selectedOrderRowId) return r;
-            return {
-                ...r,
+        if (activeOrderType === 'linked' && selectedOrderRowId) {
+            const row = linkedRows.find(r => r.id === selectedOrderRowId);
+            if (!row) return;
+            const subTotal = orderItems.reduce((acc, item) => acc + item.subtotal, 0);
+            const finalTotal = subTotal - orderDiscount;
+            
+            recordToSave = {
+                id: row.recordId || crypto.randomUUID(),
+                clinicId: selectedClinicId,
+                labName: row.labName,
+                date: row.originalDate,
+                type: 'linked',
+                amount: finalTotal,
+                linkedRowId: row.id,
+                patientName: row.patientName,
+                doctorName: row.doctorName,
+                treatmentContent: row.treatmentContent,
+                category: row.selectedCategory,
                 details: orderItems,
                 discount: orderDiscount,
-                currentFee: finalTotal,
-                savedFee: finalTotal, // Synced
-                recordId: recordId,
-                isDirty: false // Saved, so clean
+                updatedAt: Date.now()
             };
-        }));
-        
+
+            // Update local state
+            setLinkedRows(prev => prev.map(r => r.id === selectedOrderRowId ? {
+                ...r, details: orderItems, discount: orderDiscount, currentFee: finalTotal, savedFee: finalTotal, recordId: recordToSave!.id, isDirty: false
+            } : r));
+
+        } else if (activeOrderType === 'manual' && selectedOrderRecordId) {
+            const rec = manualRecords.find(r => r.id === selectedOrderRecordId);
+            if (!rec) return;
+            const subTotal = orderItems.reduce((acc, item) => acc + item.subtotal, 0);
+            const finalTotal = subTotal - orderDiscount;
+
+            recordToSave = {
+                ...rec,
+                amount: finalTotal,
+                details: orderItems,
+                discount: orderDiscount,
+                updatedAt: Date.now()
+            };
+
+            // Update local state
+            setManualRecords(prev => prev.map(r => r.id === selectedOrderRecordId ? recordToSave! : r));
+        }
+
+        if (recordToSave) {
+            await saveTechnicianRecord(recordToSave);
+        }
         setOrderModalOpen(false);
     };
 
@@ -397,16 +415,9 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
 
     const renderAttribution = (row: LinkedRow) => {
         const isVault = (row.retail.products || 0) + (row.retail.diyWhitening || 0) > 0;
-        
         if (isVault) {
-             return (
-                <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded border border-slate-200 whitespace-nowrap">
-                    Vault (小金庫/物販)
-                </span>
-            );
+             return <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded border border-slate-200 whitespace-nowrap">Vault (小金庫/物販)</span>;
         }
-
-        // Dropdown for Self-Pay Attribution
         return (
             <select
                 className={`w-full text-xs border rounded px-1 py-1 outline-none bg-white focus:ring-1 focus:ring-purple-500 text-indigo-700 font-bold`}
@@ -414,14 +425,9 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
                 onChange={e => handleCategoryChange(row.id, e.target.value)}
             >
                 {row.availableCategories.length > 0 ? (
-                    row.availableCategories.map(c => (
-                        <option key={c.key} value={c.key}>{c.label}</option>
-                    ))
+                    row.availableCategories.map(c => <option key={c.key} value={c.key}>{c.label}</option>)
                 ) : (
-                    // Default options if none auto-detected
-                    Object.keys(CATEGORY_MAP).filter(k => k !== 'vault').map(key => (
-                        <option key={key} value={key}>{CATEGORY_MAP[key]}</option>
-                    ))
+                    Object.keys(CATEGORY_MAP).filter(k => k !== 'vault').map(key => <option key={key} value={key}>{CATEGORY_MAP[key]}</option>)
                 )}
             </select>
         );
@@ -530,7 +536,7 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
                                         <td className="px-4 py-3 text-slate-500 text-xs truncate max-w-[200px]" title={row.treatmentContent}>{row.treatmentContent}</td>
                                         <td className="px-4 py-3 text-right">
                                             <button
-                                                onClick={() => handleOpenOrderModal(row)}
+                                                onClick={() => handleOpenOrderModal('linked', row)}
                                                 className={`w-full text-right border rounded px-2 py-1.5 font-bold transition-colors ${row.isDirty ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-slate-50 border-slate-200 text-slate-700 hover:border-blue-400'}`}
                                             >
                                                 {row.currentFee.toLocaleString()}
@@ -552,130 +558,110 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
                         </h3>
                         <div className="flex items-center gap-4">
                             <span className="text-sm font-bold text-amber-800">小計: ${totalManualFee.toLocaleString()}</span>
-                            {selectedLabId && selectedLabId !== 'all' && (
-                                <button 
-                                    onClick={openModal}
-                                    className="bg-amber-100 hover:bg-amber-200 text-amber-800 px-3 py-1.5 rounded-lg text-xs font-bold border border-amber-300 flex items-center gap-1 transition-colors"
-                                >
-                                    <Plus size={14} /> 新增項目
-                                </button>
-                            )}
+                            <button 
+                                onClick={handleAddManualRow}
+                                disabled={isSaving}
+                                className="bg-amber-100 hover:bg-amber-200 text-amber-800 px-3 py-1.5 rounded-lg text-xs font-bold border border-amber-300 flex items-center gap-1 transition-colors"
+                            >
+                                {isSaving ? <Loader2 size={14} className="animate-spin"/> : <Plus size={14} />} 新增手動項目
+                            </button>
                         </div>
                     </div>
-                    {manualRecords.length === 0 ? (
-                        <div className="p-8 text-center text-slate-400 text-sm">無手動調整項目</div>
-                    ) : (
+                    
+                    <div className="overflow-x-auto">
                         <table className="w-full text-sm text-left">
                             <thead className="bg-white text-slate-500 font-bold uppercase text-xs border-b border-slate-100">
                                 <tr>
-                                    <th className="px-4 py-3 w-28">日期</th>
+                                    <th className="px-4 py-3 w-32">日期</th>
                                     {selectedLabId === 'all' && <th className="px-4 py-3 w-32">技工所</th>}
-                                    <th className="px-4 py-3 w-28">病患</th>
-                                    <th className="px-4 py-3 w-24">類別</th>
-                                    <th className="px-4 py-3 w-24">醫師</th>
+                                    <th className="px-4 py-3 w-32">病患</th>
+                                    <th className="px-4 py-3 w-28">類別</th>
+                                    <th className="px-4 py-3 w-28">醫師</th>
                                     <th className="px-4 py-3">內容/備註</th>
-                                    <th className="px-4 py-3 text-right">金額</th>
+                                    <th className="px-4 py-3 text-right w-32">金額</th>
                                     <th className="px-4 py-3 w-10"></th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-50">
                                 {manualRecords.map(rec => (
                                     <tr key={rec.id} className="hover:bg-slate-50 transition-colors">
-                                        <td 
-                                            className="px-4 py-3 font-mono text-blue-600 font-bold cursor-pointer hover:underline"
-                                            onClick={() => navigate(`/accounting?date=${rec.date}`)}
-                                        >
-                                            {rec.date.slice(5)}
+                                        <td className="px-2 py-2">
+                                            <InlineInput 
+                                                type="date"
+                                                value={rec.date}
+                                                onChange={(val) => handleUpdateManualRow(rec.id, { date: val })}
+                                            />
                                         </td>
-                                        {selectedLabId === 'all' && <td className="px-4 py-3 text-slate-600 font-bold">{rec.labName}</td>}
-                                        <td className="px-4 py-3 font-bold text-slate-700">{rec.patientName || '-'}</td>
-                                        <td className="px-4 py-3">
-                                            <span className={`px-2 py-0.5 rounded text-xs font-bold border ${rec.category === 'vault' ? 'bg-slate-100 border-slate-200 text-slate-500' : 'bg-amber-100 border-amber-200 text-amber-800'}`}>
-                                                {CATEGORY_MAP[rec.category || ''] || rec.category}
-                                            </span>
+                                        {selectedLabId === 'all' && (
+                                            <td className="px-2 py-2">
+                                                <select 
+                                                    className="w-full bg-transparent border border-transparent hover:border-slate-300 rounded px-1 py-1 outline-none text-slate-600 font-bold"
+                                                    value={rec.labName}
+                                                    onChange={e => handleUpdateManualRow(rec.id, { labName: e.target.value })}
+                                                >
+                                                    <option value="">選擇技工所</option>
+                                                    {activeLabs.map(l => <option key={l.id} value={l.name}>{l.name}</option>)}
+                                                </select>
+                                            </td>
+                                        )}
+                                        <td className="px-2 py-2">
+                                            <InlineInput 
+                                                value={rec.patientName}
+                                                placeholder="姓名"
+                                                className="font-bold text-slate-700"
+                                                onChange={val => handleUpdateManualRow(rec.id, { patientName: val })}
+                                            />
                                         </td>
-                                        <td className="px-4 py-3 text-slate-600">{rec.doctorName}</td>
-                                        <td className="px-4 py-3 text-slate-500 text-xs">
-                                            {rec.treatmentContent} 
-                                            {rec.note && <span className="text-slate-400 ml-1">({rec.note})</span>}
+                                        <td className="px-2 py-2">
+                                            <select 
+                                                className="w-full bg-transparent border border-transparent hover:border-slate-300 rounded px-1 py-1 outline-none text-xs"
+                                                value={rec.category || 'prostho'}
+                                                onChange={e => handleUpdateManualRow(rec.id, { category: e.target.value })}
+                                            >
+                                                {MANUAL_CATEGORY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                                            </select>
                                         </td>
-                                        <td className={`px-4 py-3 text-right font-mono font-bold ${rec.amount < 0 ? 'text-green-600' : 'text-slate-700'}`}>
-                                            {rec.amount.toLocaleString()}
+                                        <td className="px-2 py-2">
+                                            <select 
+                                                className="w-full bg-transparent border border-transparent hover:border-slate-300 rounded px-1 py-1 outline-none text-xs"
+                                                value={rec.doctorName || ''}
+                                                onChange={e => handleUpdateManualRow(rec.id, { doctorName: e.target.value })}
+                                            >
+                                                <option value="">未指定</option>
+                                                {clinicDoctors.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
+                                            </select>
                                         </td>
-                                        <td className="px-4 py-3 text-center">
-                                            <button onClick={() => handleDeleteManual(rec.id)} className="text-slate-300 hover:text-rose-500">
+                                        <td className="px-2 py-2">
+                                            <InlineInput 
+                                                value={rec.treatmentContent}
+                                                placeholder="內容或備註..."
+                                                className="text-xs text-slate-500"
+                                                onChange={val => handleUpdateManualRow(rec.id, { treatmentContent: val })}
+                                            />
+                                        </td>
+                                        <td className="px-2 py-2 text-right">
+                                            <button
+                                                onClick={() => handleOpenOrderModal('manual', rec)}
+                                                className={`w-full text-right border rounded px-2 py-1 font-mono font-bold transition-colors bg-white hover:border-blue-400 text-slate-700`}
+                                            >
+                                                {rec.amount.toLocaleString()}
+                                            </button>
+                                        </td>
+                                        <td className="px-2 py-2 text-center">
+                                            <button onClick={() => handleDeleteManual(rec.id)} className="text-slate-300 hover:text-rose-500 p-1">
                                                 <Trash2 size={16} />
                                             </button>
                                         </td>
                                     </tr>
                                 ))}
+                                {manualRecords.length === 0 && (
+                                    <tr><td colSpan={selectedLabId === 'all' ? 8 : 7} className="p-8 text-center text-slate-400 text-sm">無手動調整項目</td></tr>
+                                )}
                             </tbody>
                         </table>
-                    )}
-                </div>
-            </div>
-
-            {/* Manual Adjustment Modal */}
-            {isModalOpen && (
-                <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-slide-down">
-                        <div className="bg-purple-600 text-white p-4 flex justify-between items-center">
-                            <h3 className="font-bold flex items-center gap-2"><Plus size={18}/> 新增調整項目</h3>
-                            <button onClick={() => setIsModalOpen(false)} className="hover:text-purple-200"><X size={20}/></button>
-                        </div>
-                        <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
-                            {/* Inputs */}
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-xs font-bold text-slate-500 mb-1">日期</label>
-                                    <input type="date" className="w-full border rounded px-3 py-2" value={manualDate} onChange={e => setManualDate(e.target.value)} />
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-bold text-slate-500 mb-1">病患姓名</label>
-                                    <input className="w-full border rounded px-3 py-2" value={manualPatient} onChange={e => setManualPatient(e.target.value)} placeholder="例如：王小明" />
-                                </div>
-                            </div>
-                            
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-xs font-bold text-slate-500 mb-1">醫師</label>
-                                    <select className="w-full border rounded px-3 py-2 bg-white" value={manualDoctor} onChange={e => setManualDoctor(e.target.value)}>
-                                        <option value="">未指定</option>
-                                        {clinicDoctors.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
-                                    </select>
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-bold text-slate-500 mb-1">歸屬類別</label>
-                                    <select className="w-full border rounded px-3 py-2 bg-white" value={manualCategory} onChange={e => setManualCategory(e.target.value)}>
-                                        {MANUAL_CATEGORY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 mb-1">療程內容</label>
-                                <input className="w-full border rounded px-3 py-2" value={manualContent} onChange={e => setManualContent(e.target.value)} placeholder="例如：假牙重作" />
-                            </div>
-
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 mb-1">金額 (可輸入負數)</label>
-                                <input type="number" className="w-full border rounded px-3 py-2 font-bold text-lg text-purple-700" value={manualAmount} onChange={e => setManualAmount(e.target.value)} placeholder="0" />
-                            </div>
-                            
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 mb-1">備註 (選填)</label>
-                                <textarea className="w-full border rounded px-3 py-2 h-20" value={manualNote} onChange={e => setManualNote(e.target.value)} placeholder="其他說明..." />
-                            </div>
-                        </div>
-                        <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
-                            <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg">取消</button>
-                            <button onClick={handleAddManual} disabled={isSaving} className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2">
-                                {isSaving && <Loader2 size={16} className="animate-spin" />} 儲存
-                            </button>
-                        </div>
                     </div>
                 </div>
-            )}
+            </div>
 
             {/* Lab Order Modal (Multi-Item) */}
             {orderModalOpen && (
@@ -756,7 +742,6 @@ const LabOrderModal = ({
         onUpdateItems([...items, newItem]);
         setToothPos('');
         setQty(1);
-        // Reset specialized state
         setIsPercentageApplied(false);
         setPercentageValue(0);
         setSelectedPricingItem('');
@@ -792,11 +777,13 @@ const LabOrderModal = ({
                 <div className="bg-indigo-700 text-white p-4 flex justify-between items-center shrink-0">
                     <div>
                         <h3 className="font-bold text-lg flex items-center gap-2">
-                            <List size={20} /> 技工單明細 ({lab?.name || 'Unknown Lab'})
+                            <List size={20} /> 技工單明細 ({lab?.name || '未選擇技工所'})
                         </h3>
-                        <p className="text-xs text-indigo-200 mt-1">
-                            當日實收 (Revenue): ${revenue.toLocaleString()}
-                        </p>
+                        {revenue > 0 && (
+                            <p className="text-xs text-indigo-200 mt-1">
+                                當日實收 (Revenue): ${revenue.toLocaleString()}
+                            </p>
+                        )}
                     </div>
                     <button onClick={onClose}><X size={20} className="hover:text-indigo-200" /></button>
                 </div>
@@ -862,7 +849,7 @@ const LabOrderModal = ({
                                 * 自動計算: 總實收 ${revenue.toLocaleString()} 的 {percentageValue}%
                             </p>
                         )}
-                        {pricingList.length === 0 && <p className="text-xs text-rose-500">* 請先至「技工所管理」設定價目表</p>}
+                        {pricingList.length === 0 && <p className="text-xs text-rose-500">* 此技工所尚未設定價目表</p>}
                     </div>
 
                     {/* Items Table */}

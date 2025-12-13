@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Clinic, Doctor, DailySchedule, Consultant, StaffScheduleConfig, Laboratory } from '../types';
-import { listEvents, initGoogleClient, handleAuthClick } from '../services/googleCalendar';
+import { listEvents, initGoogleClient, authorizeCalendar, getConnectedCalendarEmail } from '../services/googleCalendar';
 import { parseCalendarEvent } from '../utils/eventParser';
 import { Patient } from '../services/firebase';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, RefreshCw, Building2, Filter, Briefcase, Check, LayoutGrid, Columns, Search, PlugZap } from 'lucide-react';
@@ -73,6 +73,7 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
   const [isLoading, setIsLoading] = useState(false);
   const [isGapiReady, setIsGapiReady] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [connectedEmail, setConnectedEmail] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   
   // --- View & Filter State ---
@@ -112,8 +113,10 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
         setIsLoggedIn(status);
         if (!status) {
            // Connection lost or not init
+           setConnectedEmail(null);
         } else {
            setErrorMsg(null);
+           getConnectedCalendarEmail().then(email => setConnectedEmail(email));
         }
       }
     );
@@ -525,6 +528,14 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
                         </div>
 
                         <div className="flex items-center gap-2">
+                            {/* Connected Email Badge */}
+                            {connectedEmail && (
+                                <span className="hidden md:inline-flex items-center gap-1 text-[10px] text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full border border-emerald-100 font-medium">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                                    {connectedEmail}
+                                </span>
+                            )}
+
                             <button 
                                 onClick={handleJumpToToday}
                                 className="px-4 py-2 text-sm font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap"
@@ -574,7 +585,7 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
                             請先完成帳號連動，系統才能讀取並顯示醫師的約診資訊。
                         </p>
                         <button 
-                            onClick={handleAuthClick}
+                            onClick={authorizeCalendar}
                             className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-bold text-lg shadow-lg shadow-indigo-200 hover:shadow-indigo-300 transition-all flex items-center gap-2 active:scale-95"
                         >
                             連結 Google Calendar

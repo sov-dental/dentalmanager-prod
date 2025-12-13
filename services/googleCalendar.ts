@@ -108,20 +108,20 @@ export const initGoogleClient = (
   }
 };
 
-export const handleAuthClick = () => {
+// NEW: Explicitly authorize calendar with account picker
+// This decouples App Login (Firebase) from Calendar Sync (Google OAuth)
+export const authorizeCalendar = () => {
   if (!tokenClient) {
     console.error("Google Token Client not initialized");
     return;
   }
+  // Force prompt to select account
+  tokenClient.requestAccessToken({ prompt: 'select_account' });
+};
 
-  if (window.gapi.client.getToken() === null) {
-    // Prompt the user to select a Google Account and ask for consent to share their data
-    // when establishing a new session.
-    tokenClient.requestAccessToken({prompt: 'consent'});
-  } else {
-    // Skip display of account chooser and consent dialog for an existing session.
-    tokenClient.requestAccessToken({prompt: ''});
-  }
+// Legacy handler - redirects to new logic to ensure consistency
+export const handleAuthClick = () => {
+  authorizeCalendar();
 };
 
 export const handleSignOutClick = () => {
@@ -187,6 +187,17 @@ export const listCalendars = async (): Promise<GoogleCalendar[]> => {
     }
     return [];
   }
+};
+
+// NEW: Helper to get connected email for UI feedback
+export const getConnectedCalendarEmail = async (): Promise<string | null> => {
+    try {
+        const cals = await listCalendars();
+        const primary = cals.find(c => c.primary);
+        return primary ? primary.id : null;
+    } catch(e) {
+        return null;
+    }
 };
 
 export const listEvents = async (
@@ -295,88 +306,4 @@ export const patchEvent = async (
     console.error('Error patching event', err);
     return false;
   }
-};
-
-export interface ParsedAppointment {
-  np_display: string;      // Used for Status in UI (strictly "NP" or "")
-  original_status: string; // Raw prefix (e.g. "V", "@", "(30不)")
-  chartId: string;     
-  patientName: string; 
-  note: string;        
-}
-
-/**
- * Parses a Google Calendar Event Summary into structured appointment data.
- */
-export const parseAppointmentTitle = (title: string): ParsedAppointment | null => {
-  // 1. Find the Anchor (ID): 10, 7, or 4 digits. Order matters.
-  const idRegex = /(\d{10}|\d{7}|\d{4})/;
-  const idMatch = title.match(idRegex);
-
-  let chartId = '';
-  let status = '';
-  let name = '';
-  let note = '';
-  let np_display = '';
-
-  if (idMatch && idMatch.index !== undefined) {
-    chartId = idMatch[0];
-    const index = idMatch.index;
-    
-    // Check character immediately before ID
-    const charBefore = index > 0 ? title[index - 1] : '';
-
-    if (charBefore === '-') {
-        // Scenario B: [Name]-[ID]-[Note]
-        // Status is empty/null in this format
-        name = title.substring(0, index - 1).trim();
-        
-        let remainder = title.substring(index + chartId.length);
-        if (remainder.startsWith('-')) {
-            remainder = remainder.substring(1);
-        }
-        note = remainder.trim();
-        status = '';
-    } else {
-        // Scenario A: [Status][ID]-[Name]-[Note]
-        status = title.substring(0, index).trim();
-        
-        let remainder = title.substring(index + chartId.length);
-        if (remainder.startsWith('-')) {
-            remainder = remainder.substring(1);
-        }
-        
-        const parts = remainder.split('-');
-        name = parts[0].trim();
-        note = parts.slice(1).join('-').trim();
-    }
-  } else {
-    // Scenario C: No ID found -> NP
-    chartId = 'NP';
-    
-    const parts = title.split('-');
-    name = parts[0].trim();
-    note = parts.slice(1).join('-').trim();
-    status = '';
-  }
-
-  // EXCLUSION RULE: If Name contains "+", discard.
-  if (name.includes('+')) {
-      return null;
-  }
-
-  // np_display Logic:
-  if (chartId === 'NP' || chartId.length === 10) {
-      np_display = 'NP';
-  } else {
-      np_display = '';
-  }
-
-  return {
-      np_display,
-      original_status: status, // Kept for debugging, but not put into np_display
-      chartId,
-      patientName: name,
-      note
-  };
 };

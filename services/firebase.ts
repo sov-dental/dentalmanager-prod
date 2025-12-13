@@ -284,10 +284,9 @@ export const saveClinic = async (clinicData: Partial<Clinic>) => {
     await docRef.set(sanitizedPayload, { merge: true });
 
     // Permission Sync logic
-    // CRITICAL FIX: Use Clinic ID instead of Name for permission binding
     if (clinicData.allowedUsers && clinicData.allowedUsers.length > 0) {
         const usersRef = db.collection('users');
-        const targetClinicId = id; // Use Document ID
+        const targetClinicId = id; 
         
         const promises = clinicData.allowedUsers.map(async (email) => {
             const q = await usersRef.where('email', '==', email).limit(1).get();
@@ -306,6 +305,12 @@ export const saveClinic = async (clinicData: Partial<Clinic>) => {
         });
         await Promise.all(promises);
     }
+};
+
+export const updateClinicCalendarMapping = async (clinicId: string, mapping: Record<string, string>) => {
+    await db.collection('clinics').doc(clinicId).update({
+        googleCalendarMapping: deepSanitize(mapping)
+    });
 };
 
 export const saveDoctors = async (clinicId: string, doctors: Doctor[]) => {
@@ -331,6 +336,7 @@ export const saveSOVReferrals = async (clinicId: string, referrals: SOVReferral[
     await db.collection('clinics').doc(clinicId).update({ sovReferrals: deepSanitize(referrals) });
 };
 
+// ... (Rest of the file remains unchanged, omitted for brevity but preserved) ...
 // --- NEW COLLECTIONS ---
 
 export const getStaffList = async (clinicId: string): Promise<Consultant[]> => {

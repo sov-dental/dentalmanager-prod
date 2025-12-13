@@ -1,16 +1,17 @@
 
 import React, { useEffect, useState } from 'react';
 import { Clinic, Doctor } from '../types';
-import { initGoogleClient, handleAuthClick, handleSignOutClick, listCalendars, GoogleCalendar } from '../services/googleCalendar';
+import { initGoogleClient, handleAuthClick, handleSignOutClick, listCalendars, GoogleCalendar, getCalendarProfile } from '../services/googleCalendar';
+import { updateClinicCalendarMapping } from '../services/firebase'; // Direct update
 import { performFullBackup } from '../services/backupService';
-import { Link, Save, LogOut, Check, Loader2, AlertCircle, Building2, Download, ShieldCheck } from 'lucide-react';
+import { Link, Save, LogOut, Check, Loader2, AlertCircle, Building2, Download, ShieldCheck, RefreshCw, Wand2 } from 'lucide-react';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from './ClinicSelector';
 
 interface Props {
   clinics: Clinic[];
   doctors: Doctor[];
-  onSave: (clinics: Clinic[]) => Promise<void>;
+  onSave: (clinics: Clinic[]) => Promise<void>; // Kept for compatibility but we use direct update
 }
 
 export const Integrations: React.FC<Props> = ({ clinics, doctors, onSave }) => {
@@ -18,6 +19,7 @@ export const Integrations: React.FC<Props> = ({ clinics, doctors, onSave }) => {
   const [isGapiReady, setIsGapiReady] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userCalendars, setUserCalendars] = useState<GoogleCalendar[]>([]);
+  const [connectedEmail, setConnectedEmail] = useState<string | null>(null);
   
   // Local state for the mapping being edited. 
   // Syncs with selectedClinic whenever it changes.
@@ -32,7 +34,10 @@ export const Integrations: React.FC<Props> = ({ clinics, doctors, onSave }) => {
       () => setIsGapiReady(true),
       (status) => {
         setIsLoggedIn(status);
-        if (status) fetchCalendars();
+        if (status) {
+            fetchCalendars();
+            getCalendarProfile().then(setConnectedEmail);
+        }
       }
     );
   }, []);
@@ -59,6 +64,7 @@ export const Integrations: React.FC<Props> = ({ clinics, doctors, onSave }) => {
     handleSignOutClick();
     setIsLoggedIn(false);
     setUserCalendars([]);
+    setConnectedEmail(null);
   };
 
   const handleMapChange = (key: string, calendarId: string) => {
@@ -68,19 +74,59 @@ export const Integrations: React.FC<Props> = ({ clinics, doctors, onSave }) => {
     }));
   };
 
+  // Smart Auto-Match: Try to match Doctor Name to Calendar Summary
+  const handleAutoMatch = () => {
+      if (!selectedClinic) return;
+      const newMapping = { ...mapping };
+      let matchCount = 0;
+
+      // 1. Match Clinic Shared
+      if (!newMapping['clinic_shared']) {
+          const sharedMatch = userCalendars.find(c => 
+              c.summary.includes(selectedClinic.name) || 
+              c.summary.includes('公用') || 
+              c.summary.includes('Shared')
+          );
+          if (sharedMatch) {
+              newMapping['clinic_shared'] = sharedMatch.id;
+              matchCount++;
+          }
+      }
+
+      // 2. Match Doctors
+      const filteredDoctors = doctors.filter(d => d.clinicId === selectedClinic.id);
+      filteredDoctors.forEach(doc => {
+          if (!newMapping[doc.id]) {
+              const docMatch = userCalendars.find(c => c.summary.includes(doc.name));
+              if (docMatch) {
+                  newMapping[doc.id] = docMatch.id;
+                  matchCount++;
+              }
+          }
+      });
+
+      setMapping(newMapping);
+      alert(`自動配對完成: ${matchCount} 個項目`);
+  };
+
   const saveMapping = async () => {
     if (!selectedClinic) return;
     
     setIsSaving(true);
     try {
-      // Update the full clinic list (passed from props) with the new mapping for the selected clinic
+      // Use the direct update function to persist mapping
+      await updateClinicCalendarMapping(selectedClinic.id, mapping);
+      
+      // Optionally notify parent if needed for local state update, 
+      // though typically a context refresh or reload handles this.
+      // We still call onSave to ensure local 'clinics' state in App.tsx is refreshed if it relies on that.
       const updatedClinics = clinics.map(c => 
         c.id === selectedClinic.id 
           ? { ...c, googleCalendarMapping: mapping } 
           : c
       );
-      
       await onSave(updatedClinics);
+
       alert('設定已儲存！');
     } catch (e) {
       console.error(e);
@@ -157,8 +203,8 @@ export const Integrations: React.FC<Props> = ({ clinics, doctors, onSave }) => {
             </div>
           ) : isLoggedIn ? (
             <div className="flex items-center gap-3">
-              <span className="text-green-600 font-medium flex items-center gap-1 text-sm bg-green-50 px-3 py-1.5 rounded-full">
-                <Check size={14} /> 已連結 Google 日曆 (Connected)
+              <span className="text-green-600 font-medium flex items-center gap-1 text-sm bg-green-50 px-3 py-1.5 rounded-full border border-green-100">
+                <Check size={14} /> 已連結: {connectedEmail || 'Account'}
               </span>
               <button 
                 onClick={handleLogout}
@@ -187,9 +233,27 @@ export const Integrations: React.FC<Props> = ({ clinics, doctors, onSave }) => {
                  </div>
              </div>
 
-             <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">選擇要設定的診所</label>
-                <ClinicSelector className="border p-2 rounded-lg font-medium text-slate-700 bg-white w-full sm:w-auto min-w-[200px]" />
+             <div className="flex items-end justify-between gap-4">
+                 <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">選擇要設定的診所</label>
+                    <ClinicSelector className="border p-2 rounded-lg font-medium text-slate-700 bg-white w-full sm:w-auto min-w-[200px]" />
+                 </div>
+                 {selectedClinic && (
+                     <div className="flex gap-2">
+                         <button 
+                            onClick={fetchCalendars}
+                            className="bg-white border border-slate-300 text-slate-600 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-slate-50"
+                         >
+                             <RefreshCw size={16} /> 重新讀取日曆
+                         </button>
+                         <button 
+                            onClick={handleAutoMatch}
+                            className="bg-indigo-50 border border-indigo-200 text-indigo-700 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-indigo-100"
+                         >
+                             <Wand2 size={16} /> 自動配對
+                         </button>
+                     </div>
+                 )}
              </div>
 
              {selectedClinic ? (

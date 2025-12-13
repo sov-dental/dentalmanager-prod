@@ -9,8 +9,8 @@ declare global {
 
 // NOTE: In a production environment, this should be in an environment variable.
 const CLIENT_ID = '497470423292-hpo7k2u4j10tankppa2fvb2h0b3k8bd9.apps.googleusercontent.com';
-// Includes full calendar access and events specific scope
-const SCOPES = 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events';
+// Includes full calendar access, events specific scope, and user info for profile email
+const SCOPES = 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email';
 const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest';
 
 const STORAGE_KEY_TOKEN = 'dental_gcal_token';
@@ -196,6 +196,24 @@ export const getConnectedCalendarEmail = async (): Promise<string | null> => {
         const primary = cals.find(c => c.primary);
         return primary ? primary.id : null;
     } catch(e) {
+        return null;
+    }
+};
+
+// NEW: Helper to get connected user profile (email)
+export const getCalendarProfile = async (): Promise<string | null> => {
+    try {
+        if (!tokenClient) return null;
+        const token = window.gapi.client.getToken();
+        if(!token) return null;
+        
+        const response = await fetch('https://www.googleapis.com/oauth2/v1/userinfo?alt=json', {
+            headers: { Authorization: `Bearer ${token.access_token}` }
+        });
+        const data = await response.json();
+        return data.email;
+    } catch(e) {
+        console.error("Failed to fetch Google Profile", e);
         return null;
     }
 };

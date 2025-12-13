@@ -51,7 +51,61 @@ export const CLINIC_ORDER: Record<string, number> = {
 };
 
 // --- AUTH HELPERS ---
-export const signInWithPopup = (authInstance: any, provider: any) => authInstance.signInWithPopup(provider);
+
+// Updated Login Logic: Sync Permissions on Login
+export const signInWithGoogle = async () => {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+
+  try {
+    const result = await auth.signInWithPopup(provider);
+    const user = result.user;
+
+    if (user && user.email) {
+      console.log("Checking permissions for:", user.email);
+      
+      // 1. Query all clinics where this user is allowed
+      // Note: This relies on the 'allowedUsers' array in each clinic document
+      const clinicsRef = db.collection('clinics');
+      const q = clinicsRef.where('allowedUsers', 'array-contains', user.email);
+      const snapshot = await q.get();
+      
+      // CRITICAL FIX: Extract Document IDs, not Names
+      const allowedClinicIds = snapshot.docs.map(doc => doc.id);
+      console.log("Found authorized clinics (IDs):", allowedClinicIds);
+
+      // 2. Update User Record
+      if (allowedClinicIds.length > 0) {
+        const userRef = db.collection('users').doc(user.uid);
+        const userDoc = await userRef.get();
+
+        if (userDoc.exists) {
+            // Update existing user: Merge new IDs into existing array
+            await userRef.update({
+                allowedClinics: firebase.firestore.FieldValue.arrayUnion(...allowedClinicIds),
+                lastSyncedAt: new Date().toISOString()
+            });
+        } else {
+            // Create new user if not exists
+            await userRef.set({
+                uid: user.uid,
+                email: user.email,
+                name: user.displayName || user.email.split('@')[0],
+                role: 'staff', // Default role, admin can elevate later
+                allowedClinics: allowedClinicIds,
+                createdAt: new Date().toISOString(),
+                lastSyncedAt: new Date().toISOString()
+            }, { merge: true });
+        }
+      }
+    }
+    return result;
+  } catch (error) {
+    console.error("Sign In / Sync Error", error);
+    throw error;
+  }
+};
+
 export const signOut = (authInstance: any) => authInstance.signOut();
 
 export const onAuthStateChanged = (cb: (user: firebase.User | null) => void) => {

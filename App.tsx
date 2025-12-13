@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/Layout';
@@ -29,8 +30,7 @@ import {
   saveSOVReferrals,
   seedTestEnvironment,
   auth, 
-  googleProvider, 
-  signInWithPopup,
+  signInWithGoogle, // CHANGED from signInWithPopup
   signOut
 } from './services/firebase';
 import { LoginPage } from './components/LoginPage';
@@ -160,9 +160,8 @@ const App: React.FC = () => {
   const handleLogin = async () => {
     setIsLoggingIn(true);
     try {
-        const provider = googleProvider;
-        provider.setCustomParameters({ prompt: 'select_account' });
-        await signInWithPopup(auth, provider);
+        // Use the new sync-aware login function
+        await signInWithGoogle();
     } catch (e: any) {
         console.error("Login failed", e);
         alert("登入失敗: " + e.message);

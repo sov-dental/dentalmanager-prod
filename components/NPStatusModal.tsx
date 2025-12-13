@@ -173,6 +173,16 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, row, clinicId,
         }
     };
 
+    const renderStatusBadge = () => {
+        if (formData.isClosed) {
+            return <span className="text-xs bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold border border-emerald-200">已成交</span>;
+        }
+        if (formData.isVisited) {
+            return <span className="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-bold border border-blue-200">已報到</span>;
+        }
+        return <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-bold border border-slate-200">未到診</span>;
+    };
+
     if (!isOpen) return null;
 
     return (
@@ -198,14 +208,17 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, row, clinicId,
                                 <div className="bg-indigo-50 p-3 rounded-lg border border-indigo-100 mb-2">
                                     <div className="flex justify-between items-center mb-1">
                                         <span className="font-bold text-indigo-900 text-lg">{row.patientName}</span>
-                                        <span className="text-xs bg-indigo-200 text-indigo-800 px-2 py-0.5 rounded-full font-bold">已報到</span>
+                                        {renderStatusBadge()}
                                     </div>
                                     <div className="text-xs text-indigo-700 truncate">{row.treatmentContent || '無療程內容'}</div>
                                 </div>
                             ) : (
                                 <div className="space-y-3 bg-slate-50 p-3 rounded-lg border border-slate-200 mb-2">
-                                    <div>
+                                    <div className="flex justify-between items-start mb-1">
                                         <label className="block text-xs font-bold text-slate-500 mb-1">病患姓名</label>
+                                        {renderStatusBadge()}
+                                    </div>
+                                    <div>
                                         <input 
                                             className="w-full border rounded px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
                                             value={manualPatientName}

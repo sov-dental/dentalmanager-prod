@@ -25,6 +25,18 @@ const BADGE_COLORS: Record<string, string> = {
 
 const DefaultBadge = 'bg-slate-100 text-slate-600 border-slate-200';
 
+// Helper: Safely extract purchased items as array
+const getPurchasedItems = (patient: any): string[] => {
+    if (Array.isArray(patient.purchasedItems)) {
+        return patient.purchasedItems;
+    }
+    // Fallback: If it's a string, wrap it in an array.
+    if (typeof patient.purchasedItems === 'string' && patient.purchasedItems.trim() !== '') {
+        return [patient.purchasedItems];
+    }
+    return [];
+};
+
 export const PatientManager: React.FC = () => {
     const { selectedClinicId, clinics } = useClinic();
     
@@ -240,71 +252,74 @@ export const PatientManager: React.FC = () => {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                            {displayedPatients.map(patient => (
-                                <tr key={patient.docId} className="hover:bg-slate-50 transition-colors group">
-                                    {/* Chart ID Column */}
-                                    <td className="px-6 py-4">
-                                        {processingId === patient.docId ? (
-                                            <div className="flex items-center gap-2 text-indigo-600">
-                                                <Loader2 size={16} className="animate-spin" /> 更新中...
-                                            </div>
-                                        ) : editingId === patient.docId ? (
-                                            <div className="flex items-center gap-2">
-                                                <input 
-                                                    className="border rounded px-2 py-1 w-24 font-mono font-bold focus:ring-2 focus:ring-indigo-500 outline-none"
-                                                    value={tempIdValue}
-                                                    onChange={e => setTempIdValue(e.target.value)}
-                                                    onBlur={() => handleIdMigration(patient)}
-                                                    onKeyDown={e => e.key === 'Enter' && handleIdMigration(patient)}
-                                                    autoFocus
-                                                />
-                                            </div>
-                                        ) : (
-                                            <div 
-                                                className={`flex items-center gap-2 cursor-pointer ${!patient.chartId ? 'text-amber-600 bg-amber-50 px-2 py-1 rounded border border-amber-200' : 'text-slate-700 font-mono font-bold'}`}
-                                                onClick={() => handleIdEditStart(patient)}
-                                                title="點擊修改"
-                                            >
-                                                {patient.chartId || <span className="flex items-center gap-1 text-xs font-bold"><AlertTriangle size={12}/> 設定病歷號</span>}
-                                                <span className="opacity-0 group-hover:opacity-100 text-slate-400"><Save size={12} /></span>
-                                            </div>
-                                        )}
-                                    </td>
-
-                                    {/* Name */}
-                                    <td className="px-6 py-4 font-bold text-slate-800">{patient.name}</td>
-
-                                    {/* Last Visit */}
-                                    <td className="px-6 py-4 text-slate-500 font-mono">
-                                        {patient.lastVisit || '-'}
-                                    </td>
-
-                                    {/* Purchased Items (Tags) */}
-                                    <td className="px-6 py-4">
-                                        <div className="flex flex-wrap gap-2 items-center">
-                                            {(patient.purchasedItems || []).map(item => (
-                                                <span key={item} className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold border ${BADGE_COLORS[item] || DefaultBadge}`}>
-                                                    {item}
-                                                </span>
-                                            ))}
-                                            {(patient.purchasedItems || []).length === 0 && (
-                                                <span className="text-slate-300 text-xs italic">無特定自費紀錄</span>
+                            {displayedPatients.map(patient => {
+                                const purchasedItems = getPurchasedItems(patient);
+                                return (
+                                    <tr key={patient.docId} className="hover:bg-slate-50 transition-colors group">
+                                        {/* Chart ID Column */}
+                                        <td className="px-6 py-4">
+                                            {processingId === patient.docId ? (
+                                                <div className="flex items-center gap-2 text-indigo-600">
+                                                    <Loader2 size={16} className="animate-spin" /> 更新中...
+                                                </div>
+                                            ) : editingId === patient.docId ? (
+                                                <div className="flex items-center gap-2">
+                                                    <input 
+                                                        className="border rounded px-2 py-1 w-24 font-mono font-bold focus:ring-2 focus:ring-indigo-500 outline-none"
+                                                        value={tempIdValue}
+                                                        onChange={e => setTempIdValue(e.target.value)}
+                                                        onBlur={() => handleIdMigration(patient)}
+                                                        onKeyDown={e => e.key === 'Enter' && handleIdMigration(patient)}
+                                                        autoFocus
+                                                    />
+                                                </div>
+                                            ) : (
+                                                <div 
+                                                    className={`flex items-center gap-2 cursor-pointer ${!patient.chartId ? 'text-amber-600 bg-amber-50 px-2 py-1 rounded border border-amber-200' : 'text-slate-700 font-mono font-bold'}`}
+                                                    onClick={() => handleIdEditStart(patient)}
+                                                    title="點擊修改"
+                                                >
+                                                    {patient.chartId || <span className="flex items-center gap-1 text-xs font-bold"><AlertTriangle size={12}/> 設定病歷號</span>}
+                                                    <span className="opacity-0 group-hover:opacity-100 text-slate-400"><Save size={12} /></span>
+                                                </div>
                                             )}
-                                        </div>
-                                    </td>
+                                        </td>
 
-                                    {/* Actions */}
-                                    <td className="px-6 py-4 text-right">
-                                        <button 
-                                            onClick={() => openHistory(patient)}
-                                            className="text-slate-400 hover:text-indigo-600 transition-colors p-2 rounded-full hover:bg-indigo-50"
-                                            title="查看歷程"
-                                        >
-                                            <History size={18} />
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))}
+                                        {/* Name */}
+                                        <td className="px-6 py-4 font-bold text-slate-800">{patient.name}</td>
+
+                                        {/* Last Visit */}
+                                        <td className="px-6 py-4 text-slate-500 font-mono">
+                                            {patient.lastVisit || '-'}
+                                        </td>
+
+                                        {/* Purchased Items (Tags) */}
+                                        <td className="px-6 py-4">
+                                            <div className="flex flex-wrap gap-2 items-center">
+                                                {purchasedItems.map(item => (
+                                                    <span key={item} className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold border ${BADGE_COLORS[item] || DefaultBadge}`}>
+                                                        {item}
+                                                    </span>
+                                                ))}
+                                                {purchasedItems.length === 0 && (
+                                                    <span className="text-slate-300 text-xs italic">無特定自費紀錄</span>
+                                                )}
+                                            </div>
+                                        </td>
+
+                                        {/* Actions */}
+                                        <td className="px-6 py-4 text-right">
+                                            <button 
+                                                onClick={() => openHistory(patient)}
+                                                className="text-slate-400 hover:text-indigo-600 transition-colors p-2 rounded-full hover:bg-indigo-50"
+                                                title="查看歷程"
+                                            >
+                                                <History size={18} />
+                                            </button>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
                             
                             {displayedPatients.length === 0 && (
                                 <tr>

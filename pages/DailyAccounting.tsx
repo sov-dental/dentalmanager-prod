@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry } from '../types';
+import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord } from '../types';
 import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientIdByName } from '../services/firebase';
 import { exportDailyReportToExcel } from '../services/excelExport';
 import { listEvents } from '../services/googleCalendar';
@@ -150,6 +150,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const [expenditures, setExpenditures] = useState<Expenditure[]>([]);
   const [fullStaffList, setFullStaffList] = useState<Consultant[]>([]);
   
+  // New: Store NP Records for Status Colors
+  const [todaysNPRecords, setTodaysNPRecords] = useState<Record<string, NPRecord>>({});
+  
   const [isLoading, setIsLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isManualSaving, setIsManualSaving] = useState(false);
@@ -175,6 +178,30 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       };
       fetchStaff();
   }, [selectedClinicId]);
+
+  // NEW: Real-time listener for NP Records Status
+  useEffect(() => {
+      if (!selectedClinicId || !currentDate) {
+          setTodaysNPRecords({});
+          return;
+      }
+
+      const unsubscribe = db.collection('np_records')
+          .where('clinicId', '==', selectedClinicId)
+          .where('date', '==', currentDate)
+          .onSnapshot(snapshot => {
+              const map: Record<string, NPRecord> = {};
+              snapshot.forEach(doc => {
+                  const data = doc.data() as NPRecord;
+                  if (data.patientName) {
+                      map[data.patientName.trim()] = data;
+                  }
+              });
+              setTodaysNPRecords(map);
+          });
+
+      return () => unsubscribe();
+  }, [selectedClinicId, currentDate]);
 
   const consultantOptions = useMemo(() => 
       fullStaffList.filter(c => c.role === 'consultant' || c.role === 'trainee'), 
@@ -842,6 +869,21 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                         (row.npStatus && typeof row.npStatus === 'string' && row.npStatus.toUpperCase().includes('NP')) ||
                                         ((row as any).note && typeof (row as any).note === 'string' && (row as any).note.toUpperCase().includes('NP'));
 
+                                    // NP Button Color Logic
+                                    // Strictly dependent on np_records state, ignoring row.attendance
+                                    const npRec = todaysNPRecords[(row.patientName || '').trim()];
+                                    let btnClass = "bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200"; // Default (Gray)
+                                    let btnIcon = <Tag size={12} />;
+
+                                    if (npRec) {
+                                        if (npRec.isClosed) {
+                                            btnClass = "bg-emerald-100 border-emerald-200 text-emerald-700 hover:bg-emerald-200";
+                                        } else if (npRec.isVisited) {
+                                            btnClass = "bg-blue-100 border-blue-200 text-blue-700 hover:bg-blue-200";
+                                        }
+                                        // If record exists but neither visited nor closed, it stays Default (Gray)
+                                    }
+
                                     return (
                                         <tr key={row.id} className="hover:bg-blue-50/30 group">
                                             <td className="px-1 py-1 border-r border-gray-200 text-center sticky left-0 bg-white group-hover:bg-blue-50/30 z-30">
@@ -962,9 +1004,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                                 {isNP ? (
                                                     <button 
                                                         onClick={() => setNpModalData({ row })}
-                                                        className="w-full bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 px-1 py-1 rounded text-xs font-bold flex items-center justify-center gap-1 transition-colors"
+                                                        className={`w-full ${btnClass} border px-1 py-1 rounded text-xs font-bold flex items-center justify-center gap-1 transition-colors`}
                                                     >
-                                                        <Tag size={12} /> NP
+                                                        {btnIcon} NP
                                                     </button>
                                                 ) : (
                                                     <InputCell 

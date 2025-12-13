@@ -20,7 +20,7 @@ import { SalaryStatementPage } from './components/SalaryStatementPage';
 import { MonthlyReport } from './components/MonthlyReport';
 import { ExportView } from './components/ExportView';
 import { GroupDashboard } from './pages/GroupDashboard';
-import { PatientManager } from './pages/PatientManager'; // Imported
+import { PatientManager } from './pages/PatientManager'; 
 import { 
   loadAppData, 
   saveAppData, 
@@ -30,7 +30,7 @@ import {
   saveSOVReferrals,
   seedTestEnvironment,
   auth, 
-  signInWithGoogle, // CHANGED from signInWithPopup
+  signInWithGoogle, 
   signOut
 } from './services/firebase';
 import { LoginPage } from './components/LoginPage';
@@ -70,9 +70,10 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
 
   // Strict Role Check
   if (!allowedRoles.includes(userRole)) {
+      console.warn(`[RouteGuard] Access Denied for ${userRole}. Allowed: ${allowedRoles.join(', ')}`);
       // Redirect based on role capability
       if (userRole === 'marketing') return <Navigate to="/marketing-schedule" replace />;
-      if (userRole === 'staff') return <Navigate to="/appointments" replace />;
+      if (userRole === 'staff' || userRole === 'manager') return <Navigate to="/appointments" replace />;
       return <Navigate to="/" replace />;
   }
 
@@ -234,7 +235,7 @@ const App: React.FC = () => {
   const HomeRedirect = () => {
       if (userRole === 'marketing') return <Navigate to="/marketing-schedule" replace />;
       if (userRole === 'admin') return <Navigate to="/group-dashboard" replace />;
-      // Staff default
+      // Staff & Manager default
       return <Navigate to="/appointments" replace />;
   };
 
@@ -311,37 +312,38 @@ const App: React.FC = () => {
               </ProtectedRoute>
             } />
             <Route path="/salary" element={
-              <ProtectedRoute allowedRoles={['admin']} isDataLoading={isDataLoading}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']} isDataLoading={isDataLoading}>
                   <SalaryStatementPage clinics={data.clinics} doctors={data.doctors} />
               </ProtectedRoute>
             } />
             <Route path="/assistant-bonus" element={
-              <ProtectedRoute allowedRoles={['admin']} isDataLoading={isDataLoading}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']} isDataLoading={isDataLoading}>
                   <AssistantBonus clinics={data.clinics} consultants={data.consultants || []} />
               </ProtectedRoute>
             } 
             />
             <Route path="/assistant-salary" element={
-              <ProtectedRoute allowedRoles={['admin']} isDataLoading={isDataLoading}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']} isDataLoading={isDataLoading}>
                   <AssistantSalary clinics={data.clinics} />
               </ProtectedRoute>
             } 
             />
 
-            {/* Settings Routes (Admin + Staff) */}
+            {/* Settings Routes (Admin + Manager + Staff) */}
             <Route path="/clinics" element={<ProtectedRoute allowedRoles={['admin']} isDataLoading={isDataLoading}><ClinicManager clinics={data.clinics} onSave={handleSaveClinics} /></ProtectedRoute>} />
-            <Route path="/doctors" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><DoctorManager doctors={data.doctors} onSave={handleSaveDoctors} clinics={data.clinics} /></ProtectedRoute>} />
-            <Route path="/consultants" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><ConsultantManager consultants={data.consultants || []} onSave={handleSaveConsultants} clinics={data.clinics} /></ProtectedRoute>} />
-            <Route path="/laboratories" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><LaboratoryManager laboratories={data.laboratories || []} onSave={handleSaveLaboratories} clinics={data.clinics} /></ProtectedRoute>} />
-            <Route path="/sov-referrals" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><SOVReferralManager referrals={data.sovReferrals || []} clinics={data.clinics} onSave={handleSaveSOVReferrals} /></ProtectedRoute>} />
-            <Route path="/integrations" element={<ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}><Integrations clinics={data.clinics} doctors={data.doctors} onSave={handleSaveClinics} /></ProtectedRoute>} />
+            
+            <Route path="/doctors" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'staff']} isDataLoading={isDataLoading}><DoctorManager doctors={data.doctors} onSave={handleSaveDoctors} clinics={data.clinics} /></ProtectedRoute>} />
+            <Route path="/consultants" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'staff']} isDataLoading={isDataLoading}><ConsultantManager consultants={data.consultants || []} onSave={handleSaveConsultants} clinics={data.clinics} /></ProtectedRoute>} />
+            <Route path="/laboratories" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'staff']} isDataLoading={isDataLoading}><LaboratoryManager laboratories={data.laboratories || []} onSave={handleSaveLaboratories} clinics={data.clinics} /></ProtectedRoute>} />
+            <Route path="/sov-referrals" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'staff']} isDataLoading={isDataLoading}><SOVReferralManager referrals={data.sovReferrals || []} clinics={data.clinics} onSave={handleSaveSOVReferrals} /></ProtectedRoute>} />
+            <Route path="/integrations" element={<ProtectedRoute allowedRoles={['admin', 'manager', 'staff']} isDataLoading={isDataLoading}><Integrations clinics={data.clinics} doctors={data.doctors} onSave={handleSaveClinics} /></ProtectedRoute>} />
             
             {/* Permission Manager - Note: Internal check handles strict/case-insensitive Auth */}
             <Route path="/permission-manager" element={<PermissionManager />} />
 
-            {/* Operational Routes (Admin + Staff) */}
+            {/* Operational Routes (Admin + Manager + Staff) */}
             <Route path="/accounting" element={
-              <ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}>
+              <ProtectedRoute allowedRoles={['admin', 'manager', 'staff']} isDataLoading={isDataLoading}>
                   <DailyAccounting 
                       clinics={data.clinics} 
                       doctors={data.doctors} 
@@ -352,17 +354,17 @@ const App: React.FC = () => {
               </ProtectedRoute>
             } />
             <Route path="/monthly-report" element={
-              <ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}>
+              <ProtectedRoute allowedRoles={['admin', 'manager', 'staff']} isDataLoading={isDataLoading}>
                   <MonthlyReport clinics={data.clinics} doctors={data.doctors} />
               </ProtectedRoute>
             } />
             <Route path="/lab-reconciliation" element={
-              <ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}>
+              <ProtectedRoute allowedRoles={['admin', 'manager', 'staff']} isDataLoading={isDataLoading}>
                   <LabReconciliation clinics={data.clinics} laboratories={data.laboratories || []} />
               </ProtectedRoute>
             } />
             <Route path="/appointments" element={
-                <ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}>
+                <ProtectedRoute allowedRoles={['admin', 'manager', 'staff']} isDataLoading={isDataLoading}>
                     <AppointmentCalendar 
                       clinics={data.clinics} 
                       doctors={data.doctors} 
@@ -382,7 +384,7 @@ const App: React.FC = () => {
               } 
             />
             <Route path="/assistant-scheduling" element={
-              <ProtectedRoute allowedRoles={['admin', 'staff']} isDataLoading={isDataLoading}>
+              <ProtectedRoute allowedRoles={['admin', 'manager', 'staff']} isDataLoading={isDataLoading}>
                   <AssistantScheduling 
                       clinics={data.clinics} 
                       consultants={data.consultants || []}
@@ -393,9 +395,9 @@ const App: React.FC = () => {
             } 
             />
 
-            {/* Schedule Routes (Admin + Staff + Marketing) */}
+            {/* Schedule Routes (Admin + Staff + Marketing + Manager) */}
             <Route path="/schedule" element={
-              <ProtectedRoute allowedRoles={['admin', 'staff', 'marketing']} isDataLoading={isDataLoading}>
+              <ProtectedRoute allowedRoles={['admin', 'manager', 'staff', 'marketing']} isDataLoading={isDataLoading}>
                   <MonthlyScheduler clinics={data.clinics} doctors={data.doctors} schedules={data.schedules} onSave={handleSaveSchedules} />
               </ProtectedRoute>
             } />

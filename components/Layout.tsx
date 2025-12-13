@@ -1,6 +1,4 @@
 
-
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { 
@@ -101,6 +99,8 @@ export const Layout: React.FC<Props> = ({
       
       // If config loaded, use it
       if (rolePermissions && rolePermissions[userRole]) {
+          // If the role exists in the config, stick strictly to it
+          // The config stores keys (e.g. '/salary'), check if included
           return rolePermissions[userRole].includes(path);
       }
       
@@ -154,7 +154,7 @@ export const Layout: React.FC<Props> = ({
         { path: '/consultants', icon: Briefcase, label: '人員管理', roles: ['admin', 'manager', 'staff'] },
         { path: '/laboratories', icon: Microscope, label: '技工所管理', roles: ['admin', 'manager', 'staff'] },
         { path: '/sov-referrals', icon: Users, label: 'SOV轉介名單', roles: ['admin', 'manager', 'staff'] },
-        // NEW Permission Manager
+        // Permission Manager
         { path: '/permission-manager', icon: Shield, label: '權限管理 (Admin)', roles: ['admin'] },
       ]
     }

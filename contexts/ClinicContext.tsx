@@ -33,7 +33,7 @@ export const ClinicProvider: React.FC<{ clinics: Clinic[]; children: React.React
   const [selectedClinicId, setSelectedClinicId] = useState<string>('');
 
   // 1. Strict Security Filtering (The Gatekeeper)
-  // This ensures downstream components ONLY see what they are allowed to see.
+  // Memoize based on JSON string of allowedClinics to prevent ref changes from triggering updates
   const visibleClinics = useMemo(() => {
     if (!rawClinics || rawClinics.length === 0) return [];
 
@@ -52,8 +52,8 @@ export const ClinicProvider: React.FC<{ clinics: Clinic[]; children: React.React
         // Original set for ID matching (IDs might be case-sensitive)
         const allowedSet = new Set(allowed);
 
-        console.groupCollapsed(`[ClinicContext] Filtering Clinics for ${userRole}`);
-        console.log("Allowed List (Raw):", allowedClinics);
+        // Debug log only when list changes size
+        // console.log(`[ClinicContext] Filtering. Role: ${userRole}, Allowed: ${allowed.length}`);
         
         filteredClinics = rawClinics.filter(c => {
             // 1. Check ID Match (Primary)
@@ -63,14 +63,8 @@ export const ClinicProvider: React.FC<{ clinics: Clinic[]; children: React.React
             const cName = c.name.trim().toLowerCase();
             const matchName = allowedLower.has(cName);
             
-            // Allow if ID matches OR Name matches
-            const isMatch = matchId || matchName;
-
-            console.log(`Checking [${c.id}] ${c.name} -> ID Match: ${matchId}, Name Match: ${matchName} => ${isMatch ? 'PASS' : 'FAIL'}`);
-            
-            return isMatch;
+            return matchId || matchName;
         });
-        console.groupEnd();
     }
 
     // Sort the filtered list
@@ -80,13 +74,16 @@ export const ClinicProvider: React.FC<{ clinics: Clinic[]; children: React.React
         return orderA - orderB;
     });
 
-  }, [rawClinics, userRole, allowedClinics]);
+  }, [rawClinics, userRole, JSON.stringify(allowedClinics)]);
 
   const selectedClinic = visibleClinics.find(c => c.id === selectedClinicId);
 
   // 2. Auto-Selection Logic
+  // Use a string signature of IDs to prevent loop on object reference change
+  const visibleClinicIds = visibleClinics.map(c => c.id).join(',');
+
   useEffect(() => {
-    // If no clinics available, clear selection
+    // If no clinics available, clear selection and STOP.
     if (visibleClinics.length === 0) {
         if (selectedClinicId) setSelectedClinicId('');
         return;
@@ -95,12 +92,12 @@ export const ClinicProvider: React.FC<{ clinics: Clinic[]; children: React.React
     // Check if the currently selected ID is valid within the *filtered* list
     const isCurrentValid = visibleClinics.some(c => c.id === selectedClinicId);
 
-    // If current selection is invalid (e.g. switched user, or init), force select the first valid one
-    if (!isCurrentValid) {
+    // Only update if current selection is INVALID or EMPTY
+    if (!isCurrentValid || !selectedClinicId) {
         console.log(`[ClinicContext] Auto-selecting first available clinic: ${visibleClinics[0].name}`);
         setSelectedClinicId(visibleClinics[0].id);
     }
-  }, [visibleClinics, selectedClinicId]);
+  }, [visibleClinicIds, selectedClinicId]);
 
   return (
     <ClinicContext.Provider value={{ 

@@ -230,9 +230,10 @@ export const saveClinic = async (clinicData: Partial<Clinic>) => {
     await docRef.set(sanitizedPayload, { merge: true });
 
     // Permission Sync logic
-    if (clinicData.allowedUsers && clinicData.allowedUsers.length > 0 && clinicData.name) {
+    // CRITICAL FIX: Use Clinic ID instead of Name for permission binding
+    if (clinicData.allowedUsers && clinicData.allowedUsers.length > 0) {
         const usersRef = db.collection('users');
-        const clinicName = clinicData.name;
+        const targetClinicId = id; // Use Document ID
         
         const promises = clinicData.allowedUsers.map(async (email) => {
             const q = await usersRef.where('email', '==', email).limit(1).get();
@@ -241,9 +242,10 @@ export const saveClinic = async (clinicData: Partial<Clinic>) => {
                 const userData = userDoc.data();
                 const currentAllowed = userData.allowedClinics || [];
                 
-                if (!currentAllowed.includes(clinicName)) {
+                // Add ID if not present
+                if (!currentAllowed.includes(targetClinicId)) {
                     await userDoc.ref.update({
-                        allowedClinics: firebase.firestore.FieldValue.arrayUnion(clinicName)
+                        allowedClinics: firebase.firestore.FieldValue.arrayUnion(targetClinicId)
                     });
                 }
             }

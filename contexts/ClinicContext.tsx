@@ -56,13 +56,14 @@ export const ClinicProvider: React.FC<{ clinics: Clinic[]; children: React.React
         console.log("Allowed List (Raw):", allowedClinics);
         
         filteredClinics = rawClinics.filter(c => {
-            // 1. Check ID Match
+            // 1. Check ID Match (Primary)
             const matchId = allowedSet.has(c.id);
             
-            // 2. Check Name Match (Case Insensitive)
+            // 2. Check Name Match (Fallback/Legacy)
             const cName = c.name.trim().toLowerCase();
             const matchName = allowedLower.has(cName);
             
+            // Allow if ID matches OR Name matches
             const isMatch = matchId || matchName;
 
             console.log(`Checking [${c.id}] ${c.name} -> ID Match: ${matchId}, Name Match: ${matchName} => ${isMatch ? 'PASS' : 'FAIL'}`);

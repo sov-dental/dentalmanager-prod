@@ -336,6 +336,37 @@ export const saveSOVReferrals = async (clinicId: string, referrals: SOVReferral[
     await db.collection('clinics').doc(clinicId).update({ sovReferrals: deepSanitize(referrals) });
 };
 
+export const addSOVReferral = async (clinicId: string, patientName: string) => {
+    const docRef = db.collection('clinics').doc(clinicId);
+    
+    try {
+        await db.runTransaction(async (transaction) => {
+            const doc = await transaction.get(docRef);
+            if (!doc.exists) return;
+            
+            const data = doc.data();
+            const currentReferrals: SOVReferral[] = data?.sovReferrals || [];
+            
+            // Check for duplicate name
+            if (currentReferrals.some(r => r.name.trim() === patientName.trim())) {
+                return;
+            }
+            
+            const newReferral: SOVReferral = {
+                id: crypto.randomUUID(),
+                clinicId,
+                name: patientName.trim()
+            };
+            
+            transaction.update(docRef, {
+                sovReferrals: firebase.firestore.FieldValue.arrayUnion(newReferral)
+            });
+        });
+    } catch (e) {
+        console.error("Error adding SOV referral:", e);
+    }
+};
+
 // ... (Rest of the file remains unchanged, omitted for brevity but preserved) ...
 // --- NEW COLLECTIONS ---
 
@@ -408,13 +439,17 @@ export const saveDailyAccounting = async (record: DailyAccountingRecord, auditEn
     }
     await db.collection('daily_accounting').doc(docId).set(payload, { merge: true });
 
-    const updates = record.rows.filter(r => r.patientName).map(r => 
-        upsertPatientFromEvent(record.clinicId, {
+    // Update CRM Patient Records
+    const updates = record.rows.filter(r => r.patientName).map(r => {
+        // Extract consultant from row to update CRM
+        const consultantName = r.treatments.consultant || r.retail.staff || undefined;
+        return upsertPatientFromEvent(record.clinicId, {
             chartId: r.chartId || null,
             name: r.patientName,
-            lastVisitDate: record.date
-        })
-    );
+            lastVisitDate: record.date,
+            consultant: consultantName
+        });
+    });
     Promise.all(updates).catch(err => console.error("Background CRM Sync Error:", err));
 };
 
@@ -595,6 +630,7 @@ export interface Patient {
     visitHistory?: any[];     // Optional full history
     totalSpending?: number;
     aliases?: string[]; // Added: For Smart Search
+    lastConsultant?: string; // New: Last Assigned Consultant
     updatedAt?: any;
 }
 
@@ -705,7 +741,62 @@ export const findPatientIdByName = async (name: string, clinicId: string): Promi
     return null;
 }
 
-export const upsertPatientFromEvent = async (clinicId: string, event: { chartId: string | null, name: string, lastVisitDate: string }) => {
+// New: Find full patient profile STRICT MODE
+export const findPatientProfile = async (clinicId: string, name: string, chartId?: string | null): Promise<Patient | null> => {
+    
+    // Case A: Strict ID Lookup (Data Integrity Rule)
+    if (chartId) {
+        // Construct standard Doc ID: clinicId_chartId
+        // If chartId exists in Calendar, we MUST respect it. 
+        // If query fails, it's either a new patient (NP) or a wrong ID. 
+        // We do NOT fallback to Name to avoid incorrect merging.
+        const docId = `${clinicId}_${chartId}`;
+        const doc = await db.collection('patients').doc(docId).get();
+        if (doc.exists) {
+            return { docId: doc.id, ...doc.data() } as Patient;
+        }
+        return null; // ID provided but not found -> Stop.
+    }
+
+    // Case B: Name Lookup (Fallback only if Chart ID is missing)
+    // 1. Exact Name Match
+    const q1 = await db.collection('patients')
+        .where('clinicId', '==', clinicId)
+        .where('name', '==', name)
+        .limit(1)
+        .get();
+    
+    if (!q1.empty) return { docId: q1.docs[0].id, ...q1.docs[0].data() } as Patient;
+
+    // 2. Alias Match (Optional robustness)
+    const q2 = await db.collection('patients')
+        .where('clinicId', '==', clinicId)
+        .where('aliases', 'array-contains', name)
+        .limit(1)
+        .get();
+
+    if (!q2.empty) return { docId: q2.docs[0].id, ...q2.docs[0].data() } as Patient;
+
+    return null;
+}
+
+// New: Find full patient profile by ID
+export const findPatientProfileById = async (clinicId: string, chartId: string): Promise<Patient | null> => {
+    const docId = `${clinicId}_${chartId}`;
+    const doc = await db.collection('patients').doc(docId).get();
+    if (doc.exists) return { docId: doc.id, ...doc.data() } as Patient;
+    return null;
+}
+
+export const upsertPatientFromEvent = async (
+    clinicId: string, 
+    event: { 
+        chartId: string | null, 
+        name: string, 
+        lastVisitDate: string,
+        consultant?: string // Optional consultant from event
+    }
+) => {
     if (!clinicId || !event.name) return;
     let docId = '';
     if (event.chartId) {
@@ -733,16 +824,28 @@ export const upsertPatientFromEvent = async (clinicId: string, event: { chartId:
                 updateData.aliases = firebase.firestore.FieldValue.arrayUnion(existing.name);
             }
         }
+        
+        // Update Consultant if provided
+        if (event.consultant) {
+            updateData.lastConsultant = event.consultant;
+        }
+
         await docRef.update(deepSanitize(updateData));
     } else {
-        await docRef.set(deepSanitize({
+        const newData: any = {
             clinicId,
             chartId: event.chartId || null,
             name: event.name,
             lastVisit: event.lastVisitDate,
             aliases: [],
             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        }));
+        };
+        
+        if (event.consultant) {
+            newData.lastConsultant = event.consultant;
+        }
+
+        await docRef.set(deepSanitize(newData));
     }
 };
 
@@ -765,6 +868,8 @@ export const migratePatientId = async (oldDocId: string, newChartId: string, cli
         const mergedHistory = [...(newData.visitHistory || []), ...(oldData.visitHistory || [])];
         const lastVisit = (newData.lastVisit > oldData.lastVisit) ? newData.lastVisit : oldData.lastVisit;
         const totalSpending = (newData.totalSpending || 0) + (oldData.totalSpending || 0);
+        // Take the latest valid consultant
+        const lastConsultant = newData.lastConsultant || oldData.lastConsultant;
 
         let aliases = newData.aliases || [];
         if (oldData.name !== newData.name && !aliases.includes(oldData.name)) {
@@ -780,6 +885,7 @@ export const migratePatientId = async (oldDocId: string, newChartId: string, cli
             lastVisit,
             totalSpending,
             aliases,
+            lastConsultant,
             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
         }));
     } else {
@@ -912,6 +1018,7 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
         };
 
         const purchased = extractPurchasedItems(row);
+        const rowConsultant = row.treatments.consultant || row.retail.staff;
 
         let updateData: any = {
             clinicId,
@@ -923,6 +1030,10 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
 
         if (purchased.length > 0) {
             updateData.purchasedItems = firebase.firestore.FieldValue.arrayUnion(...purchased);
+        }
+        
+        if (rowConsultant) {
+            updateData.lastConsultant = rowConsultant;
         }
 
         if (snap.exists) {

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord } from '../types';
-import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientIdByName } from '../services/firebase';
+import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientIdByName, findPatientProfile, addSOVReferral } from '../services/firebase';
 import { exportDailyReportToExcel } from '../services/excelExport';
 import { listEvents } from '../services/googleCalendar';
 import { parseCalendarEvent } from '../utils/eventParser';
@@ -329,35 +329,71 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           const existingIds = new Set(rows.map(r => r.id));
           const newRows: AccountingRow[] = [];
 
+          const allEvents: any[] = [];
+
+          // 1. Gather all events first to process in parallel
           for (const doc of clinicDocs) {
               const calendarId = mapping[doc.id];
               if (calendarId) {
                   const events = await listEvents(calendarId, start, end);
                   events.forEach(ev => {
-                      if (!existingIds.has(ev.id) && !ev.allDay) { 
-                          const parsed = parseCalendarEvent(ev.summary);
-                          if (!parsed) return;
-
-                          newRows.push({
-                              ...hydrateRow({}),
-                              id: ev.id,
-                              patientName: parsed.name,
-                              doctorId: doc.id,
-                              doctorName: doc.name,
-                              treatmentContent: parsed.treatment,
-                              npStatus: parsed.isNP ? 'NP' : parsed.status,
-                              isManual: false,
-                              attendance: true,
-                              startTime: ev.start.dateTime || new Date().toISOString(),
-                              chartId: parsed.chartId || undefined,
-                              patientStatus: parsed.status,
-                              // @ts-ignore
-                              isNP: parsed.isNP
-                          });
+                      if (!existingIds.has(ev.id) && !ev.allDay) {
+                          allEvents.push({ event: ev, doc });
                       }
                   });
               }
           }
+
+          // 2. Process events with CRM Lookup in parallel
+          const processedRows = await Promise.all(allEvents.map(async ({ event, doc }) => {
+              const parsed = parseCalendarEvent(event.summary);
+              if (!parsed) return null;
+
+              let lastConsultant = '';
+              let finalChartId = parsed.chartId; // Default to calendar ID (if present)
+
+              // Unified Strict Lookup
+              // If parsed.chartId exists, look up by ID only (Case A).
+              // If parsed.chartId is missing, fallback to Name lookup (Case B).
+              try {
+                  const profile = await findPatientProfile(selectedClinicId, parsed.name, parsed.chartId);
+                  if (profile) {
+                      // Found a CRM match
+                      if (profile.lastConsultant) lastConsultant = profile.lastConsultant;
+                      // Sync the canonical Chart ID from CRM (overwrites typo in calendar if match found)
+                      if (profile.chartId) finalChartId = profile.chartId;
+                  }
+              } catch (e) {
+                  console.warn("CRM lookup failed", e);
+              }
+
+              // Construct the row
+              return {
+                  ...hydrateRow({}),
+                  id: event.id,
+                  patientName: parsed.name,
+                  doctorId: doc.id,
+                  doctorName: doc.name,
+                  treatmentContent: parsed.treatment,
+                  npStatus: parsed.isNP ? 'NP' : parsed.status,
+                  isManual: false,
+                  attendance: true,
+                  startTime: event.start.dateTime || new Date().toISOString(),
+                  chartId: finalChartId || undefined,
+                  patientStatus: parsed.status,
+                  // @ts-ignore
+                  isNP: parsed.isNP,
+                  treatments: {
+                      ...hydrateRow({}).treatments,
+                      consultant: lastConsultant
+                  }
+              } as AccountingRow;
+          }));
+
+          // Filter out nulls
+          processedRows.forEach(row => {
+              if (row) newRows.push(row);
+          });
 
           if (newRows.length > 0) {
               const updated = [...rows, ...newRows].sort((a,b) => (a.startTime||'').localeCompare(b.startTime||''));
@@ -517,6 +553,11 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               if (updates.doctorId) {
                   const doc = clinicDocs.find(d => d.id === updates.doctorId);
                   if (doc) newRow.doctorName = doc.name;
+              }
+
+              // --- AUTO LEARN SOV REFERRAL ---
+              if (updates.labName === 'SOV轉介' && newRow.patientName) {
+                  addSOVReferral(selectedClinicId, newRow.patientName).catch(e => console.error(e));
               }
 
               // --- AUTO SOV LAB LOGIC START ---

@@ -1,24 +1,58 @@
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Clinic, SOVReferral } from '../types';
-import { Users, Plus, Trash2, FileSpreadsheet, Loader2, Save, Upload } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import { Users, Plus, Trash2, Loader2, WifiOff } from 'lucide-react';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from './ClinicSelector';
+import { db, saveSOVReferrals } from '../services/firebase';
 
 interface Props {
-  referrals: SOVReferral[];
-  clinics: Clinic[]; // Compatibility
-  onSave: (referrals: SOVReferral[]) => Promise<void>;
+  referrals?: SOVReferral[]; // Deprecated (Now fetched internally)
+  clinics?: Clinic[]; // Deprecated
+  onSave?: (referrals: SOVReferral[]) => Promise<void>; // Deprecated
 }
 
-export const SOVReferralManager: React.FC<Props> = ({ referrals, onSave }) => {
-  const { selectedClinicId, clinics } = useClinic();
+export const SOVReferralManager: React.FC<Props> = () => {
+  const { selectedClinicId } = useClinic();
+  
+  // Real-time Data State
+  const [localReferrals, setLocalReferrals] = useState<SOVReferral[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Form State
   const [newName, setNewName] = useState('');
   const [newLast3Id, setNewLast3Id] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
-  const [isImporting, setIsImporting] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Real-time Listener
+  useEffect(() => {
+      if (!selectedClinicId) {
+          setLocalReferrals([]);
+          return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+
+      const unsubscribe = db.collection('clinics').doc(selectedClinicId)
+          .onSnapshot((doc) => {
+              setIsLoading(false);
+              if (doc.exists) {
+                  const data = doc.data();
+                  const refs = (data?.sovReferrals || []) as SOVReferral[];
+                  setLocalReferrals(refs);
+              } else {
+                  setLocalReferrals([]);
+              }
+          }, (err) => {
+              console.error("Referral Listener Error:", err);
+              setError("連線中斷，無法取得即時資料");
+              setIsLoading(false);
+          });
+
+      return () => unsubscribe();
+  }, [selectedClinicId]);
 
   const handleAdd = async () => {
     if (!newName || !selectedClinicId) return;
@@ -28,11 +62,23 @@ export const SOVReferralManager: React.FC<Props> = ({ referrals, onSave }) => {
         const newReferral: SOVReferral = {
             id: crypto.randomUUID(),
             clinicId: selectedClinicId,
-            name: newName,
-            last3Id: newLast3Id
+            name: newName.trim(),
+            last3Id: newLast3Id.trim()
         };
-        const updatedList = [...referrals, newReferral];
-        await onSave(updatedList);
+        
+        // Optimistic update prevention: Use the latest local state from snapshot
+        // Check for duplicates
+        if (localReferrals.some(r => r.name === newReferral.name)) {
+            alert("此姓名已存在於清單中");
+            setIsSaving(false);
+            return;
+        }
+
+        const updatedList = [...localReferrals, newReferral];
+        
+        // Write directly to Firestore using the service
+        await saveSOVReferrals(selectedClinicId, updatedList);
+        
         setNewName('');
         setNewLast3Id('');
     } catch (error) {
@@ -43,75 +89,19 @@ export const SOVReferralManager: React.FC<Props> = ({ referrals, onSave }) => {
   };
 
   const handleDelete = async (id: string) => {
+    if (!selectedClinicId) return;
     if (!confirm("確定要刪除此筆資料嗎？")) return;
+    
     setIsSaving(true);
     try {
-        const updatedList = referrals.filter(r => r.id !== id);
-        await onSave(updatedList);
+        const updatedList = localReferrals.filter(r => r.id !== id);
+        await saveSOVReferrals(selectedClinicId, updatedList);
     } catch (error) {
         alert("刪除失敗: " + (error as Error).message);
     } finally {
         setIsSaving(false);
     }
   };
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-
-      setIsImporting(true);
-      try {
-          const buffer = await file.arrayBuffer();
-          const workbook = XLSX.read(buffer, { type: 'array' });
-          const sheetName = workbook.SheetNames[0];
-          const sheet = workbook.Sheets[sheetName];
-          const data = XLSX.utils.sheet_to_json<any>(sheet);
-
-          // Expected columns: 診所, 姓名, ID後三碼 (or similar)
-          const newReferrals: SOVReferral[] = [];
-          
-          data.forEach((row: any) => {
-              const clinicName = row['診所'] || row['clinic'];
-              const name = row['姓名'] || row['name'];
-              const id3 = row['ID後三碼'] || row['id3'] || '';
-
-              if (!name) return;
-
-              // Try to match clinic name to ID, default to currently selected or first
-              let targetClinicId = selectedClinicId;
-              if (clinicName) {
-                  const matched = clinics.find(c => c.name.includes(clinicName));
-                  if (matched) targetClinicId = matched.id;
-              }
-
-              newReferrals.push({
-                  id: crypto.randomUUID(),
-                  clinicId: targetClinicId,
-                  name: String(name).trim(),
-                  last3Id: String(id3).trim()
-              });
-          });
-
-          if (newReferrals.length === 0) {
-              alert("未讀取到有效資料，請確認 Excel 欄位名稱 (診所, 姓名, ID後三碼)");
-              return;
-          }
-
-          if (confirm(`即將匯入 ${newReferrals.length} 筆資料，確定嗎？`)) {
-              await onSave([...referrals, ...newReferrals]);
-              alert("匯入成功！");
-          }
-
-      } catch (error) {
-          console.error(error);
-          alert("匯入失敗，請確認檔案格式。");
-      } finally {
-          setIsImporting(false);
-          if (fileInputRef.current) fileInputRef.current.value = '';
-      }
-  };
-
-  const filteredReferrals = referrals.filter(r => r.clinicId === selectedClinicId);
 
   return (
     <div className="space-y-6">
@@ -120,28 +110,20 @@ export const SOVReferralManager: React.FC<Props> = ({ referrals, onSave }) => {
                <h2 className="text-3xl font-bold text-slate-800 flex items-center gap-2">
                  <Users size={28} className="text-purple-600"/> SOV 轉介名單
                </h2>
-               <p className="text-slate-500">管理參與 SOV 轉介方案的病患名單 (db_sov_referrals)。</p>
+               <p className="text-slate-500">管理參與 SOV 轉介方案的病患名單 (即時同步)。</p>
            </div>
            
            <div className="flex items-center gap-3 w-full sm:w-auto">
-               <input 
-                   type="file" 
-                   ref={fileInputRef} 
-                   className="hidden" 
-                   accept=".xlsx,.xls,.csv" 
-                   onChange={handleFileUpload} 
-               />
-               <button
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={isImporting}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors whitespace-nowrap shadow-md disabled:opacity-50"
-                >
-                    {isImporting ? <Loader2 size={18} className="animate-spin" /> : <FileSpreadsheet size={18} />}
-                    Excel 匯入
-                </button>
+               {isLoading && <Loader2 className="animate-spin text-slate-400" size={20} />}
                <ClinicSelector className="border p-2 rounded-lg font-medium text-slate-700 bg-white shadow-sm flex-1 sm:flex-none min-w-[150px]" />
            </div>
        </div>
+
+       {error && (
+           <div className="bg-rose-50 text-rose-600 p-4 rounded-lg flex items-center gap-2">
+               <WifiOff size={20} /> {error}
+           </div>
+       )}
 
        {/* Add Form */}
        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col md:flex-row gap-4 items-end">
@@ -153,6 +135,7 @@ export const SOVReferralManager: React.FC<Props> = ({ referrals, onSave }) => {
                    value={newName}
                    onChange={e => setNewName(e.target.value)}
                    placeholder="例如：陳小美"
+                   disabled={isSaving}
                />
            </div>
            <div className="flex-1 w-full">
@@ -163,11 +146,12 @@ export const SOVReferralManager: React.FC<Props> = ({ referrals, onSave }) => {
                    value={newLast3Id}
                    onChange={e => setNewLast3Id(e.target.value)}
                    placeholder="例如：123"
+                   disabled={isSaving}
                />
            </div>
            <button
                 onClick={handleAdd}
-                disabled={!newName || isSaving}
+                disabled={!newName || isSaving || !selectedClinicId}
                 className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2.5 rounded-lg font-bold shadow-md transition-colors flex items-center gap-2 disabled:opacity-50 w-full md:w-auto justify-center"
             >
                 {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />}
@@ -184,9 +168,9 @@ export const SOVReferralManager: React.FC<Props> = ({ referrals, onSave }) => {
                 <div className="col-span-2 text-right">操作</div>
             </div>
             <div className="divide-y divide-slate-100">
-                {filteredReferrals.length > 0 ? (
-                    filteredReferrals.map((item, idx) => (
-                        <div key={item.id} className="grid grid-cols-12 gap-4 p-4 hover:bg-slate-50 transition-colors items-center">
+                {localReferrals.length > 0 ? (
+                    localReferrals.map((item, idx) => (
+                        <div key={item.id} className="grid grid-cols-12 gap-4 p-4 hover:bg-slate-50 transition-colors items-center animate-fade-in">
                              <div className="col-span-1 text-center text-slate-400 font-mono text-sm">{idx + 1}</div>
                              <div className="col-span-5 font-bold text-slate-800">{item.name}</div>
                              <div className="col-span-4 font-mono text-slate-600">{item.last3Id || '-'}</div>
@@ -195,6 +179,7 @@ export const SOVReferralManager: React.FC<Props> = ({ referrals, onSave }) => {
                                     onClick={() => handleDelete(item.id)}
                                     className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
                                     title="刪除"
+                                    disabled={isSaving}
                                 >
                                     <Trash2 size={16}/>
                                 </button>
@@ -203,7 +188,7 @@ export const SOVReferralManager: React.FC<Props> = ({ referrals, onSave }) => {
                     ))
                 ) : (
                     <div className="p-12 text-center text-slate-400">
-                        此診所尚無轉介名單資料
+                        {isLoading ? '載入中...' : '此診所尚無轉介名單資料'}
                     </div>
                 )}
             </div>

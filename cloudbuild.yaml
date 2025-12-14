@@ -1,0 +1,48 @@
+steps:
+  # 1. Install Dependencies
+  - name: 'node:18'
+    entrypoint: 'npm'
+    args: ['install']
+
+  # 2. Create .env file from Substitutions (Secrets)
+  - name: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "VITE_FIREBASE_API_KEY=${_VITE_FIREBASE_API_KEY}" >> .env
+        echo "VITE_FIREBASE_AUTH_DOMAIN=${_VITE_FIREBASE_AUTH_DOMAIN}" >> .env
+        echo "VITE_FIREBASE_PROJECT_ID=${_VITE_FIREBASE_PROJECT_ID}" >> .env
+        echo "VITE_FIREBASE_STORAGE_BUCKET=${_VITE_FIREBASE_STORAGE_BUCKET}" >> .env
+        echo "VITE_FIREBASE_MESSAGING_SENDER_ID=${_VITE_FIREBASE_MESSAGING_SENDER_ID}" >> .env
+        echo "VITE_FIREBASE_APP_ID=${_VITE_FIREBASE_APP_ID}" >> .env
+
+  # 3. Build (This will now see the .env file)
+  - name: 'node:18'
+    entrypoint: 'npm'
+    args: ['run', 'build']
+
+  # 4. Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'dentalmanager-prod'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/dentalmanager-prod'
+      - '--region'
+      - 'asia-east1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+
+images:
+  - 'gcr.io/$PROJECT_ID/dentalmanager-prod'
+
+substitutions:
+  _VITE_FIREBASE_API_KEY: ''
+  _VITE_FIREBASE_AUTH_DOMAIN: ''
+  _VITE_FIREBASE_PROJECT_ID: ''
+  _VITE_FIREBASE_STORAGE_BUCKET: ''
+  _VITE_FIREBASE_MESSAGING_SENDER_ID: ''
+  _VITE_FIREBASE_APP_ID: ''

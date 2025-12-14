@@ -96,12 +96,6 @@ export const PermissionManager: React.FC<Props> = () => {
         }
     };
 
-    // Helper to resolve display name from ID or Name
-    const getClinicName = (idOrName: string) => {
-        const found = clinics.find(c => c.id === idOrName || c.name === idOrName);
-        return found ? found.name : idOrName;
-    };
-
     // --- TAB 1: USER MANAGEMENT ACTIONS ---
 
     const handleRoleChange = async (uid: string, newRole: UserRole) => {
@@ -116,22 +110,18 @@ export const PermissionManager: React.FC<Props> = () => {
 
     const openClinicModal = (user: User) => {
         setEditingUser(user);
+        // Ensure we work with a clean array
         setTempAllowedClinics(user.allowedClinics || []);
     };
 
-    const toggleClinicAccess = (clinic: Clinic) => {
-        // Check if either ID or Name exists (handling legacy data)
-        const hasId = tempAllowedClinics.includes(clinic.id);
-        const hasName = tempAllowedClinics.includes(clinic.name);
-        const isSelected = hasId || hasName;
-
-        if (isSelected) {
-            // Uncheck: Remove BOTH ID and Name to ensure clean state and migration
-            setTempAllowedClinics(prev => prev.filter(item => item !== clinic.id && item !== clinic.name));
-        } else {
-            // Check: Add ID only (The new standard)
-            setTempAllowedClinics(prev => [...prev, clinic.id]);
-        }
+    const toggleClinicAccess = (clinicId: string) => {
+        setTempAllowedClinics(prev => {
+            if (prev.includes(clinicId)) {
+                return prev.filter(id => id !== clinicId);
+            } else {
+                return [...prev, clinicId];
+            }
+        });
     };
 
     const saveClinicAccess = async () => {
@@ -282,14 +272,16 @@ export const PermissionManager: React.FC<Props> = () => {
                                                 </span>
                                             ) : (
                                                 <div className="flex flex-wrap gap-1">
-                                                    {(user.allowedClinics || []).slice(0, 3).map(c => (
-                                                        <span key={c} className="px-2 py-0.5 bg-slate-100 rounded text-xs text-slate-600 border border-slate-200">
-                                                            {getClinicName(c)}
-                                                        </span>
-                                                    ))}
-                                                    {(user.allowedClinics || []).length > 3 && (
-                                                        <span className="px-2 py-0.5 bg-slate-100 rounded text-xs text-slate-500">+{user.allowedClinics.length - 3}</span>
-                                                    )}
+                                                    {(user.allowedClinics || []).map(clinicId => {
+                                                        const clinic = clinics.find(c => c.id === clinicId);
+                                                        // Fallback to displaying the ID if clinic not found (legacy or deleted)
+                                                        const displayName = clinic ? clinic.name : clinicId;
+                                                        return (
+                                                            <span key={clinicId} className="px-2 py-0.5 bg-slate-100 rounded text-xs text-slate-600 border border-slate-200">
+                                                                {displayName}
+                                                            </span>
+                                                        );
+                                                    })}
                                                     {(user.allowedClinics || []).length === 0 && (
                                                         <span className="text-xs text-rose-400 italic">無存取權限</span>
                                                     )}
@@ -387,8 +379,8 @@ export const PermissionManager: React.FC<Props> = () => {
                             <p className="text-sm text-slate-500 mb-4">勾選此用戶可存取的診所。系統將自動同步權限至各診所設定。</p>
                             <div className="grid grid-cols-1 gap-2">
                                 {clinics.map(clinic => {
-                                    // Check if either ID or Name is present (legacy support)
-                                    const isSelected = tempAllowedClinics.includes(clinic.id) || tempAllowedClinics.includes(clinic.name);
+                                    // Strict ID Matching
+                                    const isSelected = tempAllowedClinics.includes(clinic.id);
                                     
                                     return (
                                         <label 
@@ -403,7 +395,7 @@ export const PermissionManager: React.FC<Props> = () => {
                                                 type="checkbox" 
                                                 className="hidden"
                                                 checked={isSelected}
-                                                onChange={() => toggleClinicAccess(clinic)}
+                                                onChange={() => toggleClinicAccess(clinic.id)}
                                             />
                                         </label>
                                     );

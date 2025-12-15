@@ -344,6 +344,7 @@ export interface NPRecord {
     dealAmount?: number;
     consultant?: string;
     note?: string;
+    calendarNote?: string; // New: Full Calendar Description
     updatedAt: any;
 }
 

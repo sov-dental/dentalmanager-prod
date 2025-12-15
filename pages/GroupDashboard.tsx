@@ -453,6 +453,18 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                             if (parsed && parsed.isNP && eventDate) {
                                 const existing = await getNPRecord(clinic.id, eventDate, parsed.name);
                                 if (!existing) {
+                                    // SOURCE AUTO-DETECTION LOGIC
+                                    const description = ev.description || '';
+                                    let detectedSource = '其他';
+                                    
+                                    const lowerDesc = description.toLowerCase();
+                                    if (lowerDesc.includes('line')) detectedSource = 'Line';
+                                    else if (lowerDesc.includes('fb') || lowerDesc.includes('facebook')) detectedSource = 'FB';
+                                    else if (lowerDesc.includes('電話') || lowerDesc.includes('call')) detectedSource = '電話';
+                                    else if (lowerDesc.includes('小幫手')) detectedSource = '小幫手';
+                                    else if (lowerDesc.includes('介紹')) detectedSource = '介紹';
+                                    else if (lowerDesc.includes('過路')) detectedSource = '過路客';
+
                                     const newRecord: NPRecord = {
                                         date: eventDate,
                                         clinicId: clinic.id,
@@ -464,7 +476,8 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                         isVisited: true,
                                         isClosed: false,
                                         marketingTag: '矯正諮詢',
-                                        source: 'Line',
+                                        source: detectedSource,
+                                        calendarNote: description, // Save Note
                                         updatedAt: new Date()
                                     };
                                     await saveNPRecord(newRecord);
@@ -904,6 +917,11 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                             />
                                         </th>
 
+                                        {/* CALENDAR NOTE */}
+                                        <th className="px-4 py-2 w-48 bg-slate-50 align-top">
+                                            <div className="mt-1">日曆備註</div>
+                                        </th>
+
                                         {/* CONSULTANT FILTER */}
                                         <th className="px-4 py-2 w-24 bg-slate-50">
                                             <TableHeaderFilter 
@@ -948,6 +966,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                                         </span>
                                                     </td>
                                                     <td className="px-4 py-3 text-slate-600 text-xs">{r.source || '-'}</td>
+                                                    <td className="px-4 py-3 text-slate-500 text-xs truncate max-w-[150px]" title={r.calendarNote}>{r.calendarNote || '-'}</td>
                                                     <td className="px-4 py-3 text-slate-600 text-xs">{consultantName}</td>
                                                     <td className="px-4 py-3 text-center">
                                                         {getStatusBadge(r)}
@@ -964,7 +983,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                             );
                                     })}
                                     {filteredNpRecords.length === 0 && (
-                                        <tr><td colSpan={10} className="p-8 text-center text-slate-400">尚無符合條件的資料</td></tr>
+                                        <tr><td colSpan={11} className="p-8 text-center text-slate-400">尚無符合條件的資料</td></tr>
                                     )}
                                 </tbody>
                             </table>

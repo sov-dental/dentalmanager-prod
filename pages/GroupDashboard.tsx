@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Clinic, Consultant, NPRecord } from '../types';
+import { Clinic, Consultant, NPRecord, UserRole } from '../types';
 import { fetchDashboardSnapshot, ClinicMonthlySummary, saveMonthlyTarget, auth, getMonthlyAccounting, CLINIC_ORDER, getNPRecordsRange, saveNPRecord, getNPRecord, getStaffList, deleteNPRecord } from '../services/firebase';
 import { listEvents, handleAuthClick } from '../services/googleCalendar';
 import { parseCalendarEvent } from '../utils/eventParser';
@@ -19,7 +19,7 @@ import {
 
 interface Props {
     clinics: Clinic[];
-    userRole?: 'admin' | 'staff' | 'guest';
+    userRole?: UserRole;
 }
 
 interface SelfPayBreakdown {
@@ -32,7 +32,7 @@ interface SelfPayBreakdown {
     whitening: number;
     perio: number;
     other: number;
-    retail: number; // Added: Retail + Vault
+    retail: number;
 }
 
 // --- HELPER COMPONENTS ---
@@ -40,7 +40,7 @@ interface SelfPayBreakdown {
 const KPICard = ({ title, actual, target, prev, yearPrev, prefix = '', suffix = '', colorClass = 'text-slate-800', isActive, onClick, icon: Icon, customRate, customSubtext }: any) => {
     // Priority: Custom Rate -> Target Achievement -> 0
     const rate = customRate !== undefined ? customRate : (target > 0 ? (actual / target) * 100 : 0);
-    const isAchieved = rate >= 100; // Or whatever threshold for custom rate
+    const isAchieved = rate >= 100; 
     const badgeColor = customRate !== undefined ? 'bg-blue-50 text-blue-600 border-blue-100' : (isAchieved ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-amber-50 text-amber-600 border-amber-100');
     
     // Growth Calculations
@@ -159,7 +159,8 @@ const TableHeaderFilter = ({
 // --- MAIN COMPONENT ---
 
 export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
-    if (userRole !== 'admin') {
+    // Permission Check: Admin or Manager
+    if (!['admin', 'manager'].includes(userRole || '')) {
         return <UnauthorizedPage email={auth.currentUser?.email} onLogout={() => auth.signOut()} />;
     }
 
@@ -473,11 +474,11 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                         treatment: parsed.treatment,
                                         doctor: doctorName,
                                         doctorName: doctorName,
-                                        isVisited: true,
-                                        isClosed: false,
+                                        isVisited: false, // Default to Not Visited (Gray status)
+                                        isClosed: false,  // Default to Not Closed
                                         marketingTag: '矯正諮詢',
                                         source: detectedSource,
-                                        calendarNote: description, // Save Note
+                                        calendarNote: description,
                                         updatedAt: new Date()
                                     };
                                     await saveNPRecord(newRecord);
@@ -540,7 +541,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         if (record.isClosed) return <span className="text-emerald-600 font-bold text-xs bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">已成交</span>;
         if (record.isVisited) return <span className="text-blue-600 font-bold text-xs bg-blue-50 px-2 py-0.5 rounded border border-blue-100">已報到</span>;
         if (record.date > todayStr) return <span className="text-amber-600 font-bold text-xs bg-amber-50 px-2 py-0.5 rounded border border-amber-100">待回診</span>;
-        return <span className="text-rose-600 font-bold text-xs bg-rose-50 px-2 py-0.5 rounded border border-rose-100">未到診</span>;
+        return <span className="text-slate-500 font-bold text-xs bg-slate-100 px-2 py-0.5 rounded border border-slate-200">未到診</span>;
     };
 
     // --- Chart Data Preparation ---

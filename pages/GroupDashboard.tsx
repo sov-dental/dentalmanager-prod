@@ -431,6 +431,22 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
 
             let addedCount = 0;
 
+            // Advanced Source Detection Helper
+            const determineSource = (desc: string): string => {
+                const lower = (desc || '').toLowerCase();
+                if (lower.includes('官網') || lower.includes('後台')) return '官網';
+                if (lower.includes('轉介') || lower.includes('轉')) return 'SOV轉介';
+                if (lower.includes('tel') || lower.includes('電')) return '電話';
+                if (lower.includes('臉書') || lower.includes('ig') || lower.includes('fb') || lower.includes('facebook')) return 'FB';
+                // Check "Introduced" variations. Note: "幫約" is here.
+                if (lower.includes('朋友') || lower.includes('媽媽') || lower.includes('老婆') || lower.includes('男友') || lower.includes('幫約') || lower.includes('介紹') || lower.includes('一起')) return '介紹';
+                // Check "Helper" (generic '幫') AFTER specific '幫約'
+                if (lower.includes('幫')) return '小幫手';
+                if (lower.includes('現') || lower.includes('現場')) return '過路客';
+                if (lower.includes('line')) return 'Line';
+                return '其他';
+            };
+
             for (const clinic of clinics) {
                 if (!clinic.googleCalendarMapping) continue;
                 
@@ -456,15 +472,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                 if (!existing) {
                                     // SOURCE AUTO-DETECTION LOGIC
                                     const description = ev.description || '';
-                                    let detectedSource = '其他';
-                                    
-                                    const lowerDesc = description.toLowerCase();
-                                    if (lowerDesc.includes('line')) detectedSource = 'Line';
-                                    else if (lowerDesc.includes('fb') || lowerDesc.includes('facebook')) detectedSource = 'FB';
-                                    else if (lowerDesc.includes('電話') || lowerDesc.includes('call')) detectedSource = '電話';
-                                    else if (lowerDesc.includes('小幫手')) detectedSource = '小幫手';
-                                    else if (lowerDesc.includes('介紹')) detectedSource = '介紹';
-                                    else if (lowerDesc.includes('過路')) detectedSource = '過路客';
+                                    const detectedSource = determineSource(description);
 
                                     const newRecord: NPRecord = {
                                         date: eventDate,

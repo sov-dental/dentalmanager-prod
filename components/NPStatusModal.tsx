@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { AccountingRow, NPRecord } from '../types';
 import { getStaffList, saveNPRecord, getNPRecord, getMarketingTags, saveMarketingTags } from '../services/firebase';
-import { X, Save, Loader2, Tag, MessageCircle, User, DollarSign, Settings, Plus, Trash2, CheckSquare } from 'lucide-react';
+import { X, Save, Loader2, Tag, MessageCircle, User, DollarSign, Settings, Plus, Trash2, CheckSquare, FileText } from 'lucide-react';
 
 interface Props {
     isOpen: boolean;
@@ -12,7 +12,7 @@ interface Props {
     date: string;
 }
 
-const SOURCES = ['FB', 'Line', '電話', '小幫手', '介紹', '過路客', '其他'];
+const SOURCES = ['FB', 'Line', '電話', '小幫手', '介紹', '過路客', '官網', 'SOV轉介', '其他'];
 
 export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, row, clinicId, date }) => {
     const [formData, setFormData] = useState<Partial<NPRecord>>({
@@ -125,7 +125,8 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, row, clinicId,
                 isClosed,
                 dealAmount,
                 consultant: formData.consultant || '',
-                updatedAt: new Date().toISOString()
+                updatedAt: new Date().toISOString(),
+                calendarNote: formData.calendarNote // Preserve existing note if present
             };
 
             await saveNPRecord(record);
@@ -211,6 +212,12 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, row, clinicId,
                                         {renderStatusBadge()}
                                     </div>
                                     <div className="text-xs text-indigo-700 truncate">{row.treatmentContent || '無療程內容'}</div>
+                                    {formData.calendarNote && (
+                                        <div className="mt-2 pt-2 border-t border-indigo-200/50 flex items-start gap-2 text-xs text-indigo-800">
+                                            <FileText size={12} className="mt-0.5 shrink-0" />
+                                            <span className="opacity-80 break-words">{formData.calendarNote}</span>
+                                        </div>
+                                    )}
                                 </div>
                             ) : (
                                 <div className="space-y-3 bg-slate-50 p-3 rounded-lg border border-slate-200 mb-2">

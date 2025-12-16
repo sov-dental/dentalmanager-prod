@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Consultant, NPRecord, UserRole } from '../types';
-import { fetchDashboardSnapshot, ClinicMonthlySummary, saveMonthlyTarget, auth, getMonthlyAccounting, CLINIC_ORDER, getNPRecordsRange, saveNPRecord, getNPRecord, getStaffList, deleteNPRecord } from '../services/firebase';
+import { fetchDashboardSnapshot, ClinicMonthlySummary, saveMonthlyTarget, auth, getMonthlyAccounting, CLINIC_ORDER, saveNPRecord, getNPRecord, getStaffList, deleteNPRecord, db } from '../services/firebase';
 import { listEvents, handleAuthClick } from '../services/googleCalendar';
 import { parseCalendarEvent } from '../utils/eventParser';
 import { UnauthorizedPage } from '../components/UnauthorizedPage';
@@ -38,12 +38,10 @@ interface SelfPayBreakdown {
 // --- HELPER COMPONENTS ---
 
 const KPICard = ({ title, actual, target, prev, yearPrev, prefix = '', suffix = '', colorClass = 'text-slate-800', isActive, onClick, icon: Icon, customRate, customSubtext }: any) => {
-    // Priority: Custom Rate -> Target Achievement -> 0
     const rate = customRate !== undefined ? customRate : (target > 0 ? (actual / target) * 100 : 0);
     const isAchieved = rate >= 100; 
     const badgeColor = customRate !== undefined ? 'bg-blue-50 text-blue-600 border-blue-100' : (isAchieved ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-amber-50 text-amber-600 border-amber-100');
     
-    // Growth Calculations
     const mom = prev > 0 ? ((actual - prev) / prev) * 100 : 0;
     const yoy = yearPrev > 0 ? ((actual - yearPrev) / yearPrev) * 100 : 0;
 
@@ -147,6 +145,7 @@ const TableHeaderFilter = ({
             className="w-full text-xs border border-slate-200 rounded px-1 py-0.5 bg-slate-50 text-slate-700 outline-none focus:ring-1 focus:ring-indigo-500"
             value={value}
             onChange={(e) => onChange(e.target.value)}
+            onClick={(e) => e.stopPropagation()} // Prevent sort trigger if added later
         >
             <option value="">全部</option>
             {options.map(opt => (
@@ -159,44 +158,43 @@ const TableHeaderFilter = ({
 // --- MAIN COMPONENT ---
 
 export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
-    // Permission Check: Admin or Manager
+    // Permission Check
     if (!['admin', 'manager'].includes(userRole || '')) {
         return <UnauthorizedPage email={auth.currentUser?.email} onLogout={() => auth.signOut()} />;
     }
 
     const [currentMonth, setCurrentMonth] = useState<string>(new Date().toISOString().slice(0, 7)); // YYYY-MM
-    const [isLoading, setIsLoading] = useState(false);
+    
+    // Separate loading states to prevent UI flash
+    const [isFinancialLoading, setIsFinancialLoading] = useState(false);
+    const [isNpLoading, setIsNpLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     
     // View State
     const [activeTab, setActiveTab] = useState<'revenue' | 'self-pay' | 'marketing'>('revenue');
-    const [pieFilter, setPieFilter] = useState<string>('all'); // 'all' or clinicId
+    const [pieFilter, setPieFilter] = useState<string>('all'); 
 
-    // Data State
+    // Data State (Financial)
     const [snapshot, setSnapshot] = useState<{
         current: ClinicMonthlySummary[];
         lastMonth: ClinicMonthlySummary[];
         lastYear: ClinicMonthlySummary[];
     }>({ current: [], lastMonth: [], lastYear: [] });
 
-    // Detailed Data
+    // Detailed Data (Financial)
     const [breakdowns, setBreakdowns] = useState<Record<string, SelfPayBreakdown>>({});
+    
+    // Data State (Marketing) - Live
     const [npRecords, setNpRecords] = useState<NPRecord[]>([]);
+    
+    // Consultant List (Cached)
     const [allConsultants, setAllConsultants] = useState<Consultant[]>([]);
     
-    // Flatten Doctors for Lookup
+    // Memoize Flattened Doctors for Lookup
     const allDoctors = useMemo(() => clinics.flatMap(c => c.doctors || []), [clinics]);
 
-    // Lookup Helpers
-    const getClinicName = (r: NPRecord) => r.clinicName || clinics.find(c => c.id === r.clinicId)?.name || 'Unknown';
-    const getDoctorName = (r: NPRecord) => {
-        if (r.doctorName) return r.doctorName;
-        // Check if legacy ID and find name
-        const doc = allDoctors.find(d => d.id === r.doctor);
-        if (doc) return doc.name;
-        // Fallback to whatever string is stored
-        return r.doctor || '-';
-    };
+    // Stable ID Signature for Effects
+    const clinicIdsSignature = useMemo(() => clinics.map(c => c.id).sort().join(','), [clinics]);
 
     // Marketing Specific State
     const [isSyncing, setIsSyncing] = useState(false);
@@ -218,10 +216,113 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
     const [editingNP, setEditingNP] = useState<NPRecord | null>(null);
     const [isManualAdd, setIsManualAdd] = useState(false);
 
-    // Sorting Helper
+    // --- DATA FETCHING EFFECT 1: FINANCIALS (One-time fetch) ---
+    useEffect(() => {
+        if (!clinicIdsSignature) return;
+
+        const loadFinancials = async () => {
+            setIsFinancialLoading(true);
+            try {
+                // 1. Fetch High-Level Snapshot
+                const data = await fetchDashboardSnapshot(clinics, currentMonth);
+                
+                // 2. Fetch Granular Data for Self-Pay
+                const breakdownMap: Record<string, SelfPayBreakdown> = {};
+                await Promise.all(clinics.map(async (clinic) => {
+                    const rows = await getMonthlyAccounting(clinic.id, currentMonth);
+                    const bd: SelfPayBreakdown = {
+                        total: 0, prostho: 0, implant: 0, ortho: 0, sov: 0, inv: 0, whitening: 0, perio: 0, other: 0, retail: 0
+                    };
+                    rows.forEach(row => {
+                        const t = row.treatments;
+                        const r = row.retail;
+                        bd.prostho += (t.prostho || 0);
+                        bd.implant += (t.implant || 0);
+                        bd.ortho += (t.ortho || 0);
+                        bd.sov += (t.sov || 0);
+                        bd.inv += (t.inv || 0);
+                        bd.whitening += (t.whitening || 0);
+                        bd.perio += (t.perio || 0);
+                        bd.other += (t.otherSelfPay || 0);
+                        
+                        const retailSum = (r.products || 0) + (r.diyWhitening || 0);
+                        bd.retail += retailSum;
+                    });
+                    
+                    bd.total = bd.prostho + bd.implant + bd.ortho + bd.sov + bd.inv + bd.whitening + bd.perio + bd.other + bd.retail;
+                    breakdownMap[clinic.id] = bd;
+
+                    const snapshotEntry = data.current.find(d => d.clinicId === clinic.id);
+                    if (snapshotEntry) {
+                        snapshotEntry.actualSelfPay = bd.total;
+                    }
+                }));
+                
+                setSnapshot(data);
+                setBreakdowns(breakdownMap);
+
+                // 3. Fetch Consultants
+                const staffPromises = clinics.map(c => getStaffList(c.id));
+                const staffLists = await Promise.all(staffPromises);
+                setAllConsultants(staffLists.flat());
+
+            } catch (e) {
+                console.error(e);
+            } finally {
+                setIsFinancialLoading(false);
+            }
+        };
+
+        loadFinancials();
+    }, [currentMonth, clinicIdsSignature]);
+
+    // --- DATA FETCHING EFFECT 2: NP RECORDS (Real-time Snapshot) ---
+    useEffect(() => {
+        if (!clinicIdsSignature) return;
+
+        setIsNpLoading(true);
+        
+        const [year, month] = currentMonth.split('-').map(Number);
+        const daysInMonth = new Date(year, month, 0).getDate();
+        const startStr = `${year}-${String(month).padStart(2, '0')}-01`;
+        const endStr = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
+
+        // Listen to ALL records in range, filter by clinic client-side for security/simplicity
+        const unsubscribe = db.collection('np_records')
+            .where('date', '>=', startStr)
+            .where('date', '<=', endStr)
+            .onSnapshot((snap) => {
+                const records: NPRecord[] = [];
+                const allowedIds = new Set(clinics.map(c => c.id));
+                
+                snap.forEach(doc => {
+                    const data = doc.data() as NPRecord;
+                    if (allowedIds.has(data.clinicId)) {
+                        records.push({ id: doc.id, ...data });
+                    }
+                });
+                
+                setNpRecords(records);
+                setIsNpLoading(false); // Only turn off, never turn on again in this effect
+            }, (error) => {
+                console.error("NP Records Snapshot Error:", error);
+                setIsNpLoading(false);
+            });
+
+        return () => unsubscribe();
+    }, [currentMonth, clinicIdsSignature]);
+
+    // --- Lookup Helpers ---
+    const getClinicName = (r: NPRecord) => r.clinicName || clinics.find(c => c.id === r.clinicId)?.name || 'Unknown';
+    const getDoctorName = (r: NPRecord) => {
+        if (r.doctorName) return r.doctorName;
+        const doc = allDoctors.find(d => d.id === r.doctor);
+        return doc ? doc.name : (r.doctor || '-');
+    };
+
+    // --- Sorting & Aggregation ---
     const getSortOrder = (name: string) => CLINIC_ORDER[name] || 999;
 
-    // Aggregate Totals Helper
     const aggregate = (data: ClinicMonthlySummary[]) => data.reduce((acc, curr) => ({
         revenue: acc.revenue + curr.actualRevenue,
         targetRevenue: acc.targetRevenue + (curr.targets.revenueTarget || 0),
@@ -237,7 +338,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
     const prevTotals = useMemo(() => aggregate(snapshot.lastMonth), [snapshot.lastMonth]);
     const yearPrevTotals = useMemo(() => aggregate(snapshot.lastYear), [snapshot.lastYear]);
 
-    // NP METRICS Calculation
     const npTotal = npRecords.length;
     const npVisited = npRecords.filter(r => r.isVisited).length;
     const npClosed = npRecords.filter(r => r.isClosed).length;
@@ -251,7 +351,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         return [...clinics].sort((a, b) => getSortOrder(a.name) - getSortOrder(b.name));
     }, [clinics]);
 
-    // Unique Values for Filters
+    // Unique Values for Filters (Memoized)
     const uniqueValues = useMemo(() => {
         const getOptions = (key: keyof NPRecord | 'status' | 'clinicName' | 'doctorName') => {
             const values = new Set<string>();
@@ -292,7 +392,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         };
     }, [npRecords, allConsultants, clinics, allDoctors]);
 
-    // Filtered Records
+    // Filtered Records (Memoized)
     const filteredNpRecords = useMemo(() => {
         return npRecords.filter(r => {
             if (tableFilters.date && r.date !== tableFilters.date) return false;
@@ -321,77 +421,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             return true;
         }).sort((a,b) => b.date.localeCompare(a.date));
     }, [npRecords, tableFilters, allConsultants, clinics, allDoctors]);
-
-    const loadData = async () => {
-        setIsLoading(true);
-        try {
-            // 1. Fetch High-Level Snapshot
-            const data = await fetchDashboardSnapshot(clinics, currentMonth);
-            
-            // 2. Fetch Granular Data for Self-Pay (Include Retail)
-            const breakdownMap: Record<string, SelfPayBreakdown> = {};
-            await Promise.all(clinics.map(async (clinic) => {
-                const rows = await getMonthlyAccounting(clinic.id, currentMonth);
-                const bd: SelfPayBreakdown = {
-                    total: 0, prostho: 0, implant: 0, ortho: 0, sov: 0, inv: 0, whitening: 0, perio: 0, other: 0, retail: 0
-                };
-                rows.forEach(row => {
-                    const t = row.treatments;
-                    const r = row.retail;
-                    bd.prostho += (t.prostho || 0);
-                    bd.implant += (t.implant || 0);
-                    bd.ortho += (t.ortho || 0);
-                    bd.sov += (t.sov || 0);
-                    bd.inv += (t.inv || 0);
-                    bd.whitening += (t.whitening || 0);
-                    bd.perio += (t.perio || 0);
-                    bd.other += (t.otherSelfPay || 0);
-                    
-                    // Added Retail Revenue to Self-Pay logic
-                    const retailSum = (r.products || 0) + (r.diyWhitening || 0);
-                    bd.retail += retailSum;
-                });
-                
-                bd.total = bd.prostho + bd.implant + bd.ortho + bd.sov + bd.inv + bd.whitening + bd.perio + bd.other + bd.retail;
-                
-                breakdownMap[clinic.id] = bd;
-
-                // PATCH SNAPSHOT: Ensure 'current' snapshot actualSelfPay includes retail
-                const snapshotEntry = data.current.find(d => d.clinicId === clinic.id);
-                if (snapshotEntry) {
-                    snapshotEntry.actualSelfPay = bd.total;
-                }
-            }));
-            
-            setSnapshot(data); // Set snapshot with patched Self-Pay values
-            setBreakdowns(breakdownMap);
-
-            // 3. Fetch NP Records for Marketing Tab
-            const [year, month] = currentMonth.split('-').map(Number);
-            const daysInMonth = new Date(year, month, 0).getDate();
-            const startStr = `${year}-${String(month).padStart(2, '0')}-01`;
-            const endStr = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
-            
-            const npPromises = clinics.map(c => getNPRecordsRange(c.id, startStr, endStr));
-            const npResults = await Promise.all(npPromises);
-            setNpRecords(npResults.flat());
-
-            // 4. Fetch Consultants for Scorecard
-            const staffPromises = clinics.map(c => getStaffList(c.id));
-            const staffLists = await Promise.all(staffPromises);
-            setAllConsultants(staffLists.flat());
-
-        } catch (e) {
-            console.error(e);
-            alert("載入失敗");
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        if (clinics.length > 0) loadData();
-    }, [currentMonth, clinics]); 
 
     // --- Actions ---
     const handleTargetChange = (clinicId: string, field: 'revenueTarget' | 'visitTarget' | 'selfPayTarget', value: string) => {
@@ -431,16 +460,13 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
 
             let addedCount = 0;
 
-            // Advanced Source Detection Helper
             const determineSource = (desc: string): string => {
                 const lower = (desc || '').toLowerCase();
                 if (lower.includes('官網') || lower.includes('後台')) return '官網';
                 if (lower.includes('轉介') || lower.includes('轉')) return 'SOV轉介';
                 if (lower.includes('tel') || lower.includes('電')) return '電話';
                 if (lower.includes('臉書') || lower.includes('ig') || lower.includes('fb') || lower.includes('facebook')) return 'FB';
-                // Check "Introduced" variations. Note: "幫約" is here.
                 if (lower.includes('朋友') || lower.includes('媽媽') || lower.includes('老婆') || lower.includes('男友') || lower.includes('幫約') || lower.includes('介紹') || lower.includes('一起')) return '介紹';
-                // Check "Helper" (generic '幫') AFTER specific '幫約'
                 if (lower.includes('幫')) return '小幫手';
                 if (lower.includes('現') || lower.includes('現場')) return '過路客';
                 if (lower.includes('line')) return 'Line';
@@ -470,7 +496,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                             if (parsed && parsed.isNP && eventDate) {
                                 const existing = await getNPRecord(clinic.id, eventDate, parsed.name);
                                 if (!existing) {
-                                    // SOURCE AUTO-DETECTION LOGIC
                                     const description = ev.description || '';
                                     const detectedSource = determineSource(description);
 
@@ -482,8 +507,8 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                         treatment: parsed.treatment,
                                         doctor: doctorName,
                                         doctorName: doctorName,
-                                        isVisited: false, // Default to Not Visited (Gray status)
-                                        isClosed: false,  // Default to Not Closed
+                                        isVisited: false, 
+                                        isClosed: false,
                                         marketingTag: '矯正諮詢',
                                         source: detectedSource,
                                         calendarNote: description,
@@ -502,7 +527,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             
             if (addedCount > 0) {
                 alert(`同步完成，新增 ${addedCount} 筆 NP 資料`);
-                loadData(); 
             } else {
                 alert("同步完成，無新增資料");
             }
@@ -520,7 +544,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         if (!confirm(`確定刪除 ${record.patientName} 的資料嗎？此動作無法復原。`)) return;
         try {
             await deleteNPRecord(record.clinicId, record.date, record.patientName);
-            loadData();
         } catch (e) {
             alert("刪除失敗");
         }
@@ -552,7 +575,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         return <span className="text-slate-500 font-bold text-xs bg-slate-100 px-2 py-0.5 rounded border border-slate-200">未到診</span>;
     };
 
-    // --- Chart Data Preparation ---
+    // --- Chart Data Preparation (Memoized) ---
     const chartData = useMemo(() => {
         return sortedSnapshot.map(d => {
             const revTarget = d.targets.revenueTarget || 0;
@@ -654,14 +677,10 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                             onChange={e => setCurrentMonth(e.target.value)}
                         />
                     </div>
-                    <button 
-                        onClick={loadData} 
-                        disabled={isLoading}
-                        className="bg-white hover:bg-indigo-50 text-slate-500 hover:text-indigo-600 border border-slate-200 p-2 rounded-md transition-colors shadow-sm"
-                        title="重新整理"
-                    >
-                        {isLoading ? <Loader2 className="animate-spin" size={20} /> : <Activity size={20} />}
-                    </button>
+                    {/* Just a refresh button, though effect handles updates */}
+                    <div className="text-xs text-slate-400 font-medium px-2">
+                        {isNpLoading || isFinancialLoading ? <Loader2 className="animate-spin text-indigo-500" size={20} /> : <Activity size={20} className="text-slate-300" />}
+                    </div>
                 </div>
             </div>
 
@@ -695,7 +714,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     actual={npClosed}
                     customRate={npConversionRate}
                     customSubtext={`到診: ${npVisited} / 約診: ${npTotal}`}
-                    prev={0} // No historic data available in this context
+                    prev={0} 
                     yearPrev={0}
                     colorClass="text-emerald-600"
                     isActive={activeTab === 'marketing'}
@@ -842,9 +861,12 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     {/* Raw Data Table with Advanced Filters */}
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                         <div className="p-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
-                            <h3 className="font-bold text-slate-700 flex items-center gap-2">
-                                <Users size={18} className="text-slate-500"/> NP 原始資料 (Raw Data)
-                            </h3>
+                            <div className="flex items-center gap-2">
+                                <h3 className="font-bold text-slate-700 flex items-center gap-2">
+                                    <Users size={18} className="text-slate-500"/> NP 原始資料 (Raw Data)
+                                </h3>
+                                {isNpLoading && <span className="text-xs text-slate-400 flex items-center gap-1"><Loader2 className="animate-spin" size={12}/> Live Updating...</span>}
+                            </div>
                             <div className="flex gap-2">
                                 <button 
                                     onClick={handleManualAdd}
@@ -1283,8 +1305,8 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             {editingNP && (
                 <NPStatusModal 
                     isOpen={!!editingNP}
-                    onClose={() => { setEditingNP(null); loadData(); }} // Reload on close to refresh table
-                    row={{ patientName: editingNP.patientName, treatmentContent: editingNP.treatment } as any} // Mock row for modal props
+                    onClose={() => setEditingNP(null)} // IMPORTANT: Removed loadData()
+                    row={{ patientName: editingNP.patientName, treatmentContent: editingNP.treatment } as any} 
                     clinicId={editingNP.clinicId}
                     date={editingNP.date}
                 />

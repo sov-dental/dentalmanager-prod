@@ -1,3 +1,4 @@
+
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -17,15 +18,18 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // Disable source maps to significantly reduce memory usage during build
     sourcemap: false,
     target: 'esnext',
-    chunkSizeWarningLimit: 1500,
+    // Increase limit to handle larger chunks without noise
+    chunkSizeWarningLimit: 2000,
     rollupOptions: {
       output: {
+        // Strategic chunking to prevent huge single files
         manualChunks: {
           vendor: ['react', 'react-dom', 'react-router-dom', 'recharts', 'lucide-react'],
           firebase: ['firebase/compat/app', 'firebase/compat/auth', 'firebase/compat/firestore', 'firebase/compat/storage'],
-          utils: ['xlsx', 'exceljs', 'html2canvas', '@google/generative-ai'],
+          utils: ['xlsx', 'exceljs', 'html2canvas', '@google/genai'],
         },
       },
     },

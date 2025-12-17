@@ -1,3 +1,4 @@
+
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -25,7 +26,7 @@ export default defineConfig({
         manualChunks: {
           vendor: ['react', 'react-dom', 'react-router-dom', 'recharts', 'lucide-react'],
           firebase: ['firebase/compat/app', 'firebase/compat/auth', 'firebase/compat/firestore', 'firebase/compat/storage'],
-          utils: ['xlsx', 'exceljs', 'html2canvas', '@google/generative-ai'],
+          utils: ['xlsx', 'exceljs', 'html2canvas', '@google/genai'],
         },
       },
     },

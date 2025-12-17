@@ -1,5 +1,4 @@
 
-// Fixed to use @google/genai correctly
 import { GoogleGenAI, Type } from "@google/genai";
 import { DailySchedule, Clinic, Doctor } from '../types';
 import * as XLSX from 'xlsx';
@@ -9,11 +8,8 @@ const getDayName = (dateStr: string) => {
   return ['週日', '週一', '週二', '週三', '週四', '週五', '週六'][date.getDay()];
 };
 
-// Initialize with named parameter from process.env.API_KEY
+// Initialize with named parameter from process.env.API_KEY exclusively
 const getGenAI = () => {
-  if (!process.env.API_KEY) {
-    throw new Error("API Key is missing. Please configure your environment.");
-  }
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
@@ -26,7 +22,6 @@ export const generateAnnouncement = async (
   try {
     const ai = getGenAI();
 
-    // Prepare a condensed text summary of the schedule for the model
     const scheduleSummary = schedules
       .sort((a, b) => a.date.localeCompare(b.date))
       .map(s => {
@@ -55,27 +50,21 @@ export const generateAnnouncement = async (
       Instructions:
       1. Start with a catchy headline about the new monthly schedule.
       2. Mention any specific Full Closure days clearly if any exist.
-      3. Do NOT list every single day's roster in the text (that's for the image). Instead, highlight that the schedule is attached.
-      4. Mention if there are any special notes (like weekends open/closed).
-      5. Include a call to action to book an appointment (include the booking link if provided).
-      6. Use Chinese (Traditional) suitable for a Taiwan audience.
+      3. Highlight that the schedule is attached.
+      4. Use Chinese (Traditional) suitable for a Taiwan audience.
     `;
 
-    // Fix: Use ai.models.generateContent instead of deprecated getGenerativeModel
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: prompt,
     });
     
-    // Fix: Access .text property directly, not as a method text()
     return response.text || "Could not generate text.";
   } catch (error) {
     console.error("Gemini API Error:", error);
     return "Error generating announcement. Please try again.";
   }
 };
-
-// --- AI Vision & Data Analysis for Accounting ---
 
 export interface ScannedAccountingRow {
   name: string;
@@ -88,7 +77,7 @@ export interface ScannedAccountingRow {
   sov?: number;
   perio?: number;
   otherSelfPay?: number;
-  products?: number; // Retail
+  products?: number;
 }
 
 export interface ScannedLabItem {
@@ -108,7 +97,6 @@ const fileToGenerativePart = async (file: File) => {
   };
 };
 
-// Helper: Parse Excel file to CSV text locally
 const readExcelToCSV = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -132,9 +120,7 @@ const readExcelToCSV = (file: File): Promise<string> => {
 export const analyzeAccountingReport = async (file: File): Promise<ScannedAccountingRow[]> => {
   try {
     const ai = getGenAI();
-    
-    // Determine file type
-    const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.type.includes('spreadsheet') || file.type.includes('excel');
+    const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.type.includes('spreadsheet');
     
     let contents: any;
     let systemInstruction = "";
@@ -144,59 +130,29 @@ export const analyzeAccountingReport = async (file: File): Promise<ScannedAccoun
       items: {
         type: Type.OBJECT,
         properties: {
-          name: { type: Type.STRING, description: "Patient Name" },
-          regFee: { type: Type.NUMBER, description: "Registration Fee (掛號費)" },
-          copayment: { type: Type.NUMBER, description: "Co-payment (部分負擔)" },
-          prostho: { type: Type.NUMBER, description: "Prosthodontic Fee (假牙)" },
-          implant: { type: Type.NUMBER, description: "Implant Fee (植牙)" },
-          whitening: { type: Type.NUMBER, description: "Whitening Fee (美白)" },
-          ortho: { type: Type.NUMBER, description: "Orthodontic Fee (矯正)" },
-          sov: { type: Type.NUMBER, description: "SOV Fee" },
-          perio: { type: Type.NUMBER, description: "Periodontal Fee (牙周)" },
-          otherSelfPay: { type: Type.NUMBER, description: "Other Self Pay (其他自費)" },
-          products: { type: Type.NUMBER, description: "Retail/Products (物販/口衛)" },
+          name: { type: Type.STRING },
+          regFee: { type: Type.NUMBER },
+          copayment: { type: Type.NUMBER },
+          prostho: { type: Type.NUMBER },
+          implant: { type: Type.NUMBER },
+          whitening: { type: Type.NUMBER },
+          ortho: { type: Type.NUMBER },
+          sov: { type: Type.NUMBER },
+          perio: { type: Type.NUMBER },
+          otherSelfPay: { type: Type.NUMBER },
+          products: { type: Type.NUMBER },
         },
         required: ["name"],
       },
     };
 
     if (isExcel) {
-        // Logic A: Text-based Analysis (Excel -> CSV)
-        try {
-            const csvText = await readExcelToCSV(file);
-            systemInstruction = `
-              You are a data assistant. Analyze the following CSV data extracted from a dental clinic daily report.
-              Map the columns to the following fields:
-              - Name: Patient Name
-              - RegFee: Registration Fee
-              - Copay: Co-payment
-              - Prostho, Implant, Whitening, Ortho, SOV, Perio, Other: Self-pay categories
-              - Product: Retail/Oral Hygiene products
-              
-              Ignore rows that are clearly totals or empty.
-              Return a JSON array.
-            `;
-            contents = csvText;
-        } catch (e) {
-            console.error("Excel parse error", e);
-            throw new Error("Failed to parse Excel file.");
-        }
+        contents = await readExcelToCSV(file);
+        systemInstruction = "Extract dental clinic accounting rows from this CSV. Return JSON array.";
     } else {
-        // Logic B: Vision-based Analysis (Image/PDF)
         const imagePart = await fileToGenerativePart(file);
-        systemInstruction = `
-          Analyze this image/document of a dental clinic daily report.
-          Identify rows representing patient visits.
-          Extract the following fields for each patient:
-          - name (Patient Name)
-          - regFee (Registration Fee / 掛號)
-          - copayment (Co-payment / 部分負擔)
-          - prostho, implant, whitening, ortho, sov, perio, otherSelfPay (Self-pay categories)
-          - products (Retail/Oral Hygiene)
-          
-          Treat handwritten numbers carefully. Return 0 if a field is empty or dashed.
-        `;
         contents = { parts: [imagePart] };
+        systemInstruction = "Analyze this image of a dental clinic report. Extract patient rows and financial figures. Return JSON array.";
     }
 
     const response = await ai.models.generateContent({
@@ -209,9 +165,7 @@ export const analyzeAccountingReport = async (file: File): Promise<ScannedAccoun
       }
     });
 
-    const jsonText = response.text || "[]";
-    const data = JSON.parse(jsonText) as ScannedAccountingRow[];
-    return data;
+    return JSON.parse(response.text || "[]");
   } catch (error) {
     console.error("Gemini Analysis Error:", error);
     return [];
@@ -221,12 +175,10 @@ export const analyzeAccountingReport = async (file: File): Promise<ScannedAccoun
 export const analyzeLabStatement = async (file: File): Promise<ScannedLabItem[]> => {
     try {
         const ai = getGenAI();
-        
-        // Determine file type
-        const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.type.includes('spreadsheet') || file.type.includes('excel');
+        const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.type.includes('spreadsheet');
         
         let contents: any;
-        let systemInstruction = "";
+        let systemInstruction = "Analyze this lab statement. Extract patientName, itemType, and amount. Return JSON array.";
 
         const responseSchema = {
             type: Type.ARRAY,
@@ -242,39 +194,9 @@ export const analyzeLabStatement = async (file: File): Promise<ScannedLabItem[]>
         };
 
         if (isExcel) {
-            // Logic A: Excel -> CSV -> Text Prompt
-            try {
-                const csvText = await readExcelToCSV(file);
-                systemInstruction = `
-                    You are a data assistant. Analyze the following CSV data extracted from a dental laboratory statement (技工所對帳單).
-                    Extract a list of items where each item represents a patient case.
-                    
-                    Fields to extract:
-                    - patientName (The name of the patient)
-                    - itemType (The type of restoration/work, e.g., "Full Zirconia", "PFM", "Denture")
-                    - amount (The cost/fee for this item)
-
-                    Return a JSON array.
-                `;
-                contents = csvText;
-            } catch (e) {
-                 console.error("Excel parse error", e);
-                 throw new Error("Failed to parse Excel file.");
-            }
+            contents = await readExcelToCSV(file);
         } else {
-            // Logic B: Image/PDF -> Vision/Multimodal Prompt
             const imagePart = await fileToGenerativePart(file);
-            systemInstruction = `
-                Analyze this dental laboratory statement (技工所對帳單).
-                Extract a list of items where each item represents a patient case.
-                
-                Fields to extract:
-                - patientName (The name of the patient)
-                - itemType (The type of restoration/work, e.g., "Full Zirconia", "PFM", "Denture")
-                - amount (The cost/fee for this item)
-
-                Return a JSON array.
-            `;
             contents = { parts: [imagePart] };
         }
 
@@ -288,7 +210,7 @@ export const analyzeLabStatement = async (file: File): Promise<ScannedLabItem[]>
             }
         });
 
-        return JSON.parse(response.text || "[]") as ScannedLabItem[];
+        return JSON.parse(response.text || "[]");
     } catch (e) {
         console.error("Lab Analysis Error", e);
         throw e;

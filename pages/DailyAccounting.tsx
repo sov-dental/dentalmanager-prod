@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord } from '../types';
-import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral } from '../services/firebase';
+import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord, MonthlyClosing } from '../types';
+import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral, getMonthlyClosingStatus } from '../services/firebase';
 import { exportDailyReportToExcel } from '../services/excelExport';
 import { listEvents } from '../services/googleCalendar';
 import { parseCalendarEvent } from '../utils/eventParser';
@@ -15,7 +15,7 @@ import {
   Save, Plus, Trash2, FileSpreadsheet, Loader2,
   ChevronLeft, ChevronRight, RefreshCw, 
   Wallet, CreditCard, TrendingUp, CheckCircle, Circle, Filter,
-  WifiOff, Lock, Unlock, History, Tag
+  WifiOff, Lock, Unlock, History, Tag, AlertCircle
 } from 'lucide-react';
 
 interface Props {
@@ -157,6 +157,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const [expenditures, setExpenditures] = useState<Expenditure[]>([]);
   const [fullStaffList, setFullStaffList] = useState<Consultant[]>([]);
   
+  // Monthly Closing State
+  const [monthlyStatus, setMonthlyStatus] = useState<MonthlyClosing | null>(null);
+  
   const [todaysNPRecords, setTodaysNPRecords] = useState<Record<string, NPRecord>>({});
   
   const [isLoading, setIsLoading] = useState(false);
@@ -184,6 +187,14 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       };
       fetchStaff();
   }, [selectedClinicId]);
+
+  // Sync Monthly Closing Status
+  useEffect(() => {
+      if (selectedClinicId && currentDate) {
+          const yearMonth = currentDate.slice(0, 7);
+          getMonthlyClosingStatus(selectedClinicId, yearMonth).then(setMonthlyStatus);
+      }
+  }, [selectedClinicId, currentDate]);
 
   useEffect(() => {
       if (!selectedClinicId || !currentDate) {
@@ -264,6 +275,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   }, [selectedClinicId, currentDate]);
 
   const isLocked = dailyRecord?.isLocked || false;
+  const isMonthLocked = monthlyStatus?.isLocked || false;
 
   const visibleRows = useMemo(() => {
       let filtered = rows;
@@ -643,12 +655,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const handleLockDay = async () => {
       if (!currentUser || !selectedClinicId) return;
-      
-      // Secondary Validation check before actual write
       if (validationErrors.length > 0) {
           throw new Error("Validation failed: Incomplete rows detected.");
       }
-
       try {
           await lockDailyReport(currentDate, selectedClinicId, rows, { uid: currentUser.uid, name: currentUser.email || 'User' });
       } catch (e) {
@@ -659,10 +668,17 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const handleUnlockDay = async () => {
       if (!currentUser || !selectedClinicId) return;
-      if (userRole !== 'admin' && userRole !== 'manager') {
-          alert("權限不足：僅管理員可解鎖");
+      
+      const canUnlock = ['admin', 'manager', 'team_leader'].includes(userRole || '');
+      if (!canUnlock) {
+          alert("權限不足：僅管理員或組長可解鎖");
           return;
       }
+      if (isMonthLocked) {
+          alert("⚠️ 本月已結帳鎖定，請先前往「月營收報表」解除月結鎖定。");
+          return;
+      }
+
       if (!confirm("確定要解鎖嗎？系統將自動嘗試填入遺漏的病歷號，所有變更將被記錄。")) return;
       
       setIsSyncing(true);
@@ -756,8 +772,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                 </div>
                 
                 {isLocked ? (
-                    <div className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg text-sm font-bold">
-                        <Lock size={14} /> 已結帳
+                    <div className={`flex items-center gap-2 px-3 py-1.5 border rounded-lg text-sm font-bold ${isMonthLocked ? 'bg-rose-100 border-rose-300 text-rose-800' : 'bg-rose-50 border-rose-200 text-rose-700'}`}>
+                        <Lock size={14} /> {isMonthLocked ? '月結鎖定中' : '已結帳'}
                     </div>
                 ) : (
                     <button 
@@ -774,11 +790,22 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                 {saveStatus === 'saved' && <span className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle size={12}/> Saved</span>}
                 {saveStatus === 'error' && <span className="text-xs text-rose-500 flex items-center gap-1"><WifiOff size={12}/> Disconnected</span>}
                 
-                {isLocked && (userRole === 'admin' || userRole === 'manager') && (
-                    <button onClick={handleUnlockDay} disabled={isSyncing} className="text-rose-500 hover:bg-rose-50 px-3 py-2 rounded-lg font-bold text-sm border border-rose-200 flex items-center gap-2">
-                        {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <Unlock size={16} />} 
-                        解鎖
-                    </button>
+                {isLocked && (['admin', 'manager', 'team_leader'].includes(userRole || '')) && (
+                    <div className="relative group">
+                        <button 
+                            onClick={handleUnlockDay} 
+                            disabled={isSyncing || isMonthLocked} 
+                            className={`px-3 py-2 rounded-lg font-bold text-sm border flex items-center gap-2 transition-all ${isMonthLocked ? 'text-slate-400 border-slate-200 bg-slate-50 cursor-not-allowed' : 'text-rose-500 hover:bg-rose-50 border-rose-200'}`}
+                        >
+                            {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <Unlock size={16} />} 
+                            解鎖
+                        </button>
+                        {isMonthLocked && (
+                            <div className="absolute bottom-full mb-2 right-0 hidden group-hover:block bg-slate-800 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap z-50 shadow-xl">
+                                <AlertCircle size={10} className="inline mr-1" /> 本月已結帳，請先解除月結鎖定
+                            </div>
+                        )}
+                    </div>
                 )}
 
                 <button onClick={() => setIsAuditModalOpen(true)} className="text-slate-400 hover:text-slate-600 p-2 rounded-full hover:bg-slate-100" title="異動紀錄">
@@ -948,90 +975,44 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                                     (row.retail.products||0) + (row.retail.diyWhitening||0);
                                     
                                     const isChartIdLocked = isLocked || (!row.isManual && !!row.chartId && row.chartId !== 'NP');
-                                    
-                                    const isNP = 
-                                        (row as any).isNP === true || 
-                                        (row.npStatus && typeof row.npStatus === 'string' && row.npStatus.toUpperCase().includes('NP')) ||
-                                        ((row as any).note && typeof (row as any).note === 'string' && (row as any).note.toUpperCase().includes('NP'));
-
+                                    const isNP = (row as any).isNP === true || (row.npStatus && typeof row.npStatus === 'string' && row.npStatus.toUpperCase().includes('NP')) || ((row as any).note && typeof (row as any).note === 'string' && (row as any).note.toUpperCase().includes('NP'));
                                     const npRec = todaysNPRecords[(row.patientName || '').trim()];
                                     let btnClass = "bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200"; 
                                     let btnIcon = <Tag size={12} />;
-
                                     if (npRec) {
-                                        if (npRec.isClosed) {
-                                            btnClass = "bg-emerald-100 border-emerald-200 text-emerald-700 hover:bg-emerald-200";
-                                        } else if (npRec.isVisited) {
-                                            btnClass = "bg-blue-100 border-blue-200 text-blue-700 hover:bg-blue-200";
-                                        }
+                                        if (npRec.isClosed) btnClass = "bg-emerald-100 border-emerald-200 text-emerald-700 hover:bg-emerald-200";
+                                        else if (npRec.isVisited) btnClass = "bg-blue-100 border-blue-200 text-blue-700 hover:bg-blue-200";
                                     }
-
                                     return (
                                         <tr key={row.id} className="hover:bg-blue-50/30 group">
                                             <td className="px-1 py-1 border-r border-gray-200 text-center sticky left-0 bg-white group-hover:bg-blue-50/30 z-30">
                                                 <div className="flex flex-col items-center gap-1">
-                                                    <button 
-                                                        onClick={() => updateRow(row.id, { attendance: !row.attendance })}
-                                                        className="transition-colors"
-                                                        disabled={isLocked}
-                                                    >
+                                                    <button onClick={() => updateRow(row.id, { attendance: !row.attendance })} className="transition-colors" disabled={isLocked}>
                                                         {row.attendance ? <CheckCircle size={14} className="text-emerald-500" /> : <Circle size={14} className="text-slate-300" />}
                                                     </button>
                                                     <span className="text-[9px] text-slate-400">{idx+1}</span>
                                                 </div>
                                             </td>
                                             <td className="px-1 py-1 border-r border-gray-200 sticky left-[24px] bg-white group-hover:bg-blue-50/30 z-30 align-middle">
-                                                <InputCell 
-                                                    initialValue={row.chartId} 
-                                                    onCommit={(v) => updateRow(row.id, { chartId: v })}
-                                                    className={`text-slate-700 font-mono text-[11px] ${isChartIdLocked ? 'bg-slate-50' : ''}`}
-                                                    placeholder="病歷號"
-                                                    disabled={isChartIdLocked}
-                                                />
+                                                <InputCell initialValue={row.chartId} onCommit={(v) => updateRow(row.id, { chartId: v })} className={`text-slate-700 font-mono text-[11px] ${isChartIdLocked ? 'bg-slate-50' : ''}`} placeholder="病歷號" disabled={isChartIdLocked} />
                                             </td>
                                             <td className="px-1 py-1 border-r border-gray-200 sticky left-[104px] bg-white group-hover:bg-blue-50/30 z-30 align-middle">
-                                                <InputCell 
-                                                    initialValue={row.patientName} 
-                                                    onCommit={(v) => updateRow(row.id, { patientName: v })}
-                                                    className={getPatientNameClass(row)}
-                                                    disabled={isLocked}
-                                                />
+                                                <InputCell initialValue={row.patientName} onCommit={(v) => updateRow(row.id, { patientName: v })} className={getPatientNameClass(row)} disabled={isLocked} />
                                             </td>
                                             <td className="px-1 py-1 border-r border-gray-200 text-center align-middle">
                                                 {row.isManual || (row as any).isPublicCalendar ? (
-                                                    <select 
-                                                        className="w-full bg-transparent text-xs outline-none text-slate-700 font-medium text-right"
-                                                        dir="rtl"
-                                                        value={row.doctorId}
-                                                        onChange={(e) => {
-                                                            const val = e.target.value;
-                                                            const name = val === 'clinic_public' ? PUBLIC_DOCTOR.name : (clinicDocs.find(d=>d.id===val)?.name||'');
-                                                            updateRow(row.id, { doctorId: val, doctorName: name });
-                                                        }}
-                                                        disabled={isLocked}
-                                                    >
-                                                        <option value="">選醫師</option>
-                                                        <option value="clinic_public">診所 (Public)</option>
-                                                        {clinicDocs.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                                                    <select className="w-full bg-transparent text-xs outline-none text-slate-700 font-medium text-right" dir="rtl" value={row.doctorId} onChange={(e) => { const val = e.target.value; const name = val === 'clinic_public' ? PUBLIC_DOCTOR.name : (clinicDocs.find(d=>d.id===val)?.name||''); updateRow(row.id, { doctorId: val, doctorName: name }); }} disabled={isLocked}>
+                                                        <option value="">選醫師</option><option value="clinic_public">診所 (Public)</option>{clinicDocs.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                                                     </select>
                                                 ) : (
                                                     <div className="flex items-center gap-2 justify-end pr-2">
-                                                        <div 
-                                                            className="w-8 h-8 rounded-full flex items-center justify-center text-[14px] text-white font-bold shrink-0"
-                                                            style={{ backgroundColor: getDoctorColor(row.doctorId) }}
-                                                        >
-                                                            {getDoctorAvatarText(row.doctorId, row.doctorName)}
-                                                        </div>
+                                                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-[14px] text-white font-bold shrink-0" style={{ backgroundColor: getDoctorColor(row.doctorId) }}>{getDoctorAvatarText(row.doctorId, row.doctorName)}</div>
                                                         <span className="text-xs text-slate-700 font-medium truncate max-w-[60px] text-right">{row.doctorName}</span>
                                                     </div>
                                                 )}
                                             </td>
-                                            <td className="px-1 py-1 border-r border-gray-200 bg-blue-50/10">
-                                                <InputCell disabled={isLocked} type="number" align="right" className="text-blue-600 font-mono text-[14px]" initialValue={row.treatments.regFee} onCommit={(v) => updateRow(row.id, { treatments: { regFee: safeNum(v) } })} />
-                                            </td>
-                                            <td className="px-1 py-1 border-r border-gray-200 bg-blue-50/10">
-                                                <InputCell disabled={isLocked} type="number" align="right" className="text-blue-600 font-mono text-[14px]" initialValue={row.treatments.copayment} onCommit={(v) => updateRow(row.id, { treatments: { copayment: safeNum(v) } })} />
-                                            </td>
+                                            <td className="px-1 py-1 border-r border-gray-200 bg-blue-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-blue-600 font-mono text-[14px]" initialValue={row.treatments.regFee} onCommit={(v) => updateRow(row.id, { treatments: { regFee: safeNum(v) } })} /></td>
+                                            <td className="px-1 py-1 border-r border-gray-200 bg-blue-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-blue-600 font-mono text-[14px]" initialValue={row.treatments.copayment} onCommit={(v) => updateRow(row.id, { treatments: { copayment: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.prostho} onCommit={(v) => updateRow(row.id, { treatments: { prostho: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.implant} onCommit={(v) => updateRow(row.id, { treatments: { implant: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.ortho} onCommit={(v) => updateRow(row.id, { treatments: { ortho: safeNum(v) } })} /></td>
@@ -1040,164 +1021,34 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.perio} onCommit={(v) => updateRow(row.id, { treatments: { perio: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.whitening} onCommit={(v) => updateRow(row.id, { treatments: { whitening: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.otherSelfPay} onCommit={(v) => updateRow(row.id, { treatments: { otherSelfPay: safeNum(v) } })} /></td>
-                                            <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10">
-                                                <select 
-                                                    className="w-full bg-transparent text-xs text-slate-600 outline-none"
-                                                    value={row.treatments.consultant || ''}
-                                                    onChange={(e) => updateRow(row.id, { treatments: { consultant: e.target.value } })}
-                                                    disabled={isLocked}
-                                                >
-                                                    <option value=""></option>
-                                                    {consultantOptions.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-                                                </select>
-                                            </td>
+                                            <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><select className="w-full bg-transparent text-xs text-slate-600 outline-none" value={row.treatments.consultant || ''} onChange={(e) => updateRow(row.id, { treatments: { consultant: e.target.value } })} disabled={isLocked}><option value=""></option>{consultantOptions.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</select></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-orange-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-orange-600 font-mono text-[14px]" initialValue={row.retail.diyWhitening} onCommit={(v) => updateRow(row.id, { retail: { diyWhitening: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-orange-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-orange-600 font-mono text-[14px]" initialValue={row.retail.products} onCommit={(v) => updateRow(row.id, { retail: { products: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-orange-50/10"><InputCell disabled={isLocked} initialValue={row.retailItem} onCommit={(v) => updateRow(row.id, { retailItem: v })} placeholder="品項" /></td>
-                                            <td className="px-1 py-1 border-r border-gray-200 bg-orange-50/10">
-                                                <select 
-                                                    className="w-full bg-transparent text-xs text-slate-600 outline-none"
-                                                    value={row.retail.staff || ''}
-                                                    onChange={(e) => updateRow(row.id, { retail: { staff: e.target.value } })}
-                                                    disabled={isLocked}
-                                                >
-                                                    <option value=""></option>
-                                                    {staffOptions.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-                                                </select>
-                                            </td>
-                                            <td className="px-2 py-1 border-r border-gray-200 bg-emerald-50/10 text-right font-black text-emerald-600 text-lg font-bold">
-                                                {totalAmount > 0 ? totalAmount.toLocaleString() : '-'}
-                                            </td>
-                                            <td className="px-1 py-1 border-r border-gray-200 bg-emerald-50/10">
-                                                <select 
-                                                    className={`w-full bg-transparent text-[10px] font-bold outline-none uppercase text-center ${row.paymentMethod === 'card' ? 'text-pink-600' : row.paymentMethod === 'transfer' ? 'text-amber-600' : 'text-emerald-600'} ${isLocked ? 'opacity-50' : ''}`}
-                                                    value={row.paymentMethod}
-                                                    onChange={(e) => updateRow(row.id, { paymentMethod: e.target.value })}
-                                                    disabled={isLocked}
-                                                >
-                                                    <option value="cash">CASH</option>
-                                                    <option value="card">CARD</option>
-                                                    <option value="transfer">TRANS</option>
-                                                </select>
-                                            </td>
-                                            <td className="px-1 py-1 border-r border-gray-200 text-center align-middle">
-                                                {isNP ? (
-                                                    <button 
-                                                        onClick={() => setNpModalData({ row })}
-                                                        className={`w-full ${btnClass} border px-1 py-1 rounded text-xs font-bold flex items-center justify-center gap-1 transition-colors`}
-                                                    >
-                                                        {btnIcon} NP
-                                                    </button>
-                                                ) : (
-                                                    <InputCell 
-                                                        initialValue={row.npStatus || (row as any).note || ""} 
-                                                        onCommit={(v) => updateRow(row.id, { npStatus: v })} 
-                                                    />
-                                                )}
-                                            </td>
+                                            <td className="px-1 py-1 border-r border-gray-200 bg-orange-50/10"><select className="w-full bg-transparent text-xs text-slate-600 outline-none" value={row.retail.staff || ''} onChange={(e) => updateRow(row.id, { retail: { staff: e.target.value } })} disabled={isLocked}><option value=""></option>{staffOptions.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</select></td>
+                                            <td className="px-2 py-1 border-r border-gray-200 bg-emerald-50/10 text-right font-black text-emerald-600 text-lg font-bold">{totalAmount > 0 ? totalAmount.toLocaleString() : '-'}</td>
+                                            <td className="px-1 py-1 border-r border-gray-200 bg-emerald-50/10"><select className={`w-full bg-transparent text-[10px] font-bold outline-none uppercase text-center ${row.paymentMethod === 'card' ? 'text-pink-600' : row.paymentMethod === 'transfer' ? 'text-amber-600' : 'text-emerald-600'} ${isLocked ? 'opacity-50' : ''}`} value={row.paymentMethod} onChange={(e) => updateRow(row.id, { paymentMethod: e.target.value })} disabled={isLocked}><option value="cash">CASH</option><option value="card">CARD</option><option value="transfer">TRANS</option></select></td>
+                                            <td className="px-1 py-1 border-r border-gray-200 text-center align-middle">{isNP ? (<button onClick={() => setNpModalData({ row })} className={`w-full ${btnClass} border px-1 py-1 rounded text-xs font-bold flex items-center justify-center gap-1 transition-colors`}>{btnIcon} NP</button>) : (<InputCell initialValue={row.npStatus || (row as any).note || ""} onCommit={(v) => updateRow(row.id, { npStatus: v })} />)}</td>
                                             <td className="px-1 py-1 border-r border-gray-200"><InputCell initialValue={row.treatmentContent} onCommit={(v) => updateRow(row.id, { treatmentContent: v })} /></td>
-                                            <td className="px-1 py-1 border-r border-gray-200">
-                                                <select
-                                                    className="w-full bg-transparent text-xs outline-none text-slate-600"
-                                                    value={row.labName || ''}
-                                                    onChange={(e) => updateRow(row.id, { labName: e.target.value })}
-                                                >
-                                                    <option value=""></option>
-                                                    {clinicLabs.map(l => <option key={l.id} value={l.name}>{l.name}</option>)}
-                                                </select>
-                                            </td>
-                                            <td className="px-1 py-1 text-center">
-                                                {row.isManual && !isLocked && (
-                                                    <button onClick={() => handleDeleteRow(row.id)} className="text-slate-300 hover:text-rose-500 transition-colors">
-                                                        <Trash2 size={14} />
-                                                    </button>
-                                                )}
-                                            </td>
+                                            <td className="px-1 py-1 border-r border-gray-200"><select className="w-full bg-transparent text-xs outline-none text-slate-600" value={row.labName || ''} onChange={(e) => updateRow(row.id, { labName: e.target.value })}><option value=""></option>{clinicLabs.map(l => <option key={l.id} value={l.name}>{l.name}</option>)}</select></td>
+                                            <td className="px-1 py-1 text-center">{row.isManual && !isLocked && (<button onClick={() => handleDeleteRow(row.id)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={14} /></button>)}</td>
                                         </tr>
                                     );
                                 })}
                             </tbody>
                         </table>
                     </div>
-                    {!isLocked && (
-                        <button onClick={handleAddRow} className="w-full py-2 bg-slate-50 border-t border-slate-200 text-blue-600 font-bold text-sm hover:bg-blue-50 transition-colors flex items-center justify-center gap-1">
-                            <Plus size={16} /> 新增一列 (Add Row)
-                        </button>
-                    )}
+                    {!isLocked && (<button onClick={handleAddRow} className="w-full py-2 bg-slate-50 border-t border-slate-200 text-blue-600 font-bold text-sm hover:bg-blue-50 transition-colors flex items-center justify-center gap-1"><Plus size={16} /> 新增一列 (Add Row)</button>)}
                 </>
             )}
         </div>
-
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-            <div className="p-4 bg-rose-50 border-b border-rose-100 flex justify-between items-center">
-                <h4 className="font-bold text-rose-700 text-sm">診所支出 (Expenditure)</h4>
-                <div className="flex items-center gap-4">
-                    <span className="text-xs font-bold text-rose-600">總計: ${totals.totalExpenditure.toLocaleString()}</span>
-                    {!isLocked && (
-                        <button onClick={() => handleExpenditureChange([...expenditures, { id: crypto.randomUUID(), item: '', amount: 0 }])} className="text-xs bg-white text-rose-600 px-2 py-1 rounded border border-rose-200 font-bold hover:bg-rose-100">
-                            + 新增
-                        </button>
-                    )}
-                </div>
-            </div>
-            <div className="p-2 space-y-2 max-h-[200px] overflow-y-auto">
-                {expenditures.map((ex, idx) => (
-                    <div key={ex.id} className="flex gap-2 items-center bg-slate-50 p-1.5 rounded border border-slate-100">
-                        <input 
-                            className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none" 
-                            value={ex.item} 
-                            disabled={isLocked}
-                            onChange={e => {
-                                const newEx = [...expenditures]; newEx[idx].item = e.target.value; handleExpenditureChange(newEx);
-                            }} 
-                            placeholder="項目名稱" 
-                        />
-                        <input 
-                            type="number" 
-                            className="w-24 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none text-right font-bold text-rose-600" 
-                            value={ex.amount} 
-                            disabled={isLocked}
-                            onChange={e => {
-                                const newEx = [...expenditures]; newEx[idx].amount = Number(e.target.value); handleExpenditureChange(newEx);
-                            }} 
-                            placeholder="0" 
-                        />
-                        {!isLocked && (
-                            <button onClick={() => handleExpenditureChange(expenditures.filter((_, i) => i !== idx))} className="text-slate-400 hover:text-rose-500">
-                                <Trash2 size={14} />
-                            </button>
-                        )}
-                    </div>
-                ))}
-            </div>
+            <div className="p-4 bg-rose-50 border-b border-rose-100 flex justify-between items-center"><h4 className="font-bold text-rose-700 text-sm">診所支出</h4><div className="flex items-center gap-4"><span className="text-xs font-bold text-rose-600">總計: ${totals.totalExpenditure.toLocaleString()}</span>{!isLocked && (<button onClick={() => handleExpenditureChange([...expenditures, { id: crypto.randomUUID(), item: '', amount: 0 }])} className="text-xs bg-white text-rose-600 px-2 py-1 rounded border border-rose-200 font-bold hover:bg-rose-100">+ 新增</button>)}</div></div>
+            <div className="p-2 space-y-2 max-h-[200px] overflow-y-auto">{expenditures.map((ex, idx) => (<div key={ex.id} className="flex gap-2 items-center bg-slate-50 p-1.5 rounded border border-slate-100"><input className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none" value={ex.item} disabled={isLocked} onChange={e => { const newEx = [...expenditures]; newEx[idx].item = e.target.value; handleExpenditureChange(newEx); }} placeholder="項目名稱" /><input type="number" className="w-24 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none text-right font-bold text-rose-600" value={ex.amount} disabled={isLocked} onChange={e => { const newEx = [...expenditures]; newEx[idx].amount = Number(e.target.value); handleExpenditureChange(newEx); }} placeholder="0" />{!isLocked && (<button onClick={() => handleExpenditureChange(expenditures.filter((_, i) => i !== idx))} className="text-slate-400 hover:text-rose-500"><Trash2 size={14} /></button>)}</div>))}</div>
         </div>
-
-        <ClosingSummaryModal 
-            isOpen={isClosingModalOpen}
-            onClose={() => setIsClosingModalOpen(false)}
-            onConfirm={handleLockDay}
-            date={currentDate}
-            clinicId={selectedClinicId}
-            rows={rows}
-            totals={{ cash: totals.cashBalance, card: totals.cardRevenue, transfer: totals.transferRevenue, total: totals.totalRevenue }}
-            validationErrors={validationErrors}
-        />
-
-        <AuditLogModal 
-            isOpen={isAuditModalOpen}
-            onClose={() => setIsAuditModalOpen(false)}
-            logs={dailyRecord?.auditLog || []}
-        />
-
-        {npModalData && (
-            <NPStatusModal 
-                isOpen={!!npModalData}
-                onClose={() => setNpModalData(null)}
-                row={npModalData.row}
-                clinicId={selectedClinicId}
-                date={currentDate}
-            />
-        )}
+        <ClosingSummaryModal isOpen={isClosingModalOpen} onClose={() => setIsClosingModalOpen(false)} onConfirm={handleLockDay} date={currentDate} clinicId={selectedClinicId} rows={rows} totals={{ cash: totals.cashBalance, card: totals.cardRevenue, transfer: totals.transferRevenue, total: totals.totalRevenue }} validationErrors={validationErrors} />
+        <AuditLogModal isOpen={isAuditModalOpen} onClose={() => setIsAuditModalOpen(false)} logs={dailyRecord?.auditLog || []} />
+        {npModalData && <NPStatusModal isOpen={!!npModalData} onClose={() => setNpModalData(null)} row={npModalData.row} clinicId={selectedClinicId} date={currentDate} />}
     </div>
   );
 };

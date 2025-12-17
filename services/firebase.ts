@@ -3,7 +3,7 @@ import firebase from "firebase/compat/app";
 import "firebase/compat/auth";
 import "firebase/compat/firestore";
 import "firebase/compat/storage";
-import { AppData, DailyAccountingRecord, AccountingRow, TechnicianRecord, MonthlyTarget, Clinic, NHIRecord, SalaryAdjustment, Consultant, InsuranceGrade, User, UserRole, Doctor, Laboratory, SOVReferral, DailySchedule, AuditLogEntry, NPRecord, ClinicMonthlySummary } from '../types';
+import { AppData, DailyAccountingRecord, AccountingRow, TechnicianRecord, MonthlyTarget, Clinic, NHIRecord, SalaryAdjustment, Consultant, InsuranceGrade, User, UserRole, Doctor, Laboratory, SOVReferral, DailySchedule, AuditLogEntry, NPRecord, ClinicMonthlySummary, MonthlyClosing } from '../types';
 
 // --- CONFIGURATION STRATEGY: HOSTNAME SWITCHING ---
 
@@ -117,14 +117,12 @@ const DOC_ID = 'demo-clinic';
 
 /**
  * Enhanced deepSanitize to handle Firestore FieldValue correctly.
- * If we don't exclude FieldValue, it gets treated as a plain object and corrupted.
  */
 export const deepSanitize = (obj: any): any => {
   if (obj === undefined) return null;
   if (obj === null) return null;
   if (obj instanceof Date) return obj.toISOString();
   
-  // CRITICAL: Handle Firestore FieldValue specifically
   if (obj instanceof firebase.firestore.FieldValue) {
     return obj;
   }
@@ -357,7 +355,7 @@ export const addSOVReferral = async (clinicId: string, patientName: string) => {
     }
 };
 
-// --- NEW COLLECTIONS ---
+// --- STAFF & INSURANCE ---
 
 export const getStaffList = async (clinicId: string): Promise<Consultant[]> => {
     const snap = await db.collection('staff_profiles')
@@ -387,6 +385,8 @@ export const saveInsuranceTable = async (grades: InsuranceGrade[]) => {
     await db.collection('settings').doc('insurance_table').set({ grades: deepSanitize(grades) });
 };
 
+// --- USER & PERMISSIONS ---
+
 export const getAllUsers = async (): Promise<User[]> => {
     const snap = await db.collection('users').get();
     return snap.docs.map(d => ({ uid: d.id, ...d.data() } as User));
@@ -409,7 +409,7 @@ export const saveRolePermissions = async (perms: Record<string, string[]>) => {
     await db.collection('settings').doc('role_permissions').set(deepSanitize(perms));
 };
 
-// 5. Daily Accounting
+// --- DAILY ACCOUNTING ---
 
 export const loadDailyAccounting = async (clinicId: string, date: string): Promise<DailyAccountingRecord | null> => {
     const docId = `${clinicId}_${date}`;
@@ -425,14 +425,12 @@ export const saveDailyAccounting = async (record: DailyAccountingRecord, auditEn
     const { auditLog, ...otherData } = record;
     
     const payload: any = deepSanitize(otherData);
-    
     if (auditEntry) {
         payload.auditLog = firebase.firestore.FieldValue.arrayUnion(deepSanitize(auditEntry));
     }
     
     await db.collection('daily_accounting').doc(docId).set(payload, { merge: true });
 
-    // Update CRM Patient Records (Sync)
     const updates = record.rows.filter(r => r.patientName).map(r => {
         const consultantName = r.treatments.consultant || r.retail.staff || undefined;
         return upsertPatient(record.clinicId, {
@@ -467,7 +465,7 @@ export const getMonthlyAccounting = async (clinicId: string, month: string): Pro
     return allRows;
 };
 
-// 6. Technician Records
+// --- TECHNICIAN RECORDS ---
 export const getTechnicianRecords = async (clinicId: string, labName: string | null, month: string): Promise<TechnicianRecord[]> => {
     let query = db.collection('technician_records')
         .where('clinicId', '==', clinicId)
@@ -492,7 +490,7 @@ export const deleteTechnicianRecord = async (id: string) => {
     await db.collection('technician_records').doc(id).delete();
 };
 
-// 7. Dashboard & BI
+// --- DASHBOARD & BI ---
 export const fetchDashboardSnapshot = async (clinics: Clinic[], month: string): Promise<{
     current: ClinicMonthlySummary[],
     lastMonth: ClinicMonthlySummary[],
@@ -554,7 +552,7 @@ export const saveMonthlyTarget = async (clinicId: string, month: string, target:
     await db.collection('monthly_targets').doc(`${clinicId}_${month}`).set(deepSanitize(target), { merge: true });
 };
 
-// 8. NHI Records
+// --- NHI & SALARY ---
 export const getNHIRecords = async (clinicId: string, month: string): Promise<NHIRecord[]> => {
     const snap = await db.collection('nhi_records')
         .where('clinicId', '==', clinicId)
@@ -573,7 +571,6 @@ export const saveBatchNHIRecords = async (records: NHIRecord[]) => {
     await batch.commit();
 };
 
-// 9. Salary Adjustments
 export const getClinicSalaryAdjustments = async (clinicId: string, month: string): Promise<SalaryAdjustment[]> => {
     const snap = await db.collection('salary_adjustments')
         .where('clinicId', '==', clinicId)
@@ -590,7 +587,6 @@ export const deleteSalaryAdjustment = async (id: string) => {
     await db.collection('salary_adjustments').doc(id).delete();
 };
 
-// 10. Bonus Settings
 export const getBonusSettings = async (clinicId: string, month: string): Promise<any> => {
     const doc = await db.collection('bonus_settings').doc(`${clinicId}_${month}`).get();
     return doc.exists ? doc.data() : null;
@@ -611,64 +607,10 @@ export interface Patient {
     purchasedItems?: string[]; 
     visitHistory?: any[];     
     totalSpending?: number;
-    // aliases removed
     lastConsultant?: string;
     pastConsultants?: string[];
     updatedAt?: any;
 }
-
-// --- NEW: MARKETING TAGS HELPERS ---
-export const getMarketingTags = async (): Promise<string[]> => {
-    const doc = await db.collection('settings').doc('marketing_tags').get();
-    if (doc.exists) {
-        return (doc.data()?.tags || []);
-    }
-    return ['植牙', '矯正', '貼片/美白', '牙周', '一般健保', '其他'];
-};
-
-export const saveMarketingTags = async (tags: string[]) => {
-    await db.collection('settings').doc('marketing_tags').set({ tags: deepSanitize(tags) }, { merge: true });
-};
-
-// --- NEW: NP RECORDS HELPERS (For Dashboard) ---
-export const getNPRecordsRange = async (clinicId: string, startStr: string, endStr: string): Promise<NPRecord[]> => {
-    const startId = `${clinicId}_${startStr}`;
-    const endId = `${clinicId}_${endStr}\uf8ff`; 
-
-    const snap = await db.collection('np_records')
-        .where(firebase.firestore.FieldPath.documentId(), '>=', startId)
-        .where(firebase.firestore.FieldPath.documentId(), '<=', endId)
-        .get();
-
-    return snap.docs.map(d => ({ id: d.id, ...d.data() } as NPRecord));
-};
-
-export const saveNPRecord = async (record: NPRecord) => {
-    const safeName = (record.patientName || 'Unknown').replace(/\s+/g, '_');
-    const id = `${record.clinicId}_${record.date}_${safeName}`;
-    const docRef = db.collection('np_records').doc(id);
-    
-    const payload = JSON.parse(JSON.stringify({ 
-        ...record, 
-        id,
-        updatedAt: new Date().toISOString()
-    }));
-
-    await docRef.set(deepSanitize(payload), { merge: true });
-};
-
-export const deleteNPRecord = async (clinicId: string, date: string, patientName: string) => {
-    const safeName = (patientName || 'Unknown').replace(/\s+/g, '_');
-    const id = `${clinicId}_${date}_${safeName}`;
-    await db.collection('np_records').doc(id).delete();
-};
-
-export const getNPRecord = async (clinicId: string, date: string, patientName: string) => {
-    const safeName = (patientName || 'Unknown').replace(/\s+/g, '_');
-    const id = `${clinicId}_${date}_${safeName}`;
-    const doc = await db.collection('np_records').doc(id).get();
-    return doc.exists ? doc.data() as NPRecord : null;
-};
 
 export const getPatients = async (clinicId: string, lastDoc?: any, searchTerm?: string) => {
     let query: firebase.firestore.Query = db.collection('patients')
@@ -692,7 +634,6 @@ export const getPatients = async (clinicId: string, lastDoc?: any, searchTerm?: 
     }
 
     query = query.limit(50);
-
     const snap = await query.get();
     const patients = snap.docs.map(d => ({ docId: d.id, ...d.data() } as Patient));
     
@@ -702,80 +643,12 @@ export const getPatients = async (clinicId: string, lastDoc?: any, searchTerm?: 
     };
 };
 
-export const findPatientIdByName = async (name: string, clinicId: string): Promise<string | null> => {
-    const q = await db.collection('patients')
-        .where('clinicId', '==', clinicId)
-        .where('name', '==', name)
-        .limit(1)
-        .get();
-    if (!q.empty) {
-        const data = q.docs[0].data() as Patient;
-        return data.chartId || null;
-    }
-    return null;
-};
-
-export const findPatientProfile = async (clinicId: string, name: string, chartId?: string | null): Promise<Patient | null> => {
-    // Case A: Strict ID Lookup
-    if (chartId) {
-        const safeName = name.replace(/[\/\s]/g, '_');
-        const docId = `${clinicId}_${chartId}_${safeName}`;
-        const doc = await db.collection('patients').doc(docId).get();
-        if (doc.exists) {
-            return { docId: doc.id, ...doc.data() } as Patient;
-        }
-        return null;
-    }
-
-    // Case B: Name Lookup (If Chart ID missing, we might match based on Name only,
-    // but the ID structure requires ChartID. If ChartID is 'NP', we look for that.)
-    // For pure name search without ID, we must query the collection.
-    const q1 = await db.collection('patients')
-        .where('clinicId', '==', clinicId)
-        .where('name', '==', name)
-        .limit(1)
-        .get();
-    
-    if (!q1.empty) return { docId: q1.docs[0].id, ...q1.docs[0].data() } as Patient;
-
-    return null;
-}
-
-export const findPatientProfileById = async (clinicId: string, chartId: string): Promise<Patient | null> => {
-    // This is hard with composite key unless we query
-    const q = await db.collection('patients')
-        .where('clinicId', '==', clinicId)
-        .where('chartId', '==', chartId)
-        .limit(1)
-        .get();
-        
-    if (!q.empty) return { docId: q.docs[0].id, ...q.docs[0].data() } as Patient;
-    return null;
-}
-
-// Updated Upsert Logic: Composite Key & Remove Aliases
-export const upsertPatient = async (
-    clinicId: string, 
-    data: { 
-        chartId: string | null, 
-        name: string, 
-        lastVisitDate: string,
-        consultant?: string
-    }
-) => {
+export const upsertPatient = async (clinicId: string, data: { chartId: string | null, name: string, lastVisitDate: string, consultant?: string }) => {
     if (!clinicId || !data.name) return;
-    
     const safeName = data.name.replace(/[\/\s]/g, '_');
     const safeId = data.chartId || 'NP';
     const docId = `${clinicId}_${safeId}_${safeName}`;
-    
     const docRef = db.collection('patients').doc(docId);
-    
-    const payload: any = {
-        clinicId,
-        chartId: data.chartId, // can be null in field, but ID has 'NP'
-        name: data.name,
-    };
 
     try {
         await db.runTransaction(async (t) => {
@@ -784,31 +657,23 @@ export const upsertPatient = async (
                 const existing = doc.data() as Patient;
                 const newVisit = data.lastVisitDate;
                 const oldVisit = existing.lastVisit || '';
-                
-                const update: any = {
-                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-                };
-                
-                if (newVisit > oldVisit) {
-                    update.lastVisit = newVisit;
-                }
+                const update: any = { updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
+                if (newVisit > oldVisit) update.lastVisit = newVisit;
                 if (data.consultant) {
                     update.lastConsultant = data.consultant;
                     update.pastConsultants = firebase.firestore.FieldValue.arrayUnion(data.consultant);
                 }
-                
                 t.set(docRef, deepSanitize(update), { merge: true });
             } else {
-                payload.lastVisit = data.lastVisitDate;
-                payload.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+                const payload: any = {
+                    clinicId, chartId: data.chartId, name: data.name,
+                    lastVisit: data.lastVisitDate, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    visitHistory: [], purchasedItems: []
+                };
                 if (data.consultant) {
                     payload.lastConsultant = data.consultant;
                     payload.pastConsultants = [data.consultant];
                 }
-                payload.visitHistory = [];
-                payload.purchasedItems = [];
-                payload.pastConsultants = data.consultant ? [data.consultant] : [];
-                
                 t.set(docRef, deepSanitize(payload));
             }
         });
@@ -817,7 +682,6 @@ export const upsertPatient = async (
     }
 };
 
-// Simplified Migration: Move Data, No Alias Merging
 export const migratePatientId = async (oldDocId: string, newChartId: string, clinicId: string) => {
     const oldRef = db.collection('patients').doc(oldDocId);
     const oldSnap = await oldRef.get();
@@ -832,40 +696,28 @@ export const migratePatientId = async (oldDocId: string, newChartId: string, cli
     await db.runTransaction(async (t) => {
         const newSnap = await t.get(newRef);
         let newData = {};
-        
         if (newSnap.exists) {
-            // Merge logic
             const existing = newSnap.data() as Patient;
             newData = {
                 ...existing,
                 totalSpending: (existing.totalSpending || 0) + (oldData.totalSpending || 0),
                 visitHistory: [...(existing.visitHistory || []), ...(oldData.visitHistory || [])],
                 purchasedItems: Array.from(new Set([...(existing.purchasedItems || []), ...(oldData.purchasedItems || [])])),
-                // Keep latest visit
                 lastVisit: (existing.lastVisit > oldData.lastVisit) ? existing.lastVisit : oldData.lastVisit,
                 pastConsultants: Array.from(new Set([...(existing.pastConsultants || []), ...(oldData.pastConsultants || [])]))
             };
         } else {
-            // Move logic
-            newData = {
-                ...oldData,
-                chartId: newChartId,
-                docId: newDocId 
-            };
+            newData = { ...oldData, chartId: newChartId, docId: newDocId };
         }
-        
         t.set(newRef, deepSanitize(newData), { merge: true });
         t.delete(oldRef);
     });
 };
 
 export const getPatientHistory = async (clinicId: string, name: string, chartId: string | null) => {
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 180); 
-    
+    const startDate = new Date(); startDate.setDate(startDate.getDate() - 180); 
     const startStr = startDate.toISOString().split('T')[0];
-    const endStr = endDate.toISOString().split('T')[0];
+    const endStr = new Date().toISOString().split('T')[0];
 
     const snap = await db.collection('daily_accounting')
         .where(firebase.firestore.FieldPath.documentId(), '>=', `${clinicId}_${startStr}`)
@@ -873,179 +725,187 @@ export const getPatientHistory = async (clinicId: string, name: string, chartId:
         .get();
 
     const history: any[] = [];
-    
     snap.forEach(doc => {
         const data = doc.data() as DailyAccountingRecord;
-        if (!data.rows) return;
-        
-        data.rows.forEach(row => {
-            let match = false;
-            // Match logic based on Name + ID if available
-            if (chartId && row.chartId === chartId && row.patientName === name) match = true;
-            else if (!chartId && row.patientName === name) match = true;
-
-            if (match) {
-                history.push({
-                    date: data.date,
-                    doctor: row.doctorName,
-                    treatment: row.treatmentContent,
-                    amount: row.actualCollected,
-                    items: row.treatments 
-                });
-            }
-        });
+        if (data.rows) {
+            data.rows.forEach(row => {
+                let match = (chartId && row.chartId === chartId && row.patientName === name) || (!chartId && row.patientName === name);
+                if (match) history.push({ date: data.date, doctor: row.doctorName, treatment: row.treatmentContent, amount: row.actualCollected, items: row.treatments });
+            });
+        }
     });
-
     return history.sort((a,b) => b.date.localeCompare(a.date));
+};
+
+// --- NP RECORDS ---
+export const saveNPRecord = async (record: NPRecord) => {
+    const safeName = (record.patientName || 'Unknown').replace(/\s+/g, '_');
+    const id = `${record.clinicId}_${record.date}_${safeName}`;
+    const docRef = db.collection('np_records').doc(id);
+    await docRef.set(deepSanitize({ ...record, id, updatedAt: new Date().toISOString() }), { merge: true });
+};
+
+export const deleteNPRecord = async (clinicId: string, date: string, patientName: string) => {
+    const safeName = (patientName || 'Unknown').replace(/\s+/g, '_');
+    const id = `${clinicId}_${date}_${safeName}`;
+    await db.collection('np_records').doc(id).delete();
+};
+
+export const getNPRecord = async (clinicId: string, date: string, patientName: string) => {
+    const safeName = (patientName || 'Unknown').replace(/\s+/g, '_');
+    const id = `${clinicId}_${date}_${safeName}`;
+    const doc = await db.collection('np_records').doc(id).get();
+    return doc.exists ? doc.data() as NPRecord : null;
+};
+
+export const getMarketingTags = async (): Promise<string[]> => {
+    const doc = await db.collection('settings').doc('marketing_tags').get();
+    return doc.exists ? (doc.data()?.tags || []) : ['矯正諮詢', '植牙諮詢', '美白', '其他'];
+};
+
+export const saveMarketingTags = async (tags: string[]) => {
+    await db.collection('settings').doc('marketing_tags').set({ tags: deepSanitize(tags) }, { merge: true });
 };
 
 // --- DAILY CLOSING & LOCKING ---
 
-export const checkPreviousUnlocked = async (currentDate: string, clinicId: string): Promise<string[]> => {
-    const pastDate = new Date(currentDate);
-    pastDate.setDate(pastDate.getDate() - 30);
-    const minDateStr = pastDate.toISOString().split('T')[0];
-
-    const snap = await db.collection('daily_accounting')
-        .where(firebase.firestore.FieldPath.documentId(), '>=', `${clinicId}_${minDateStr}`)
-        .where(firebase.firestore.FieldPath.documentId(), '<', `${clinicId}_${currentDate}`)
-        .get();
-
-    const unlockedDates: string[] = [];
-    snap.forEach(doc => {
-        const data = doc.data() as DailyAccountingRecord;
-        if (!data.isLocked) {
-            unlockedDates.push(data.date);
-        }
-    });
-    
-    return unlockedDates.sort();
-};
-
-const extractPurchasedItems = (row: AccountingRow): string[] => {
-    const items: string[] = [];
-    const t = row.treatments as any;
-    
-    if (t.prostho > 0) items.push('假牙');
-    if (t.implant > 0) items.push('植牙');
-    if (t.ortho > 0) items.push('矯正');
-    if (t.sov > 0) items.push('SOV');
-    if (t.inv > 0) items.push('隱適美');
-    if (t.whitening > 0) items.push('美白');
-    if (t.perio > 0) items.push('牙周');
-    
-    if (row.retail.products > 0) items.push('物販');
-    if (row.retail.diyWhitening > 0) items.push('小金庫');
-
-    return items;
-};
-
-// Refactored lockDailyReport: Group by Composite Key
 export const lockDailyReport = async (date: string, clinicId: string, rows: AccountingRow[], user: {uid: string, name: string}) => {
     const docId = `${clinicId}_${date}`;
     const batch = db.batch();
-    
-    // 1. Lock Daily Record using additive audit entry
     const dailyRef = db.collection('daily_accounting').doc(docId);
-    const lockLogEntry = {
-        timestamp: new Date().toISOString(),
-        userId: user.uid,
-        userName: user.name,
-        action: 'LOCK'
-    };
     
     batch.update(dailyRef, {
         isLocked: true,
-        auditLog: firebase.firestore.FieldValue.arrayUnion(deepSanitize(lockLogEntry))
+        auditLog: firebase.firestore.FieldValue.arrayUnion(deepSanitize({
+            timestamp: new Date().toISOString(), userId: user.uid, userName: user.name, action: 'LOCK'
+        }))
     });
 
-    // 2. Group by Composite Key (ChartID + Name)
     const groups: Record<string, AccountingRow[]> = {};
     rows.forEach(r => {
-        const cId = r.chartId || 'NP';
-        const name = r.patientName || 'Unknown';
-        const key = `${cId}_${name}`;
+        const key = `${r.chartId || 'NP'}_${r.patientName || 'Unknown'}`;
         if(!groups[key]) groups[key] = [];
         groups[key].push(r);
     });
 
-    // 3. Upsert Grouped Patients
     for (const key in groups) {
         const groupRows = groups[key];
-        const representative = groupRows[0]; 
-        const chartId = representative.chartId || null; 
-        const name = representative.patientName;
-        
-        // Aggregate Visit Data
-        const visitSummaries = groupRows.map(r => ({
-            date,
-            doctor: r.doctorName,
-            treatment: r.treatmentContent || '',
-            amount: r.actualCollected || 0
-        }));
-        
-        const purchasedItems = new Set<string>();
-        const consultants = new Set<string>();
-        let totalSpend = 0;
-
-        groupRows.forEach(r => {
-            extractPurchasedItems(r).forEach(i => purchasedItems.add(i));
-            const c = r.treatments.consultant || r.retail.staff;
-            if(c) consultants.add(c);
-            totalSpend += (r.actualCollected || 0);
-        });
-
-        // Generate Document ID using Composite Logic
-        const safeName = name.replace(/[\/\s]/g, '_');
-        const safeId = chartId || 'NP';
-        const patientDocId = `${clinicId}_${safeId}_${safeName}`;
+        const rep = groupRows[0]; 
+        const chartId = rep.chartId || null; 
+        const name = rep.patientName;
+        const patientDocId = `${clinicId}_${chartId || 'NP'}_${name.replace(/[\/\s]/g, '_')}`;
         const patientRef = db.collection('patients').doc(patientDocId);
 
-        const updateData: any = {
-            clinicId,
-            chartId: chartId === 'NP' ? null : chartId,
-            name: name,
-            lastVisit: date,
+        let totalSpend = 0;
+        const items = new Set<string>();
+        groupRows.forEach(r => {
+            totalSpend += (r.actualCollected || 0);
+            const t = r.treatments as any;
+            if (t.prostho > 0) items.add('假牙');
+            if (t.implant > 0) items.add('植牙');
+            if (t.ortho > 0) items.add('矯正');
+            if (t.sov > 0) items.add('SOV');
+            if (t.inv > 0) items.add('隱適美');
+            if (t.whitening > 0) items.add('美白');
+            if (t.perio > 0) items.add('牙周');
+        });
+
+        batch.set(patientRef, deepSanitize({
+            clinicId, chartId, name, lastVisit: date,
             updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-            // Append History
-            visitHistory: firebase.firestore.FieldValue.arrayUnion(...visitSummaries),
-            totalSpending: firebase.firestore.FieldValue.increment(totalSpend)
-        };
-
-        if (purchasedItems.size > 0) {
-            updateData.purchasedItems = firebase.firestore.FieldValue.arrayUnion(...Array.from(purchasedItems));
-        }
-        if (consultants.size > 0) {
-            const consArr = Array.from(consultants);
-            updateData.pastConsultants = firebase.firestore.FieldValue.arrayUnion(...consArr);
-            // Set last consultant to last non-empty one found
-            const lastCons = consArr.pop();
-            if (lastCons) {
-                updateData.lastConsultant = lastCons;
-            }
-        }
-
-        batch.set(patientRef, deepSanitize(updateData), { merge: true });
+            totalSpending: firebase.firestore.FieldValue.increment(totalSpend),
+            purchasedItems: firebase.firestore.FieldValue.arrayUnion(...Array.from(items)),
+            visitHistory: firebase.firestore.FieldValue.arrayUnion(...groupRows.map(r => ({
+                date, doctor: r.doctorName, treatment: r.treatmentContent || '', amount: r.actualCollected || 0
+            })))
+        }), { merge: true });
     }
-
     await batch.commit();
 };
 
 export const unlockDailyReport = async (date: string, clinicId: string, user: {uid: string, name: string}) => {
     const docId = `${clinicId}_${date}`;
-    const unlockLogEntry = {
-        timestamp: new Date().toISOString(),
-        userId: user.uid,
-        userName: user.name,
-        action: 'UNLOCK'
-    };
-    
     await db.collection('daily_accounting').doc(docId).update({
         isLocked: false,
-        auditLog: firebase.firestore.FieldValue.arrayUnion(deepSanitize(unlockLogEntry))
+        auditLog: firebase.firestore.FieldValue.arrayUnion(deepSanitize({
+            timestamp: new Date().toISOString(), userId: user.uid, userName: user.name, action: 'UNLOCK'
+        }))
     });
 };
 
-export const seedTestEnvironment = async () => {
-    console.log("Seeding skipped.");
+export const checkPreviousUnlocked = async (currentDate: string, clinicId: string): Promise<string[]> => {
+    const pastDate = new Date(currentDate); pastDate.setDate(pastDate.getDate() - 30);
+    const minDateStr = pastDate.toISOString().split('T')[0];
+    const snap = await db.collection('daily_accounting')
+        .where(firebase.firestore.FieldPath.documentId(), '>=', `${clinicId}_${minDateStr}`)
+        .where(firebase.firestore.FieldPath.documentId(), '<', `${clinicId}_${currentDate}`)
+        .get();
+
+    const unlocked: string[] = [];
+    snap.forEach(doc => {
+        const data = doc.data() as DailyAccountingRecord;
+        if (!data.isLocked) unlocked.push(data.date);
+    });
+    return unlocked.sort();
 };
+
+// --- MONTHLY CLOSING ---
+
+export const getMonthlyClosingStatus = async (clinicId: string, yearMonth: string): Promise<MonthlyClosing | null> => {
+    const docId = `${clinicId}_${yearMonth}`;
+    const doc = await db.collection('monthly_closings').doc(docId).get();
+    return doc.exists ? doc.data() as MonthlyClosing : null;
+};
+
+export const lockMonthlyReport = async (clinicId: string, yearMonth: string, user: { uid: string, name: string }) => {
+    const startId = `${clinicId}_${yearMonth}-01`;
+    const endId = `${clinicId}_${yearMonth}-31`;
+    
+    const snap = await db.collection('daily_accounting')
+        .where(firebase.firestore.FieldPath.documentId(), '>=', startId)
+        .where(firebase.firestore.FieldPath.documentId(), '<=', endId)
+        .get();
+
+    const unlockedDates: string[] = [];
+    snap.forEach(doc => {
+        const data = doc.data() as DailyAccountingRecord;
+        if (!data.isLocked) unlockedDates.push(data.date);
+    });
+
+    if (unlockedDates.length > 0) {
+        throw new Error("無法鎖定，以下日期尚未結帳：\n" + unlockedDates.sort().join(", "));
+    }
+
+    const docId = `${clinicId}_${yearMonth}`;
+    const payload: MonthlyClosing = {
+        clinicId, month: yearMonth, isLocked: true,
+        lockedAt: new Date().toISOString(),
+        lockedBy: { uid: user.uid, name: user.name }
+    };
+    await db.collection('monthly_closings').doc(docId).set(deepSanitize(payload));
+};
+
+export const unlockMonthlyReport = async (clinicId: string, yearMonth: string) => {
+    const docId = `${clinicId}_${yearMonth}`;
+    await db.collection('monthly_closings').doc(docId).update({
+        isLocked: false,
+        unlockedAt: new Date().toISOString()
+    });
+};
+
+export const findPatientIdByName = async (name: string, clinicId: string): Promise<string | null> => {
+    const q = await db.collection('patients').where('clinicId', '==', clinicId).where('name', '==', name).limit(1).get();
+    return !q.empty ? (q.docs[0].data() as Patient).chartId || null : null;
+};
+
+export const findPatientProfile = async (clinicId: string, name: string, chartId?: string | null): Promise<Patient | null> => {
+    if (chartId) {
+        const docId = `${clinicId}_${chartId}_${name.replace(/[\/\s]/g, '_')}`;
+        const doc = await db.collection('patients').doc(docId).get();
+        if (doc.exists) return { docId: doc.id, ...doc.data() } as Patient;
+    }
+    const q = await db.collection('patients').where('clinicId', '==', clinicId).where('name', '==', name).limit(1).get();
+    return !q.empty ? { docId: q.docs[0].id, ...q.docs[0].data() } as Patient : null;
+}
+
+export const seedTestEnvironment = async () => { console.log("Seeding skipped."); };

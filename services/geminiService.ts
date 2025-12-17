@@ -1,4 +1,6 @@
-import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+
+// Fixed to use @google/genai correctly
+import { GoogleGenAI, Type } from "@google/genai";
 import { DailySchedule, Clinic, Doctor } from '../types';
 import * as XLSX from 'xlsx';
 
@@ -7,11 +9,12 @@ const getDayName = (dateStr: string) => {
   return ['週日', '週一', '週二', '週三', '週四', '週五', '週六'][date.getDay()];
 };
 
+// Initialize with named parameter from process.env.API_KEY
 const getGenAI = () => {
   if (!process.env.API_KEY) {
     throw new Error("API Key is missing. Please configure your environment.");
   }
-  return new GoogleGenerativeAI(process.env.API_KEY);
+  return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
 export const generateAnnouncement = async (
@@ -21,8 +24,7 @@ export const generateAnnouncement = async (
   doctors: Doctor[]
 ): Promise<string> => {
   try {
-    const genAI = getGenAI();
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const ai = getGenAI();
 
     // Prepare a condensed text summary of the schedule for the model
     const scheduleSummary = schedules
@@ -59,8 +61,14 @@ export const generateAnnouncement = async (
       6. Use Chinese (Traditional) suitable for a Taiwan audience.
     `;
 
-    const result = await model.generateContent(prompt);
-    return result.response.text() || "Could not generate text.";
+    // Fix: Use ai.models.generateContent instead of deprecated getGenerativeModel
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+    });
+    
+    // Fix: Access .text property directly, not as a method text()
+    return response.text || "Could not generate text.";
   } catch (error) {
     console.error("Gemini API Error:", error);
     return "Error generating announcement. Please try again.";
@@ -123,40 +131,34 @@ const readExcelToCSV = (file: File): Promise<string> => {
 
 export const analyzeAccountingReport = async (file: File): Promise<ScannedAccountingRow[]> => {
   try {
-    const genAI = getGenAI();
+    const ai = getGenAI();
     
     // Determine file type
     const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.type.includes('spreadsheet') || file.type.includes('excel');
     
-    let contentParts: any[] = [];
+    let contents: any;
     let systemInstruction = "";
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: SchemaType.ARRAY,
-          items: {
-            type: SchemaType.OBJECT,
-            properties: {
-              name: { type: SchemaType.STRING, description: "Patient Name" },
-              regFee: { type: SchemaType.NUMBER, description: "Registration Fee (掛號費)" },
-              copayment: { type: SchemaType.NUMBER, description: "Co-payment (部分負擔)" },
-              prostho: { type: SchemaType.NUMBER, description: "Prosthodontic Fee (假牙)" },
-              implant: { type: SchemaType.NUMBER, description: "Implant Fee (植牙)" },
-              whitening: { type: SchemaType.NUMBER, description: "Whitening Fee (美白)" },
-              ortho: { type: SchemaType.NUMBER, description: "Orthodontic Fee (矯正)" },
-              sov: { type: SchemaType.NUMBER, description: "SOV Fee" },
-              perio: { type: SchemaType.NUMBER, description: "Periodontal Fee (牙周)" },
-              otherSelfPay: { type: SchemaType.NUMBER, description: "Other Self Pay (其他自費)" },
-              products: { type: SchemaType.NUMBER, description: "Retail/Products (物販/口衛)" },
-            },
-            required: ["name"],
-          },
-        }
-      }
-    });
+    const responseSchema = {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          name: { type: Type.STRING, description: "Patient Name" },
+          regFee: { type: Type.NUMBER, description: "Registration Fee (掛號費)" },
+          copayment: { type: Type.NUMBER, description: "Co-payment (部分負擔)" },
+          prostho: { type: Type.NUMBER, description: "Prosthodontic Fee (假牙)" },
+          implant: { type: Type.NUMBER, description: "Implant Fee (植牙)" },
+          whitening: { type: Type.NUMBER, description: "Whitening Fee (美白)" },
+          ortho: { type: Type.NUMBER, description: "Orthodontic Fee (矯正)" },
+          sov: { type: Type.NUMBER, description: "SOV Fee" },
+          perio: { type: Type.NUMBER, description: "Periodontal Fee (牙周)" },
+          otherSelfPay: { type: Type.NUMBER, description: "Other Self Pay (其他自費)" },
+          products: { type: Type.NUMBER, description: "Retail/Products (物販/口衛)" },
+        },
+        required: ["name"],
+      },
+    };
 
     if (isExcel) {
         // Logic A: Text-based Analysis (Excel -> CSV)
@@ -174,7 +176,7 @@ export const analyzeAccountingReport = async (file: File): Promise<ScannedAccoun
               Ignore rows that are clearly totals or empty.
               Return a JSON array.
             `;
-            contentParts = [systemInstruction, csvText];
+            contents = csvText;
         } catch (e) {
             console.error("Excel parse error", e);
             throw new Error("Failed to parse Excel file.");
@@ -194,11 +196,20 @@ export const analyzeAccountingReport = async (file: File): Promise<ScannedAccoun
           
           Treat handwritten numbers carefully. Return 0 if a field is empty or dashed.
         `;
-        contentParts = [systemInstruction, imagePart];
+        contents = { parts: [imagePart] };
     }
 
-    const result = await model.generateContent(contentParts);
-    const jsonText = result.response.text() || "[]";
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents,
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema,
+      }
+    });
+
+    const jsonText = response.text || "[]";
     const data = JSON.parse(jsonText) as ScannedAccountingRow[];
     return data;
   } catch (error) {
@@ -209,37 +220,32 @@ export const analyzeAccountingReport = async (file: File): Promise<ScannedAccoun
 
 export const analyzeLabStatement = async (file: File): Promise<ScannedLabItem[]> => {
     try {
-        const genAI = getGenAI();
+        const ai = getGenAI();
         
         // Determine file type
         const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.type.includes('spreadsheet') || file.type.includes('excel');
         
-        let contentParts: any[] = [];
-        
-        const model = genAI.getGenerativeModel({
-            model: "gemini-1.5-flash",
-            generationConfig: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                    type: SchemaType.ARRAY,
-                    items: {
-                        type: SchemaType.OBJECT,
-                        properties: {
-                            patientName: { type: SchemaType.STRING },
-                            itemType: { type: SchemaType.STRING },
-                            amount: { type: SchemaType.NUMBER }
-                        },
-                        required: ["patientName", "amount"]
-                    }
-                }
+        let contents: any;
+        let systemInstruction = "";
+
+        const responseSchema = {
+            type: Type.ARRAY,
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    patientName: { type: Type.STRING },
+                    itemType: { type: Type.STRING },
+                    amount: { type: Type.NUMBER }
+                },
+                required: ["patientName", "amount"]
             }
-        });
+        };
 
         if (isExcel) {
             // Logic A: Excel -> CSV -> Text Prompt
             try {
                 const csvText = await readExcelToCSV(file);
-                const prompt = `
+                systemInstruction = `
                     You are a data assistant. Analyze the following CSV data extracted from a dental laboratory statement (技工所對帳單).
                     Extract a list of items where each item represents a patient case.
                     
@@ -249,11 +255,8 @@ export const analyzeLabStatement = async (file: File): Promise<ScannedLabItem[]>
                     - amount (The cost/fee for this item)
 
                     Return a JSON array.
-                    
-                    CSV Data:
-                    ${csvText}
                 `;
-                contentParts = [prompt];
+                contents = csvText;
             } catch (e) {
                  console.error("Excel parse error", e);
                  throw new Error("Failed to parse Excel file.");
@@ -261,7 +264,7 @@ export const analyzeLabStatement = async (file: File): Promise<ScannedLabItem[]>
         } else {
             // Logic B: Image/PDF -> Vision/Multimodal Prompt
             const imagePart = await fileToGenerativePart(file);
-            const prompt = `
+            systemInstruction = `
                 Analyze this dental laboratory statement (技工所對帳單).
                 Extract a list of items where each item represents a patient case.
                 
@@ -272,11 +275,20 @@ export const analyzeLabStatement = async (file: File): Promise<ScannedLabItem[]>
 
                 Return a JSON array.
             `;
-            contentParts = [prompt, imagePart];
+            contents = { parts: [imagePart] };
         }
 
-        const result = await model.generateContent(contentParts);
-        return JSON.parse(result.response.text() || "[]") as ScannedLabItem[];
+        const response = await ai.models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents,
+            config: {
+                systemInstruction,
+                responseMimeType: "application/json",
+                responseSchema,
+            }
+        });
+
+        return JSON.parse(response.text || "[]") as ScannedLabItem[];
     } catch (e) {
         console.error("Lab Analysis Error", e);
         throw e;

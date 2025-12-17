@@ -35,7 +35,7 @@ const MENU_CONFIG_ITEMS = [
     { key: '/integrations', label: '系統整合 (Google/Backup)' },
 ];
 
-const ROLES: UserRole[] = ['manager', 'staff', 'marketing']; // Admin is implicit
+const ROLES: UserRole[] = ['manager', 'team_leader', 'staff', 'marketing']; // Admin is implicit
 
 export const PermissionManager: React.FC<Props> = () => {
     const { currentUser, userRole, loading: authLoading } = useAuth();
@@ -173,6 +173,7 @@ export const PermissionManager: React.FC<Props> = () => {
         switch(role) {
             case 'admin': return 'bg-rose-100 text-rose-700 border-rose-200';
             case 'manager': return 'bg-indigo-100 text-indigo-700 border-indigo-200';
+            case 'team_leader': return 'bg-amber-100 text-amber-700 border-amber-200';
             case 'marketing': return 'bg-purple-100 text-purple-700 border-purple-200';
             case 'staff': return 'bg-teal-100 text-teal-700 border-teal-200';
             default: return 'bg-slate-100 text-slate-600 border-slate-200';
@@ -259,6 +260,7 @@ export const PermissionManager: React.FC<Props> = () => {
                                                         onChange={(e) => handleRoleChange(user.uid, e.target.value as UserRole)}
                                                     >
                                                         <option value="manager">Manager</option>
+                                                        <option value="team_leader">Team Leader (組長)</option>
                                                         <option value="staff">Staff</option>
                                                         <option value="marketing">Marketing</option>
                                                     </select>
@@ -328,8 +330,9 @@ export const PermissionManager: React.FC<Props> = () => {
                         <table className="w-full text-sm text-left">
                             <thead className="bg-white text-slate-500 font-bold uppercase text-xs border-b border-slate-100">
                                 <tr>
-                                    <th className="px-6 py-3 w-1/3">功能選單 (Feature)</th>
+                                    <th className="px-6 py-3 w-1/4">功能選單 (Feature)</th>
                                     <th className="px-6 py-3 text-center bg-indigo-50/50 text-indigo-700">Manager</th>
+                                    <th className="px-6 py-3 text-center bg-amber-50/50 text-amber-700">Team Leader</th>
                                     <th className="px-6 py-3 text-center bg-teal-50/50 text-teal-700">Staff</th>
                                     <th className="px-6 py-3 text-center bg-purple-50/50 text-purple-700">Marketing</th>
                                 </tr>
@@ -344,7 +347,12 @@ export const PermissionManager: React.FC<Props> = () => {
                                         {ROLES.map(role => {
                                             const isChecked = (permissions[role] || []).includes(item.key);
                                             return (
-                                                <td key={role} className="px-6 py-3 text-center border-r border-slate-50 last:border-0">
+                                                <td key={role} className={`px-6 py-3 text-center border-r border-slate-50 last:border-0 ${
+                                                    role === 'manager' ? 'bg-indigo-50/10' :
+                                                    role === 'team_leader' ? 'bg-amber-50/10' :
+                                                    role === 'staff' ? 'bg-teal-50/10' :
+                                                    role === 'marketing' ? 'bg-purple-50/10' : ''
+                                                }`}>
                                                     <label className="inline-flex items-center justify-center cursor-pointer p-2 rounded-md hover:bg-slate-200/50 transition-colors">
                                                         <input 
                                                             type="checkbox" 

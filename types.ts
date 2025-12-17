@@ -1,5 +1,6 @@
 
 
+
 export type ShiftType = 'Morning' | 'Afternoon' | 'Evening';
 
 export enum DayOfWeek {
@@ -12,7 +13,7 @@ export enum DayOfWeek {
   Saturday = 6
 }
 
-export type UserRole = 'admin' | 'manager' | 'staff' | 'marketing' | 'guest';
+export type UserRole = 'admin' | 'manager' | 'team_leader' | 'staff' | 'marketing' | 'guest';
 
 export interface User {
     uid: string;
@@ -336,6 +337,17 @@ export interface ClinicMonthlySummary {
     actualVisits: number;
     actualSelfPay: number;
     targets: MonthlyTarget;
+}
+
+// NEW: Monthly Closing Record
+export interface MonthlyClosing {
+    clinicId: string;
+    month: string; // YYYY-MM
+    isLocked: boolean;
+    lockedAt: string;
+    lockedBy: { uid: string; name: string };
+    unlockedAt?: string;
+    unlockedBy?: { uid: string; name: string };
 }
 
 // NEW: Marketing / NP Record

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord } from '../types';
-import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral } from '../services/firebase';
+import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord, MonthlyClosing } from '../types';
+import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral, getMonthlyClosingStatus } from '../services/firebase';
 import { exportDailyReportToExcel } from '../services/excelExport';
 import { listEvents } from '../services/googleCalendar';
 import { parseCalendarEvent } from '../utils/eventParser';
@@ -15,7 +15,7 @@ import {
   Save, Plus, Trash2, FileSpreadsheet, Loader2,
   ChevronLeft, ChevronRight, RefreshCw, 
   Wallet, CreditCard, TrendingUp, CheckCircle, Circle, Filter,
-  WifiOff, Lock, Unlock, History, Tag
+  WifiOff, Lock, Unlock, History, Tag, AlertCircle
 } from 'lucide-react';
 
 interface Props {
@@ -157,6 +157,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const [expenditures, setExpenditures] = useState<Expenditure[]>([]);
   const [fullStaffList, setFullStaffList] = useState<Consultant[]>([]);
   
+  // Monthly Closing State
+  const [monthlyStatus, setMonthlyStatus] = useState<MonthlyClosing | null>(null);
+  
   const [todaysNPRecords, setTodaysNPRecords] = useState<Record<string, NPRecord>>({});
   
   const [isLoading, setIsLoading] = useState(false);
@@ -184,6 +187,14 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       };
       fetchStaff();
   }, [selectedClinicId]);
+
+  // Sync Monthly Closing Status
+  useEffect(() => {
+      if (selectedClinicId && currentDate) {
+          const yearMonth = currentDate.slice(0, 7);
+          getMonthlyClosingStatus(selectedClinicId, yearMonth).then(setMonthlyStatus);
+      }
+  }, [selectedClinicId, currentDate]);
 
   useEffect(() => {
       if (!selectedClinicId || !currentDate) {
@@ -264,6 +275,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   }, [selectedClinicId, currentDate]);
 
   const isLocked = dailyRecord?.isLocked || false;
+  const isMonthLocked = monthlyStatus?.isLocked || false;
 
   const visibleRows = useMemo(() => {
       let filtered = rows;
@@ -643,12 +655,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const handleLockDay = async () => {
       if (!currentUser || !selectedClinicId) return;
-      
-      // Secondary Validation check before actual write
       if (validationErrors.length > 0) {
           throw new Error("Validation failed: Incomplete rows detected.");
       }
-
       try {
           await lockDailyReport(currentDate, selectedClinicId, rows, { uid: currentUser.uid, name: currentUser.email || 'User' });
       } catch (e) {
@@ -663,6 +672,11 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           alert("權限不足：僅管理員可解鎖");
           return;
       }
+      if (isMonthLocked) {
+          alert("⚠️ 本月已結帳鎖定，請先前往「月營收報表」解除月結鎖定。");
+          return;
+      }
+
       if (!confirm("確定要解鎖嗎？系統將自動嘗試填入遺漏的病歷號，所有變更將被記錄。")) return;
       
       setIsSyncing(true);
@@ -756,8 +770,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                 </div>
                 
                 {isLocked ? (
-                    <div className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg text-sm font-bold">
-                        <Lock size={14} /> 已結帳
+                    <div className={`flex items-center gap-2 px-3 py-1.5 border rounded-lg text-sm font-bold ${isMonthLocked ? 'bg-rose-100 border-rose-300 text-rose-800' : 'bg-rose-50 border-rose-200 text-rose-700'}`}>
+                        <Lock size={14} /> {isMonthLocked ? '月結鎖定中' : '已結帳'}
                     </div>
                 ) : (
                     <button 
@@ -775,10 +789,21 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                 {saveStatus === 'error' && <span className="text-xs text-rose-500 flex items-center gap-1"><WifiOff size={12}/> Disconnected</span>}
                 
                 {isLocked && (userRole === 'admin' || userRole === 'manager') && (
-                    <button onClick={handleUnlockDay} disabled={isSyncing} className="text-rose-500 hover:bg-rose-50 px-3 py-2 rounded-lg font-bold text-sm border border-rose-200 flex items-center gap-2">
-                        {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <Unlock size={16} />} 
-                        解鎖
-                    </button>
+                    <div className="relative group">
+                        <button 
+                            onClick={handleUnlockDay} 
+                            disabled={isSyncing || isMonthLocked} 
+                            className={`px-3 py-2 rounded-lg font-bold text-sm border flex items-center gap-2 transition-all ${isMonthLocked ? 'text-slate-400 border-slate-200 bg-slate-50 cursor-not-allowed' : 'text-rose-500 hover:bg-rose-50 border-rose-200'}`}
+                        >
+                            {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <Unlock size={16} />} 
+                            解鎖
+                        </button>
+                        {isMonthLocked && (
+                            <div className="absolute bottom-full mb-2 right-0 hidden group-hover:block bg-slate-800 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap z-50 shadow-xl">
+                                <AlertCircle size={10} className="inline mr-1" /> 本月已結帳，請先解除月結鎖定
+                            </div>
+                        )}
+                    </div>
                 )}
 
                 <button onClick={() => setIsAuditModalOpen(true)} className="text-slate-400 hover:text-slate-600 p-2 rounded-full hover:bg-slate-100" title="異動紀錄">

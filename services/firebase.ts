@@ -3,7 +3,7 @@ import firebase from "firebase/compat/app";
 import "firebase/compat/auth";
 import "firebase/compat/firestore";
 import "firebase/compat/storage";
-import { AppData, DailyAccountingRecord, AccountingRow, TechnicianRecord, MonthlyTarget, Clinic, NHIRecord, SalaryAdjustment, Consultant, InsuranceGrade, User, UserRole, Doctor, Laboratory, SOVReferral, DailySchedule, AuditLogEntry, NPRecord, ClinicMonthlySummary } from '../types';
+import { AppData, DailyAccountingRecord, AccountingRow, TechnicianRecord, MonthlyTarget, Clinic, NHIRecord, SalaryAdjustment, Consultant, InsuranceGrade, User, UserRole, Doctor, Laboratory, SOVReferral, DailySchedule, AuditLogEntry, NPRecord, ClinicMonthlySummary, MonthlyClosing } from '../types';
 
 // --- CONFIGURATION STRATEGY: HOSTNAME SWITCHING ---
 
@@ -406,7 +406,7 @@ export const getRolePermissions = async (): Promise<Record<string, string[]>> =>
 };
 
 export const saveRolePermissions = async (perms: Record<string, string[]>) => {
-    await db.collection('settings').doc('role_permissions').set(deepSanitize(perms));
+    await db.settings().doc('role_permissions').set(deepSanitize(perms));
 };
 
 // 5. Daily Accounting
@@ -1043,6 +1043,60 @@ export const unlockDailyReport = async (date: string, clinicId: string, user: {u
     await db.collection('daily_accounting').doc(docId).update({
         isLocked: false,
         auditLog: firebase.firestore.FieldValue.arrayUnion(deepSanitize(unlockLogEntry))
+    });
+};
+
+// --- MONTHLY CLOSING ---
+
+export const getMonthlyClosingStatus = async (clinicId: string, yearMonth: string): Promise<MonthlyClosing | null> => {
+    const docId = `${clinicId}_${yearMonth}`;
+    const doc = await db.collection('monthly_closings').doc(docId).get();
+    return doc.exists ? doc.data() as MonthlyClosing : null;
+};
+
+export const lockMonthlyReport = async (clinicId: string, yearMonth: string, user: { uid: string, name: string }) => {
+    // 1. Validation Step: Check all daily reports in that month
+    const startId = `${clinicId}_${yearMonth}-01`;
+    const endId = `${clinicId}_${yearMonth}-31`;
+    
+    const snap = await db.collection('daily_accounting')
+        .where(firebase.firestore.FieldPath.documentId(), '>=', startId)
+        .where(firebase.firestore.FieldPath.documentId(), '<=', endId)
+        .get();
+
+    const openDays: string[] = [];
+    snap.forEach(doc => {
+        const data = doc.data() as DailyAccountingRecord;
+        if (!data.isLocked) {
+            openDays.push(data.date);
+        }
+    });
+
+    if (openDays.length > 0) {
+        throw new Error(`尚有未鎖定的日報表: ${openDays.join(', ')}`);
+    }
+
+    // 2. Perform Lock
+    const docId = `${clinicId}_${yearMonth}`;
+    const payload: MonthlyClosing = {
+        clinicId,
+        month: yearMonth,
+        isLocked: true,
+        lockedAt: new Date().toISOString(),
+        lockedBy: {
+            uid: user.uid,
+            name: user.name
+        }
+    };
+
+    await db.collection('monthly_closings').doc(docId).set(deepSanitize(payload));
+};
+
+export const unlockMonthlyReport = async (clinicId: string, yearMonth: string) => {
+    const docId = `${clinicId}_${yearMonth}`;
+    await db.collection('monthly_closings').doc(docId).update({
+        isLocked: false,
+        unlockedAt: new Date().toISOString()
     });
 };
 

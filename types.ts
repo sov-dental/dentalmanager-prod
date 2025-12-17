@@ -359,6 +359,17 @@ export interface NPRecord {
     updatedAt: any;
 }
 
+export interface MonthlyClosing {
+    clinicId: string;
+    month: string; // YYYY-MM
+    isLocked: boolean;
+    lockedAt?: string;
+    lockedBy?: {
+        uid: string;
+        name: string;
+    };
+}
+
 export interface AppData {
   clinics: Clinic[];
   doctors: Doctor[];

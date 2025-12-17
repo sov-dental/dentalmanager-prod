@@ -219,6 +219,7 @@ export interface AccountingRow {
     labName: string;
     labFee?: number;
     isManual: boolean;
+    isPublicCalendar?: boolean; // NEW: Flag for public calendar events
     isManualName?: boolean;
     attendance?: boolean; // Renamed from isArrived
     startTime?: string;

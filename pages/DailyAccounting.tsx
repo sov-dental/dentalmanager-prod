@@ -25,6 +25,14 @@ interface Props {
   sovReferrals: SOVReferral[];
 }
 
+// Feature: "Clinic Public" Virtual Option
+const PUBLIC_DOCTOR = {
+  id: 'clinic_public',
+  name: '診所 (Public)',
+  avatarText: '診',
+  avatarColor: '#94a3b8' // Slate-400 (Gray)
+};
+
 const InputCell = ({ 
     initialValue, 
     onCommit, 
@@ -141,7 +149,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const { selectedClinicId, selectedClinic } = useClinic();
   const { currentUser, userRole } = useAuth();
   
-  // ... (State definitions remain same) ...
   const [currentDate, setCurrentDate] = useState(getTodayStr());
   
   const [dailyRecord, setDailyRecord] = useState<DailyAccountingRecord | null>(null);
@@ -149,7 +156,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const [expenditures, setExpenditures] = useState<Expenditure[]>([]);
   const [fullStaffList, setFullStaffList] = useState<Consultant[]>([]);
   
-  // New: Store NP Records for Status Colors
   const [todaysNPRecords, setTodaysNPRecords] = useState<Record<string, NPRecord>>({});
   
   const [isLoading, setIsLoading] = useState(false);
@@ -178,7 +184,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       fetchStaff();
   }, [selectedClinicId]);
 
-  // NEW: Real-time listener for NP Records Status
   useEffect(() => {
       if (!selectedClinicId || !currentDate) {
           setTodaysNPRecords({});
@@ -215,7 +220,11 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const activeDoctorsInTable = useMemo(() => {
       const docIds = new Set(rows.map(r => r.doctorId).filter(Boolean));
-      return clinicDocs.filter(d => docIds.has(d.id));
+      const filtered = clinicDocs.filter(d => docIds.has(d.id));
+      if (docIds.has('clinic_public')) {
+          return [{ id: PUBLIC_DOCTOR.id, name: PUBLIC_DOCTOR.name } as any, ...filtered];
+      }
+      return filtered;
   }, [rows, clinicDocs]);
 
   useEffect(() => {
@@ -255,7 +264,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const isLocked = dailyRecord?.isLocked || false;
 
-  // UX Improvement: Sort Daily Report Rows (Calendar First, Manual Last)
   const visibleRows = useMemo(() => {
       let filtered = rows;
       if (filterDoctorId) {
@@ -263,11 +271,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       }
       
       return [...filtered].sort((a, b) => {
-          // Primary Sort: Calendar (isManual === false) first, Manual (isManual === true) second
           if (a.isManual !== b.isManual) {
               return a.isManual ? 1 : -1;
           }
-          // Secondary Sort: Start Time
           return (a.startTime || '').localeCompare(b.startTime || '');
       });
   }, [rows, filterDoctorId]);
@@ -306,6 +312,30 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       };
   }, [rows, expenditures]);
 
+  // --- VALIDATION LOGIC ---
+  const validationErrors = useMemo(() => {
+      const errors: string[] = [];
+      rows.forEach((row, idx) => {
+          const t = row.treatments;
+          const r = row.retail;
+          const totalAmount = (t.regFee||0) + (t.copayment||0) + 
+                           (t.prostho||0) + (t.implant||0) + (t.ortho||0) + (t.sov||0) + (t.inv||0) + (t.perio||0) + (t.whitening||0) + (t.otherSelfPay||0) +
+                           (r.products||0) + (r.diyWhitening||0);
+          
+          if (totalAmount > 0) {
+              const rowErrors: string[] = [];
+              if (!row.patientName?.trim()) rowErrors.push("姓名");
+              if (!row.doctorId) rowErrors.push("醫師");
+              if (!row.paymentMethod) rowErrors.push("付款方式");
+              
+              if (rowErrors.length > 0) {
+                  errors.push(`第 ${idx + 1} 列 (${row.patientName || '未命名'}): 缺少 ${rowErrors.join('、')}`);
+              }
+          }
+      });
+      return errors;
+  }, [rows]);
+
   const getPatientNameClass = (row: AccountingRow) => {
       const base = "text-lg font-bold";
       if (row.isManual) return `${base} text-blue-600`;
@@ -318,11 +348,13 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   };
 
   const getDoctorColor = (docId: string) => {
+      if (docId === 'clinic_public') return PUBLIC_DOCTOR.avatarColor;
       const doc = clinicDocs.find(d => d.id === docId);
       return doc?.avatarBgColor || doc?.color || '#cbd5e1';
   };
 
   const getDoctorAvatarText = (docId: string, docName: string) => {
+      if (docId === 'clinic_public') return PUBLIC_DOCTOR.avatarText;
       const doc = clinicDocs.find(d => d.id === docId);
       if (doc?.avatarText) return doc.avatarText;
       return docName ? docName.substring(0, 2) : '?';
@@ -342,7 +374,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
           const allEvents: any[] = [];
 
-          // 1. Gather all events first to process in parallel
           for (const doc of clinicDocs) {
               const calendarId = mapping[doc.id];
               if (calendarId) {
@@ -355,45 +386,48 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               }
           }
 
-          // 2. Process events with CRM Lookup in parallel
-          const processedRows = await Promise.all(allEvents.map(async ({ event, doc }) => {
+          const publicCalId = mapping['clinic_public'] || mapping['clinic_shared'];
+          if (publicCalId) {
+              const pEvents = await listEvents(publicCalId, start, end);
+              pEvents.forEach(ev => {
+                  if (!existingIds.has(ev.id) && !ev.allDay) {
+                      allEvents.push({ event: ev, isPublic: true });
+                  }
+              });
+          }
+
+          const processedRows = await Promise.all(allEvents.map(async (item) => {
+              const { event, doc, isPublic } = item;
               const parsed = parseCalendarEvent(event.summary);
               if (!parsed) return null;
 
               let lastConsultant = '';
-              let finalChartId = parsed.chartId; // Default to calendar ID (if present)
+              let finalChartId = parsed.chartId;
 
-              // Unified Strict Lookup
-              // If parsed.chartId exists, look up by ID only (Case A).
-              // If parsed.chartId is missing, fallback to Name lookup (Case B).
               try {
                   const profile = await findPatientProfile(selectedClinicId, parsed.name, parsed.chartId);
                   if (profile) {
-                      // Found a CRM match
                       if (profile.lastConsultant) lastConsultant = profile.lastConsultant;
-                      // Sync the canonical Chart ID from CRM (overwrites typo in calendar if match found)
                       if (profile.chartId) finalChartId = profile.chartId;
                   }
               } catch (e) {
                   console.warn("CRM lookup failed", e);
               }
 
-              // Construct the row
               return {
                   ...hydrateRow({}),
                   id: event.id,
                   patientName: parsed.name,
-                  doctorId: doc.id,
-                  doctorName: doc.name,
+                  doctorId: isPublic ? PUBLIC_DOCTOR.id : doc.id,
+                  doctorName: isPublic ? PUBLIC_DOCTOR.name : doc.name,
                   treatmentContent: parsed.treatment,
-                  // FIX: If it's not an NP, the field must be BLANK by default. 
                   npStatus: parsed.isNP ? 'NP' : '',
                   isManual: false,
+                  isPublicCalendar: isPublic || false,
                   attendance: true,
                   startTime: event.start.dateTime || new Date().toISOString(),
                   chartId: finalChartId || undefined,
                   patientStatus: parsed.status,
-                  // @ts-ignore
                   isNP: parsed.isNP,
                   treatments: {
                       ...hydrateRow({}).treatments,
@@ -402,7 +436,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               } as AccountingRow;
           }));
 
-          // Filter out nulls
           processedRows.forEach(row => {
               if (row) newRows.push(row);
           });
@@ -563,30 +596,30 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               });
               
               if (updates.doctorId) {
-                  const doc = clinicDocs.find(d => d.id === updates.doctorId);
-                  if (doc) newRow.doctorName = doc.name;
+                  const val = updates.doctorId;
+                  if (val === 'clinic_public') {
+                      newRow.doctorName = PUBLIC_DOCTOR.name;
+                  } else {
+                      const doc = clinicDocs.find(d => d.id === val);
+                      if (doc) newRow.doctorName = doc.name;
+                  }
               }
 
-              // --- AUTO LEARN SOV REFERRAL ---
               if (updates.labName === 'SOV轉介' && newRow.patientName) {
                   addSOVReferral(selectedClinicId, newRow.patientName).catch(e => console.error(e));
               }
 
-              // --- AUTO SOV LAB LOGIC START ---
               if (updates.treatments && typeof updates.treatments.sov === 'number') {
                   const sovAmount = updates.treatments.sov;
                   if (sovAmount > 0) {
                       const pName = (newRow.patientName || '').trim();
-                      // Check matching referral for this clinic
                       const isReferral = sovReferrals.some(ref => 
                           ref.name.trim() === pName && 
                           ref.clinicId === selectedClinicId
                       );
-                      
                       newRow.labName = isReferral ? "SOV轉介" : "SOV自約";
                   }
               }
-              // --- AUTO SOV LAB LOGIC END ---
 
               diffString = calculateDiff(r, newRow);
               return newRow;
@@ -606,6 +639,12 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const handleLockDay = async () => {
       if (!currentUser || !selectedClinicId) return;
+      
+      // Secondary Validation check before actual write
+      if (validationErrors.length > 0) {
+          throw new Error("Validation failed: Incomplete rows detected.");
+      }
+
       try {
           await lockDailyReport(currentDate, selectedClinicId, rows, { uid: currentUser.uid, name: currentUser.email || 'User' });
       } catch (e) {
@@ -628,7 +667,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           const updatedRows = [...rows];
           
           await Promise.all(updatedRows.map(async (row, idx) => {
-              // Replaced logic: Use findPatientProfile for reliable lookup
               if (!row.chartId && row.patientName) {
                   const patient = await findPatientProfile(selectedClinicId, row.patientName);
                   if (patient && patient.chartId) {
@@ -704,14 +742,12 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                 <ClinicSelector className="border p-2 rounded-lg bg-slate-50 min-w-[150px]" />
                 <div className="flex items-center bg-slate-100 rounded-lg p-1">
                     <button onClick={handlePrevDay} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500"><ChevronLeft size={20}/></button>
-                    
                     <input 
                         type="date" 
                         className="bg-transparent border-none text-center font-bold text-slate-700 outline-none w-32 cursor-pointer" 
                         value={currentDate} 
                         onChange={e => handleSafeDateChange(e.target.value)} 
                     />
-                    
                     <button onClick={handleNextDay} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500"><ChevronRight size={20}/></button>
                 </div>
                 
@@ -829,13 +865,11 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                 {isSyncing ? <Loader2 className="animate-spin" /> : <RefreshCw size={20} />}
                                 同步 Google 日曆
                             </button>
-                            
                             <div className="relative flex py-2 items-center">
                                 <div className="flex-grow border-t border-slate-200"></div>
                                 <span className="flex-shrink-0 mx-4 text-slate-300 text-xs font-bold uppercase">OR</span>
                                 <div className="flex-grow border-t border-slate-200"></div>
                             </div>
-
                             <button 
                                 onClick={handleAddRow}
                                 className="w-full bg-white border-2 border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-800 py-3 px-6 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors"
@@ -853,9 +887,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                             <thead className="bg-gray-50 z-40 shadow-sm font-bold tracking-tight">
                                 <tr className="sticky top-[2px] z-40">
                                     <th className="px-2 py-2 border-r border-gray-200 text-center sticky left-0 bg-gray-50 z-50 min-w-[24px] text-slate-600" rowSpan={2}>#</th>
-                                    
                                     <th className="px-2 py-2 border-r border-gray-200 sticky left-[24px] bg-gray-50 z-50 min-w-[80px] text-left text-slate-600" rowSpan={2}>病歷號</th>
-                                    
                                     <th className="px-2 py-2 border-r border-gray-200 sticky left-[104px] bg-gray-50 z-50 min-w-[100px] text-left text-slate-600" rowSpan={2}>病患姓名</th>
                                     <th className="px-2 py-2 border-r border-gray-200 min-w-[100px] text-right bg-gray-50" rowSpan={2}>
                                         <div className="flex items-center gap-1 justify-end">
@@ -873,7 +905,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                             </div>
                                         </div>
                                     </th>
-                                    
                                     <th colSpan={2} className="px-2 py-1 border-r border-gray-200 border-t-4 border-blue-400 bg-blue-50 text-center text-slate-700">基本費用 (FEES)</th>
                                     <th colSpan={9} className="px-2 py-1 border-r border-gray-200 border-t-4 border-purple-400 bg-purple-50 text-center text-slate-700">自費療程 (TREATMENT)</th>
                                     <th colSpan={4} className="px-2 py-1 border-r border-gray-200 border-t-4 border-orange-400 bg-orange-50 text-center text-slate-700">小金庫 (RETAIL)</th>
@@ -883,7 +914,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                 <tr className="sticky top-[25px] z-30 shadow-sm">
                                     <th className="px-2 py-1 border-r border-blue-100 bg-blue-50 text-slate-700 text-center min-w-[60px]">掛號</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-blue-50 text-slate-700 text-center min-w-[60px]">部分</th>
-                                    
                                     <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">假牙</th>
                                     <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">植牙</th>
                                     <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">矯正</th>
@@ -893,15 +923,12 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                     <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">美白</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-purple-50 text-slate-700 text-center min-w-[70px]">其他</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-purple-50 text-slate-700 text-center min-w-[80px]">諮詢師</th>
-                                    
                                     <th className="px-2 py-1 border-r border-orange-100 bg-orange-50 text-slate-700 text-center min-w-[70px]">小金庫</th>
                                     <th className="px-2 py-1 border-r border-orange-100 bg-orange-50 text-slate-700 text-center min-w-[70px]">物販</th>
                                     <th className="px-2 py-1 border-r border-orange-100 bg-orange-50 text-slate-700 text-center min-w-[100px]">品項</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-orange-50 text-slate-700 text-center min-w-[80px]">經手人</th>
-                                    
                                     <th className="px-2 py-1 border-r border-emerald-100 bg-emerald-50 text-slate-700 text-center min-w-[80px]">實收總計</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-emerald-50 text-slate-700 text-center min-w-[70px]">方式</th>
-                                    
                                     <th className="px-2 py-1 border-r border-gray-200 bg-slate-50 text-slate-500 min-w-[50px]">NP</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-slate-50 text-slate-500 min-w-[120px]">療程內容</th>
                                     <th className="px-2 py-1 border-r border-gray-200 bg-slate-50 text-slate-500 min-w-[100px]">技工所</th>
@@ -923,10 +950,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                         (row.npStatus && typeof row.npStatus === 'string' && row.npStatus.toUpperCase().includes('NP')) ||
                                         ((row as any).note && typeof (row as any).note === 'string' && (row as any).note.toUpperCase().includes('NP'));
 
-                                    // NP Button Color Logic
-                                    // Strictly dependent on np_records state, ignoring row.attendance
                                     const npRec = todaysNPRecords[(row.patientName || '').trim()];
-                                    let btnClass = "bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200"; // Default (Gray)
+                                    let btnClass = "bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200"; 
                                     let btnIcon = <Tag size={12} />;
 
                                     if (npRec) {
@@ -935,7 +960,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                         } else if (npRec.isVisited) {
                                             btnClass = "bg-blue-100 border-blue-200 text-blue-700 hover:bg-blue-200";
                                         }
-                                        // If record exists but neither visited nor closed, it stays Default (Gray)
                                     }
 
                                     return (
@@ -952,7 +976,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                                     <span className="text-[9px] text-slate-400">{idx+1}</span>
                                                 </div>
                                             </td>
-                                            
                                             <td className="px-1 py-1 border-r border-gray-200 sticky left-[24px] bg-white group-hover:bg-blue-50/30 z-30 align-middle">
                                                 <InputCell 
                                                     initialValue={row.chartId} 
@@ -962,7 +985,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                                     disabled={isChartIdLocked}
                                                 />
                                             </td>
-
                                             <td className="px-1 py-1 border-r border-gray-200 sticky left-[104px] bg-white group-hover:bg-blue-50/30 z-30 align-middle">
                                                 <InputCell 
                                                     initialValue={row.patientName} 
@@ -972,15 +994,20 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                                 />
                                             </td>
                                             <td className="px-1 py-1 border-r border-gray-200 text-center align-middle">
-                                                {row.isManual ? (
+                                                {row.isManual || (row as any).isPublicCalendar ? (
                                                     <select 
                                                         className="w-full bg-transparent text-xs outline-none text-slate-700 font-medium text-right"
                                                         dir="rtl"
                                                         value={row.doctorId}
-                                                        onChange={(e) => updateRow(row.id, { doctorId: e.target.value, doctorName: clinicDocs.find(d=>d.id===e.target.value)?.name||'' })}
+                                                        onChange={(e) => {
+                                                            const val = e.target.value;
+                                                            const name = val === 'clinic_public' ? PUBLIC_DOCTOR.name : (clinicDocs.find(d=>d.id===val)?.name||'');
+                                                            updateRow(row.id, { doctorId: val, doctorName: name });
+                                                        }}
                                                         disabled={isLocked}
                                                     >
                                                         <option value="">選醫師</option>
+                                                        <option value="clinic_public">診所 (Public)</option>
                                                         {clinicDocs.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                                                     </select>
                                                 ) : (
@@ -995,14 +1022,12 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                                     </div>
                                                 )}
                                             </td>
-
                                             <td className="px-1 py-1 border-r border-gray-200 bg-blue-50/10">
                                                 <InputCell disabled={isLocked} type="number" align="right" className="text-blue-600 font-mono text-[14px]" initialValue={row.treatments.regFee} onCommit={(v) => updateRow(row.id, { treatments: { regFee: safeNum(v) } })} />
                                             </td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-blue-50/10">
                                                 <InputCell disabled={isLocked} type="number" align="right" className="text-blue-600 font-mono text-[14px]" initialValue={row.treatments.copayment} onCommit={(v) => updateRow(row.id, { treatments: { copayment: safeNum(v) } })} />
                                             </td>
-
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.prostho} onCommit={(v) => updateRow(row.id, { treatments: { prostho: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.implant} onCommit={(v) => updateRow(row.id, { treatments: { implant: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-purple-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-purple-600 font-mono text-[14px]" initialValue={row.treatments.ortho} onCommit={(v) => updateRow(row.id, { treatments: { ortho: safeNum(v) } })} /></td>
@@ -1022,7 +1047,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                                     {consultantOptions.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
                                                 </select>
                                             </td>
-
                                             <td className="px-1 py-1 border-r border-gray-200 bg-orange-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-orange-600 font-mono text-[14px]" initialValue={row.retail.diyWhitening} onCommit={(v) => updateRow(row.id, { retail: { diyWhitening: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-orange-50/10"><InputCell disabled={isLocked} type="number" align="right" className="text-orange-600 font-mono text-[14px]" initialValue={row.retail.products} onCommit={(v) => updateRow(row.id, { retail: { products: safeNum(v) } })} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-orange-50/10"><InputCell disabled={isLocked} initialValue={row.retailItem} onCommit={(v) => updateRow(row.id, { retailItem: v })} placeholder="品項" /></td>
@@ -1037,7 +1061,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                                     {staffOptions.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
                                                 </select>
                                             </td>
-
                                             <td className="px-2 py-1 border-r border-gray-200 bg-emerald-50/10 text-right font-black text-emerald-600 text-lg font-bold">
                                                 {totalAmount > 0 ? totalAmount.toLocaleString() : '-'}
                                             </td>
@@ -1053,7 +1076,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                                     <option value="transfer">TRANS</option>
                                                 </select>
                                             </td>
-
                                             <td className="px-1 py-1 border-r border-gray-200 text-center align-middle">
                                                 {isNP ? (
                                                     <button 
@@ -1137,7 +1159,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                             placeholder="0" 
                         />
                         {!isLocked && (
-                            <button onClick={handleExpenditureChange.bind(null, expenditures.filter((_, i) => i !== idx))} className="text-slate-400 hover:text-rose-500">
+                            <button onClick={() => handleExpenditureChange(expenditures.filter((_, i) => i !== idx))} className="text-slate-400 hover:text-rose-500">
                                 <Trash2 size={14} />
                             </button>
                         )}
@@ -1154,6 +1176,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
             clinicId={selectedClinicId}
             rows={rows}
             totals={{ cash: totals.cashBalance, card: totals.cardRevenue, transfer: totals.transferRevenue, total: totals.totalRevenue }}
+            validationErrors={validationErrors}
         />
 
         <AuditLogModal 

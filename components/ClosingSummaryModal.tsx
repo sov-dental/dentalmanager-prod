@@ -1,20 +1,22 @@
-
 import React, { useState, useEffect } from 'react';
-import { Loader2, Lock, AlertTriangle, CheckCircle } from 'lucide-react';
+import { Loader2, Lock, AlertTriangle, CheckCircle, Info, XCircle } from 'lucide-react';
 import { AccountingRow } from '../types';
 import { checkPreviousUnlocked } from '../services/firebase';
 
 interface Props {
     isOpen: boolean;
     onClose: () => void;
-    onConfirm: () => void;
+    onConfirm: () => Promise<void>;
     date: string;
     clinicId: string;
     rows: AccountingRow[];
     totals: { cash: number; card: number; transfer: number; total: number; };
+    validationErrors?: string[];
 }
 
-export const ClosingSummaryModal: React.FC<Props> = ({ isOpen, onClose, onConfirm, date, clinicId, rows, totals }) => {
+export const ClosingSummaryModal: React.FC<Props> = ({ 
+    isOpen, onClose, onConfirm, date, clinicId, rows, totals, validationErrors = [] 
+}) => {
     const [unlockedDates, setUnlockedDates] = useState<string[]>([]);
     const [checking, setChecking] = useState(true);
     const [isProcessing, setIsProcessing] = useState(false);
@@ -30,51 +32,83 @@ export const ClosingSummaryModal: React.FC<Props> = ({ isOpen, onClose, onConfir
     }, [isOpen, date, clinicId]);
 
     const handleConfirm = async () => {
+        if (validationErrors.length > 0) return;
+        
         setIsProcessing(true);
-        await onConfirm();
-        setIsProcessing(false);
-        onClose();
+        try {
+            await onConfirm();
+            onClose();
+        } catch (e) {
+            console.error("Lock Day Error:", e);
+            // Alert handled by parent or generic mechanism
+        } finally {
+            setIsProcessing(false);
+        }
     };
 
     if (!isOpen) return null;
 
+    const hasErrors = validationErrors.length > 0;
+
     return (
         <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-slide-down">
-                <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-slide-down flex flex-col max-h-[90vh]">
+                <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
                     <h3 className="text-lg font-bold flex items-center gap-2">
                         <Lock size={20} className="text-emerald-400" />
                         日結帳確認 (Closing)
                     </h3>
                 </div>
 
-                <div className="p-6 space-y-6">
-                    {/* 1. Date Check */}
-                    {checking ? (
-                        <div className="text-sm text-slate-500 flex items-center gap-2">
-                            <Loader2 size={14} className="animate-spin" /> 檢查前期帳務中...
-                        </div>
-                    ) : unlockedDates.length > 0 ? (
-                        <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 text-sm text-rose-700">
-                            <div className="font-bold flex items-center gap-2 mb-1">
-                                <AlertTriangle size={16} /> 注意：前期尚未結帳
+                <div className="p-6 space-y-6 overflow-y-auto">
+                    {/* 1. Validation Errors (CRITICAL) */}
+                    {hasErrors && (
+                        <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 animate-fade-in">
+                            <div className="font-bold text-rose-700 flex items-center gap-2 mb-2">
+                                <XCircle size={18} /> 無法結帳：資料不完整
                             </div>
-                            <p>以下日期尚未鎖定，建議依序結帳：</p>
-                            <div className="mt-2 flex flex-wrap gap-1">
-                                {unlockedDates.slice(0, 5).map(d => (
-                                    <span key={d} className="bg-white px-2 py-0.5 rounded border border-rose-200 text-xs font-mono">{d}</span>
+                            <div className="space-y-1.5">
+                                {validationErrors.map((err, i) => (
+                                    <p key={i} className="text-xs text-rose-600 font-medium pl-6 relative">
+                                        <span className="absolute left-0">•</span>
+                                        {err}
+                                    </p>
                                 ))}
-                                {unlockedDates.length > 5 && <span>...等 {unlockedDates.length} 天</span>}
                             </div>
-                        </div>
-                    ) : (
-                        <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-700 flex items-center gap-2">
-                            <CheckCircle size={16} /> 前期帳務皆已鎖定，可安心結帳。
+                            <p className="mt-3 text-[10px] text-rose-500 font-bold bg-white/50 p-2 rounded">
+                                ※ 請先關閉視窗並修正以上紅字標註的項目。
+                            </p>
                         </div>
                     )}
 
-                    {/* 2. Financial Summary */}
-                    <div className="space-y-3">
+                    {/* 2. Date Check */}
+                    {!hasErrors && (
+                        checking ? (
+                            <div className="text-sm text-slate-500 flex items-center gap-2">
+                                <Loader2 size={14} className="animate-spin" /> 檢查前期帳務中...
+                            </div>
+                        ) : unlockedDates.length > 0 ? (
+                            <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 text-sm text-rose-700">
+                                <div className="font-bold flex items-center gap-2 mb-1">
+                                    <AlertTriangle size={16} /> 注意：前期尚未結帳
+                                </div>
+                                <p>以下日期尚未鎖定，建議依序結帳：</p>
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                    {unlockedDates.slice(0, 5).map(d => (
+                                        <span key={d} className="bg-white px-2 py-0.5 rounded border border-rose-200 text-xs font-mono">{d}</span>
+                                    ))}
+                                    {unlockedDates.length > 5 && <span>...等 {unlockedDates.length} 天</span>}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-700 flex items-center gap-2">
+                                <CheckCircle size={16} /> 前期帳務皆已鎖定，可安心結帳。
+                            </div>
+                        )
+                    )}
+
+                    {/* 3. Financial Summary */}
+                    <div className={`space-y-3 ${hasErrors ? 'opacity-40 grayscale pointer-events-none' : ''}`}>
                         <h4 className="text-sm font-bold text-slate-500 uppercase tracking-wider">本日營收總結</h4>
                         <div className="grid grid-cols-2 gap-4">
                             <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
@@ -96,27 +130,34 @@ export const ClosingSummaryModal: React.FC<Props> = ({ isOpen, onClose, onConfir
                         </div>
                     </div>
 
-                    <div className="text-xs text-slate-400 bg-slate-50 p-3 rounded">
-                        <strong>鎖定後：</strong> 財務金額與病患資料將無法修改。資料將同步至 CRM 病歷系統。
-                    </div>
+                    {!hasErrors && (
+                        <div className="text-[11px] text-slate-400 bg-slate-50 p-3 rounded flex items-start gap-2">
+                            <Info size={14} className="mt-0.5 shrink-0" />
+                            <span>
+                                <strong>鎖定後：</strong> 財務金額與病患資料將無法修改。資料將同步至 CRM 病歷系統並紀錄於異動日誌。
+                            </span>
+                        </div>
+                    )}
                 </div>
 
-                <div className="p-4 border-t border-slate-100 flex justify-end gap-3 bg-slate-50">
+                <div className="p-4 border-t border-slate-100 flex justify-end gap-3 bg-slate-50 shrink-0">
                     <button 
                         onClick={onClose} 
-                        className="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg font-medium"
+                        className="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg font-bold transition-colors"
                         disabled={isProcessing}
                     >
-                        取消
+                        {hasErrors ? '返回修改' : '取消'}
                     </button>
-                    <button 
-                        onClick={handleConfirm}
-                        disabled={isProcessing}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2 shadow-md transition-transform active:scale-95 disabled:opacity-50"
-                    >
-                        {isProcessing ? <Loader2 size={18} className="animate-spin" /> : <Lock size={18} />}
-                        確認結帳鎖定
-                    </button>
+                    {!hasErrors && (
+                        <button 
+                            onClick={handleConfirm}
+                            disabled={isProcessing}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2 shadow-md transition-transform active:scale-95 disabled:opacity-50 disabled:grayscale"
+                        >
+                            {isProcessing ? <Loader2 size={18} className="animate-spin" /> : <Lock size={18} />}
+                            確認結帳鎖定
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

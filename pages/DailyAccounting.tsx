@@ -386,7 +386,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                   doctorId: doc.id,
                   doctorName: doc.name,
                   treatmentContent: parsed.treatment,
-                  npStatus: parsed.isNP ? 'NP' : parsed.status,
+                  // FIX: If it's not an NP, the field must be BLANK by default. 
+                  npStatus: parsed.isNP ? 'NP' : '',
                   isManual: false,
                   attendance: true,
                   startTime: event.start.dateTime || new Date().toISOString(),

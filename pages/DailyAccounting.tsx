@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord } from '../types';
-import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientIdByName, findPatientProfile, addSOVReferral } from '../services/firebase';
+import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral } from '../services/firebase';
 import { exportDailyReportToExcel } from '../services/excelExport';
 import { listEvents } from '../services/googleCalendar';
 import { parseCalendarEvent } from '../utils/eventParser';
@@ -616,10 +616,11 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           const updatedRows = [...rows];
           
           await Promise.all(updatedRows.map(async (row, idx) => {
+              // Replaced logic: Use findPatientProfile for reliable lookup
               if (!row.chartId && row.patientName) {
-                  const foundId = await findPatientIdByName(row.patientName, selectedClinicId);
-                  if (foundId) {
-                      updatedRows[idx] = { ...row, chartId: foundId };
+                  const patient = await findPatientProfile(selectedClinicId, row.patientName);
+                  if (patient && patient.chartId) {
+                      updatedRows[idx] = { ...row, chartId: patient.chartId };
                       hasUpdates = true;
                   }
               }

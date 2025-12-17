@@ -1,4 +1,5 @@
 
+
 export type ShiftType = 'Morning' | 'Afternoon' | 'Evening';
 
 export enum DayOfWeek {
@@ -325,6 +326,15 @@ export interface MonthlyTarget {
     revenueTarget: number;
     visitTarget: number;
     selfPayTarget: number;
+}
+
+export interface ClinicMonthlySummary {
+    clinicId: string;
+    clinicName: string;
+    actualRevenue: number;
+    actualVisits: number;
+    actualSelfPay: number;
+    targets: MonthlyTarget;
 }
 
 // NEW: Marketing / NP Record

@@ -3,9 +3,9 @@ import firebase from "firebase/compat/app";
 import "firebase/compat/auth";
 import "firebase/compat/firestore";
 import "firebase/compat/storage";
-import { AppData, DailyAccountingRecord, AccountingRow, TechnicianRecord, MonthlyTarget, Clinic, NHIRecord, SalaryAdjustment, Consultant, InsuranceGrade, User, UserRole, Doctor, Laboratory, SOVReferral, DailySchedule, AuditLogEntry, NPRecord } from '../types';
+import { AppData, DailyAccountingRecord, AccountingRow, TechnicianRecord, MonthlyTarget, Clinic, NHIRecord, SalaryAdjustment, Consultant, InsuranceGrade, User, UserRole, Doctor, Laboratory, SOVReferral, DailySchedule, AuditLogEntry, NPRecord, ClinicMonthlySummary } from '../types';
 
-// --- CONFIGURATION STRATEGY: HOSTNAME BASED ---
+// --- CONFIGURATION STRATEGY: HOSTNAME SWITCHING ---
 
 const devConfig = {
   apiKey: "AIzaSyC77kXgBNUGdyNV-JJ-Lkn5qYNDJwVKSrE", 
@@ -25,9 +25,15 @@ const prodConfig = {
   appId: "1:102873326358:web:86d41907668f845c572637"
 };
 
-const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
+const hostname = window.location.hostname;
+// Check if URL contains '-prod' to identify Production environment
 const isProd = hostname.includes('-prod');
+
+console.log(`[Firebase Init] Hostname: ${hostname}, Environment: ${isProd ? 'PRODUCTION' : 'DEVELOPMENT'}`);
+
 const firebaseConfig = isProd ? prodConfig : devConfig;
+
+if (!firebaseConfig.apiKey) throw new Error("Missing Firebase Config.");
 
 const app = !firebase.apps.length ? firebase.initializeApp(firebaseConfig) : firebase.app();
 
@@ -52,7 +58,6 @@ export const CLINIC_ORDER: Record<string, number> = {
 
 // --- AUTH HELPERS ---
 
-// Updated Login Logic: Sync Permissions on Login
 export const signInWithGoogle = async () => {
   const provider = new firebase.auth.GoogleAuthProvider();
   provider.setCustomParameters({ prompt: 'select_account' });
@@ -64,34 +69,28 @@ export const signInWithGoogle = async () => {
     if (user && user.email) {
       console.log("Checking permissions for:", user.email);
       
-      // 1. Query all clinics where this user is allowed
-      // Note: This relies on the 'allowedUsers' array in each clinic document
       const clinicsRef = db.collection('clinics');
       const q = clinicsRef.where('allowedUsers', 'array-contains', user.email);
       const snapshot = await q.get();
       
-      // CRITICAL FIX: Extract Document IDs, not Names
       const allowedClinicIds = snapshot.docs.map(doc => doc.id);
       console.log("Found authorized clinics (IDs):", allowedClinicIds);
 
-      // 2. Update User Record
       if (allowedClinicIds.length > 0) {
         const userRef = db.collection('users').doc(user.uid);
         const userDoc = await userRef.get();
 
         if (userDoc.exists) {
-            // Update existing user: Merge new IDs into existing array
             await userRef.update({
                 allowedClinics: firebase.firestore.FieldValue.arrayUnion(...allowedClinicIds),
                 lastSyncedAt: new Date().toISOString()
             });
         } else {
-            // Create new user if not exists
             await userRef.set({
                 uid: user.uid,
                 email: user.email,
                 name: user.displayName || user.email.split('@')[0],
-                role: 'staff', // Default role, admin can elevate later
+                role: 'staff',
                 allowedClinics: allowedClinicIds,
                 createdAt: new Date().toISOString(),
                 lastSyncedAt: new Date().toISOString()
@@ -114,16 +113,12 @@ export const onAuthStateChanged = (cb: (user: firebase.User | null) => void) => 
 
 const DOC_ID = 'demo-clinic';
 
-// --- DATA HELPERS --- (Sanitize, Hydrate, Sort, Upload...)
+// --- DATA HELPERS ---
 
-/**
- * Recursively converts undefined values to null to satisfy Firestore requirements.
- * Handles Objects, Arrays, and Primitives.
- */
 export const deepSanitize = (obj: any): any => {
   if (obj === undefined) return null;
   if (obj === null) return null;
-  if (obj instanceof Date) return obj.toISOString(); // Convert Dates to string for consistency
+  if (obj instanceof Date) return obj.toISOString();
   
   if (Array.isArray(obj)) {
     return obj.map(deepSanitize);
@@ -181,7 +176,6 @@ export const getClinics = async (): Promise<Clinic[]> => {
         const snap = await db.collection('clinics').get();
         return snap.docs.map(doc => {
             const data = doc.data();
-            // Safety Check: exclude demo-clinic if it was retrieved (legacy artifact)
             if (doc.id === 'demo-clinic' && !data.name) return null;
             if (!data.name) return null;
             
@@ -204,7 +198,6 @@ export const getClinics = async (): Promise<Clinic[]> => {
 };
 
 export const loadAppData = async (): Promise<AppData> => {
-  // 1. Load Main Doc (Legacy Root for non-clinic settings if any)
   const docRef = db.collection('clinics').doc(DOC_ID);
   const doc = await docRef.get();
   
@@ -217,7 +210,6 @@ export const loadAppData = async (): Promise<AppData> => {
     data = { ...legacyData, clinics: [] };
   }
 
-  // 2. Load Real Clinics Collection (Hybrid)
   const realClinics = await getClinics();
   if (realClinics.length > 0) {
       data.clinics = realClinics;
@@ -233,7 +225,6 @@ export const loadAppData = async (): Promise<AppData> => {
       }
   }
 
-  // 3. Load Staff Profiles Collection
   try {
       const staffSnap = await db.collection('staff_profiles')
           .where('isActive', '==', true)
@@ -250,27 +241,21 @@ export const loadAppData = async (): Promise<AppData> => {
   return data;
 };
 
-// ** Exclude clinics from the legacy demo-clinic save **
 export const saveAppData = async (data: AppData) => {
   const docRef = db.collection('clinics').doc(DOC_ID);
   const { clinics, ...rest } = data; 
-  // Sanitization here is key for global settings
   await docRef.set(deepSanitize(rest), { merge: true });
 };
 
-// ** Single Clinic Save Function (Multi-Document) **
 export const saveClinic = async (clinicData: Partial<Clinic>) => {
     const collectionRef = db.collection('clinics');
-    let docRef;
     
     const isNew = !clinicData.id;
     const id = clinicData.id || collectionRef.doc().id;
-    docRef = collectionRef.doc(id);
+    const docRef = collectionRef.doc(id);
 
-    // Prepare payload with ID ensured
     const payload: any = { ...clinicData, id };
 
-    // Initialize arrays only if creating new to avoid overwriting existing data with empty arrays on partial updates
     if (isNew) {
         if (!payload.doctors) payload.doctors = [];
         if (!payload.schedules) payload.schedules = [];
@@ -278,12 +263,10 @@ export const saveClinic = async (clinicData: Partial<Clinic>) => {
         if (!payload.sovReferrals) payload.sovReferrals = [];
     }
 
-    // SANITIZE: Convert all undefined to null
     const sanitizedPayload = deepSanitize(payload);
 
     await docRef.set(sanitizedPayload, { merge: true });
 
-    // Permission Sync logic
     if (clinicData.allowedUsers && clinicData.allowedUsers.length > 0) {
         const usersRef = db.collection('users');
         const targetClinicId = id; 
@@ -295,7 +278,6 @@ export const saveClinic = async (clinicData: Partial<Clinic>) => {
                 const userData = userDoc.data();
                 const currentAllowed = userData.allowedClinics || [];
                 
-                // Add ID if not present
                 if (!currentAllowed.includes(targetClinicId)) {
                     await userDoc.ref.update({
                         allowedClinics: firebase.firestore.FieldValue.arrayUnion(targetClinicId)
@@ -314,7 +296,6 @@ export const updateClinicCalendarMapping = async (clinicId: string, mapping: Rec
 };
 
 export const saveDoctors = async (clinicId: string, doctors: Doctor[]) => {
-    // Sanitize the entire array structure
     const sanitizedDoctors = deepSanitize(doctors);
     await db.collection('clinics').doc(clinicId).update({ doctors: sanitizedDoctors });
 };
@@ -347,7 +328,6 @@ export const addSOVReferral = async (clinicId: string, patientName: string) => {
             const data = doc.data();
             const currentReferrals: SOVReferral[] = data?.sovReferrals || [];
             
-            // Check for duplicate name
             if (currentReferrals.some(r => r.name.trim() === patientName.trim())) {
                 return;
             }
@@ -367,7 +347,6 @@ export const addSOVReferral = async (clinicId: string, patientName: string) => {
     }
 };
 
-// ... (Rest of the file remains unchanged, omitted for brevity but preserved) ...
 // --- NEW COLLECTIONS ---
 
 export const getStaffList = async (clinicId: string): Promise<Consultant[]> => {
@@ -439,11 +418,10 @@ export const saveDailyAccounting = async (record: DailyAccountingRecord, auditEn
     }
     await db.collection('daily_accounting').doc(docId).set(payload, { merge: true });
 
-    // Update CRM Patient Records
+    // Update CRM Patient Records (Sync)
     const updates = record.rows.filter(r => r.patientName).map(r => {
-        // Extract consultant from row to update CRM
         const consultantName = r.treatments.consultant || r.retail.staff || undefined;
-        return upsertPatientFromEvent(record.clinicId, {
+        return upsertPatient(record.clinicId, {
             chartId: r.chartId || null,
             name: r.patientName,
             lastVisitDate: record.date,
@@ -485,7 +463,6 @@ export const getTechnicianRecords = async (clinicId: string, labName: string | n
     const snap = await query.get();
     let results = snap.docs.map(d => ({ id: d.id, ...d.data() } as TechnicianRecord));
     
-    // Client-side filtering if labName is provided
     if (labName) {
         results = results.filter(r => r.labName === labName);
     }
@@ -502,15 +479,6 @@ export const deleteTechnicianRecord = async (id: string) => {
 };
 
 // 7. Dashboard & BI
-export interface ClinicMonthlySummary {
-    clinicId: string;
-    clinicName: string;
-    actualRevenue: number;
-    actualVisits: number;
-    actualSelfPay: number;
-    targets: MonthlyTarget;
-}
-
 export const fetchDashboardSnapshot = async (clinics: Clinic[], month: string): Promise<{
     current: ClinicMonthlySummary[],
     lastMonth: ClinicMonthlySummary[],
@@ -626,11 +594,12 @@ export interface Patient {
     chartId: string | null;
     name: string;
     lastVisit: string;
-    purchasedItems?: string[]; // Auto-generated from Payment Records
-    visitHistory?: any[];     // Optional full history
+    purchasedItems?: string[]; 
+    visitHistory?: any[];     
     totalSpending?: number;
-    aliases?: string[]; // Added: For Smart Search
-    lastConsultant?: string; // New: Last Assigned Consultant
+    // aliases removed
+    lastConsultant?: string;
+    pastConsultants?: string[];
     updatedAt?: any;
 }
 
@@ -640,7 +609,6 @@ export const getMarketingTags = async (): Promise<string[]> => {
     if (doc.exists) {
         return (doc.data()?.tags || []);
     }
-    // Default Tags if not found
     return ['植牙', '矯正', '貼片/美白', '牙周', '一般健保', '其他'];
 };
 
@@ -650,9 +618,8 @@ export const saveMarketingTags = async (tags: string[]) => {
 
 // --- NEW: NP RECORDS HELPERS (For Dashboard) ---
 export const getNPRecordsRange = async (clinicId: string, startStr: string, endStr: string): Promise<NPRecord[]> => {
-    // Note: NP Records ID format is `clinicId_date_patientName`
     const startId = `${clinicId}_${startStr}`;
-    const endId = `${clinicId}_${endStr}\uf8ff`; // \uf8ff ensures we get everything starting with the date
+    const endId = `${clinicId}_${endStr}\uf8ff`; 
 
     const snap = await db.collection('np_records')
         .where(firebase.firestore.FieldPath.documentId(), '>=', startId)
@@ -670,7 +637,7 @@ export const saveNPRecord = async (record: NPRecord) => {
     const payload = JSON.parse(JSON.stringify({ 
         ...record, 
         id,
-        updatedAt: new Date().toISOString() // Use ISO string for safety
+        updatedAt: new Date().toISOString()
     }));
 
     await docRef.set(deepSanitize(payload), { merge: true });
@@ -722,44 +689,33 @@ export const getPatients = async (clinicId: string, lastDoc?: any, searchTerm?: 
 };
 
 export const findPatientIdByName = async (name: string, clinicId: string): Promise<string | null> => {
-    const q1 = await db.collection('patients')
+    const q = await db.collection('patients')
         .where('clinicId', '==', clinicId)
         .where('name', '==', name)
         .limit(1)
         .get();
-    
-    if (!q1.empty) return q1.docs[0].data().chartId || null;
-
-    const q2 = await db.collection('patients')
-        .where('clinicId', '==', clinicId)
-        .where('aliases', 'array-contains', name)
-        .limit(1)
-        .get();
-
-    if (!q2.empty) return q2.docs[0].data().chartId || null;
-
+    if (!q.empty) {
+        const data = q.docs[0].data() as Patient;
+        return data.chartId || null;
+    }
     return null;
-}
+};
 
-// New: Find full patient profile STRICT MODE
 export const findPatientProfile = async (clinicId: string, name: string, chartId?: string | null): Promise<Patient | null> => {
-    
-    // Case A: Strict ID Lookup (Data Integrity Rule)
+    // Case A: Strict ID Lookup
     if (chartId) {
-        // Construct standard Doc ID: clinicId_chartId
-        // If chartId exists in Calendar, we MUST respect it. 
-        // If query fails, it's either a new patient (NP) or a wrong ID. 
-        // We do NOT fallback to Name to avoid incorrect merging.
-        const docId = `${clinicId}_${chartId}`;
+        const safeName = name.replace(/[\/\s]/g, '_');
+        const docId = `${clinicId}_${chartId}_${safeName}`;
         const doc = await db.collection('patients').doc(docId).get();
         if (doc.exists) {
             return { docId: doc.id, ...doc.data() } as Patient;
         }
-        return null; // ID provided but not found -> Stop.
+        return null;
     }
 
-    // Case B: Name Lookup (Fallback only if Chart ID is missing)
-    // 1. Exact Name Match
+    // Case B: Name Lookup (If Chart ID missing, we might match based on Name only,
+    // but the ID structure requires ChartID. If ChartID is 'NP', we look for that.)
+    // For pure name search without ID, we must query the collection.
     const q1 = await db.collection('patients')
         .where('clinicId', '==', clinicId)
         .where('name', '==', name)
@@ -768,135 +724,125 @@ export const findPatientProfile = async (clinicId: string, name: string, chartId
     
     if (!q1.empty) return { docId: q1.docs[0].id, ...q1.docs[0].data() } as Patient;
 
-    // 2. Alias Match (Optional robustness)
-    const q2 = await db.collection('patients')
+    return null;
+}
+
+export const findPatientProfileById = async (clinicId: string, chartId: string): Promise<Patient | null> => {
+    // This is hard with composite key unless we query
+    const q = await db.collection('patients')
         .where('clinicId', '==', clinicId)
-        .where('aliases', 'array-contains', name)
+        .where('chartId', '==', chartId)
         .limit(1)
         .get();
-
-    if (!q2.empty) return { docId: q2.docs[0].id, ...q2.docs[0].data() } as Patient;
-
+        
+    if (!q.empty) return { docId: q.docs[0].id, ...q.docs[0].data() } as Patient;
     return null;
 }
 
-// New: Find full patient profile by ID
-export const findPatientProfileById = async (clinicId: string, chartId: string): Promise<Patient | null> => {
-    const docId = `${clinicId}_${chartId}`;
-    const doc = await db.collection('patients').doc(docId).get();
-    if (doc.exists) return { docId: doc.id, ...doc.data() } as Patient;
-    return null;
-}
-
-export const upsertPatientFromEvent = async (
+// Updated Upsert Logic: Composite Key & Remove Aliases
+export const upsertPatient = async (
     clinicId: string, 
-    event: { 
+    data: { 
         chartId: string | null, 
         name: string, 
         lastVisitDate: string,
-        consultant?: string // Optional consultant from event
+        consultant?: string
     }
 ) => {
-    if (!clinicId || !event.name) return;
-    let docId = '';
-    if (event.chartId) {
-        docId = `${clinicId}_${event.chartId}`;
-    } else {
-        docId = `${clinicId}_NAME_${event.name.replace(/\s+/g, '_')}`;
-    }
+    if (!clinicId || !data.name) return;
+    
+    const safeName = data.name.replace(/[\/\s]/g, '_');
+    const safeId = data.chartId || 'NP';
+    const docId = `${clinicId}_${safeId}_${safeName}`;
+    
     const docRef = db.collection('patients').doc(docId);
     
-    const docSnap = await docRef.get();
-    
-    if (docSnap.exists) {
-        const existing = docSnap.data() as Patient;
-        const updateData: any = {
-            clinicId,
-            chartId: event.chartId || null,
-            lastVisit: (event.lastVisitDate > existing.lastVisit) ? event.lastVisitDate : existing.lastVisit,
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        };
+    const payload: any = {
+        clinicId,
+        chartId: data.chartId, // can be null in field, but ID has 'NP'
+        name: data.name,
+    };
 
-        if (existing.name !== event.name) {
-            updateData.name = event.name;
-            const oldAliases = existing.aliases || [];
-            if (!oldAliases.includes(existing.name)) {
-                updateData.aliases = firebase.firestore.FieldValue.arrayUnion(existing.name);
+    try {
+        await db.runTransaction(async (t) => {
+            const doc = await t.get(docRef);
+            if (doc.exists) {
+                const existing = doc.data() as Patient;
+                const newVisit = data.lastVisitDate;
+                const oldVisit = existing.lastVisit || '';
+                
+                const update: any = {
+                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                
+                if (newVisit > oldVisit) {
+                    update.lastVisit = newVisit;
+                }
+                if (data.consultant) {
+                    update.lastConsultant = data.consultant;
+                    update.pastConsultants = firebase.firestore.FieldValue.arrayUnion(data.consultant);
+                }
+                
+                t.set(docRef, deepSanitize(update), { merge: true });
+            } else {
+                payload.lastVisit = data.lastVisitDate;
+                payload.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+                if (data.consultant) {
+                    payload.lastConsultant = data.consultant;
+                    payload.pastConsultants = [data.consultant];
+                }
+                payload.visitHistory = [];
+                payload.purchasedItems = [];
+                payload.pastConsultants = data.consultant ? [data.consultant] : [];
+                
+                t.set(docRef, deepSanitize(payload));
             }
-        }
-        
-        // Update Consultant if provided
-        if (event.consultant) {
-            updateData.lastConsultant = event.consultant;
-        }
-
-        await docRef.update(deepSanitize(updateData));
-    } else {
-        const newData: any = {
-            clinicId,
-            chartId: event.chartId || null,
-            name: event.name,
-            lastVisit: event.lastVisitDate,
-            aliases: [],
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        };
-        
-        if (event.consultant) {
-            newData.lastConsultant = event.consultant;
-        }
-
-        await docRef.set(deepSanitize(newData));
+        });
+    } catch (e) {
+        console.error("Upsert patient failed", e);
     }
 };
 
-// SMART MERGE LOGIC
+// Simplified Migration: Move Data, No Alias Merging
 export const migratePatientId = async (oldDocId: string, newChartId: string, clinicId: string) => {
     const oldRef = db.collection('patients').doc(oldDocId);
     const oldSnap = await oldRef.get();
-    
     if (!oldSnap.exists) throw new Error("Patient not found");
     const oldData = oldSnap.data() as Patient;
 
-    // Target Doc ID
-    const newDocId = `${clinicId}_${newChartId}`;
+    const safeName = oldData.name.replace(/[\/\s]/g, '_');
+    const safeId = newChartId || 'NP';
+    const newDocId = `${clinicId}_${safeId}_${safeName}`;
     const newRef = db.collection('patients').doc(newDocId);
-    const newSnap = await newRef.get();
 
-    if (newSnap.exists) {
-        const newData = newSnap.data() as Patient;
-        const mergedPurchased = Array.from(new Set([...(newData.purchasedItems || []), ...(oldData.purchasedItems || [])]));
-        const mergedHistory = [...(newData.visitHistory || []), ...(oldData.visitHistory || [])];
-        const lastVisit = (newData.lastVisit > oldData.lastVisit) ? newData.lastVisit : oldData.lastVisit;
-        const totalSpending = (newData.totalSpending || 0) + (oldData.totalSpending || 0);
-        // Take the latest valid consultant
-        const lastConsultant = newData.lastConsultant || oldData.lastConsultant;
-
-        let aliases = newData.aliases || [];
-        if (oldData.name !== newData.name && !aliases.includes(oldData.name)) {
-            aliases.push(oldData.name);
+    await db.runTransaction(async (t) => {
+        const newSnap = await t.get(newRef);
+        let newData = {};
+        
+        if (newSnap.exists) {
+            // Merge logic
+            const existing = newSnap.data() as Patient;
+            newData = {
+                ...existing,
+                totalSpending: (existing.totalSpending || 0) + (oldData.totalSpending || 0),
+                visitHistory: [...(existing.visitHistory || []), ...(oldData.visitHistory || [])],
+                purchasedItems: Array.from(new Set([...(existing.purchasedItems || []), ...(oldData.purchasedItems || [])])),
+                // Keep latest visit
+                lastVisit: (existing.lastVisit > oldData.lastVisit) ? existing.lastVisit : oldData.lastVisit,
+                pastConsultants: Array.from(new Set([...(existing.pastConsultants || []), ...(oldData.pastConsultants || [])]))
+            };
+        } else {
+            // Move logic
+            newData = {
+                ...oldData,
+                chartId: newChartId,
+                docId: newDocId 
+            };
         }
-        if (oldData.aliases) {
-            aliases = [...new Set([...aliases, ...oldData.aliases])];
-        }
-
-        await newRef.update(deepSanitize({
-            purchasedItems: mergedPurchased,
-            visitHistory: mergedHistory,
-            lastVisit,
-            totalSpending,
-            aliases,
-            lastConsultant,
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        }));
-    } else {
-        await newRef.set(deepSanitize({
-            ...oldData,
-            chartId: newChartId,
-            docId: newDocId,
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        }));
-    }
-    await oldRef.delete();
+        
+        t.set(newRef, deepSanitize(newData), { merge: true });
+        t.delete(oldRef);
+    });
 };
 
 export const getPatientHistory = async (clinicId: string, name: string, chartId: string | null) => {
@@ -920,8 +866,9 @@ export const getPatientHistory = async (clinicId: string, name: string, chartId:
         
         data.rows.forEach(row => {
             let match = false;
-            if (chartId && row.chartId === chartId) match = true;
-            else if (row.patientName === name) match = true;
+            // Match logic based on Name + ID if available
+            if (chartId && row.chartId === chartId && row.patientName === name) match = true;
+            else if (!chartId && row.patientName === name) match = true;
 
             if (match) {
                 history.push({
@@ -973,17 +920,18 @@ const extractPurchasedItems = (row: AccountingRow): string[] => {
     if (t.whitening > 0) items.push('美白');
     if (t.perio > 0) items.push('牙周');
     
-    // Retail
     if (row.retail.products > 0) items.push('物販');
     if (row.retail.diyWhitening > 0) items.push('小金庫');
 
     return items;
 };
 
+// Refactored lockDailyReport: Group by Composite Key
 export const lockDailyReport = async (date: string, clinicId: string, rows: AccountingRow[], user: {uid: string, name: string}) => {
     const docId = `${clinicId}_${date}`;
     const batch = db.batch();
     
+    // 1. Lock Daily Record
     const dailyRef = db.collection('daily_accounting').doc(docId);
     batch.update(dailyRef, deepSanitize({
         isLocked: true,
@@ -995,71 +943,73 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
         })
     }));
 
-    const rowPromises = rows.map(async (row) => {
-        let patientDocId = '';
-        if (row.chartId) {
-            patientDocId = `${clinicId}_${row.chartId}`;
-        } else {
-            patientDocId = `${clinicId}_NAME_${row.patientName.replace(/\s+/g, '_')}`;
-        }
-        const ref = db.collection('patients').doc(patientDocId);
-        const snap = await ref.get();
-        return { row, ref, snap };
+    // 2. Group by Composite Key (ChartID + Name)
+    const groups: Record<string, AccountingRow[]> = {};
+    rows.forEach(r => {
+        const cId = r.chartId || 'NP';
+        const name = r.patientName || 'Unknown';
+        const key = `${cId}_${name}`;
+        if(!groups[key]) groups[key] = [];
+        groups[key].push(r);
     });
 
-    const results = await Promise.all(rowPromises);
-
-    for (const { row, ref, snap } of results) {
-        const visitSummary = {
-            date,
-            doctor: row.doctorName,
-            treatment: row.treatmentContent || '',
-            amount: row.actualCollected || 0
-        };
-
-        const purchased = extractPurchasedItems(row);
-        const rowConsultant = row.treatments.consultant || row.retail.staff;
-
-        let updateData: any = {
-            clinicId,
-            chartId: row.chartId || null,
-            visitHistory: firebase.firestore.FieldValue.arrayUnion(visitSummary),
-            totalSpending: firebase.firestore.FieldValue.increment(row.actualCollected || 0),
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        };
-
-        if (purchased.length > 0) {
-            updateData.purchasedItems = firebase.firestore.FieldValue.arrayUnion(...purchased);
-        }
+    // 3. Upsert Grouped Patients
+    for (const key in groups) {
+        const groupRows = groups[key];
+        const representative = groupRows[0]; 
+        const chartId = representative.chartId || null; 
+        const name = representative.patientName;
         
-        if (rowConsultant) {
-            updateData.lastConsultant = rowConsultant;
+        // Aggregate Visit Data
+        const visitSummaries = groupRows.map(r => ({
+            date,
+            doctor: r.doctorName,
+            treatment: r.treatmentContent || '',
+            amount: r.actualCollected || 0
+        }));
+        
+        const purchasedItems = new Set<string>();
+        const consultants = new Set<string>();
+        let totalSpend = 0;
+
+        groupRows.forEach(r => {
+            extractPurchasedItems(r).forEach(i => purchasedItems.add(i));
+            const c = r.treatments.consultant || r.retail.staff;
+            if(c) consultants.add(c);
+            totalSpend += (r.actualCollected || 0);
+        });
+
+        // Generate Document ID using Composite Logic
+        const safeName = name.replace(/[\/\s]/g, '_');
+        const safeId = chartId || 'NP';
+        const patientDocId = `${clinicId}_${safeId}_${safeName}`;
+        const patientRef = db.collection('patients').doc(patientDocId);
+
+        const updateData: any = {
+            clinicId,
+            chartId: chartId === 'NP' ? null : chartId,
+            name: name,
+            lastVisit: date,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            // Append History
+            visitHistory: firebase.firestore.FieldValue.arrayUnion(...visitSummaries),
+            totalSpending: firebase.firestore.FieldValue.increment(totalSpend)
+        };
+
+        if (purchasedItems.size > 0) {
+            updateData.purchasedItems = firebase.firestore.FieldValue.arrayUnion(...Array.from(purchasedItems));
+        }
+        if (consultants.size > 0) {
+            const consArr = Array.from(consultants);
+            updateData.pastConsultants = firebase.firestore.FieldValue.arrayUnion(...consArr);
+            // Set last consultant to last non-empty one found
+            const lastCons = consArr.pop();
+            if (lastCons) {
+                updateData.lastConsultant = lastCons;
+            }
         }
 
-        if (snap.exists) {
-            const existing = snap.data() as Patient;
-            
-            if (existing.name !== row.patientName) {
-                updateData.name = row.patientName;
-                const oldAliases = existing.aliases || [];
-                if (!oldAliases.includes(existing.name)) {
-                    updateData.aliases = firebase.firestore.FieldValue.arrayUnion(existing.name);
-                }
-            } else {
-                updateData.name = row.patientName; 
-            }
-            
-            if (!existing.lastVisit || date >= existing.lastVisit) {
-                updateData.lastVisit = date;
-            }
-
-            batch.set(ref, deepSanitize(updateData), { merge: true });
-        } else {
-            updateData.name = row.patientName;
-            updateData.lastVisit = date;
-            updateData.aliases = [];
-            batch.set(ref, deepSanitize(updateData), { merge: true });
-        }
+        batch.set(patientRef, deepSanitize(updateData), { merge: true });
     }
 
     await batch.commit();

@@ -21,6 +21,7 @@ import { MonthlyReport } from './components/MonthlyReport';
 import { ExportView } from './components/ExportView';
 import { GroupDashboard } from './pages/GroupDashboard';
 import { PatientManager } from './pages/PatientManager'; 
+import { VersionChecker } from './components/VersionChecker';
 import { 
   loadAppData, 
   saveAppData, 
@@ -295,6 +296,7 @@ const App: React.FC = () => {
   return (
     <HashRouter>
       <ClinicProvider clinics={data.clinics}>
+        <VersionChecker />
         <Layout 
           saveStatus={'saved'} 
           onRetrySave={() => {}}

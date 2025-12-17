@@ -115,10 +115,19 @@ const DOC_ID = 'demo-clinic';
 
 // --- DATA HELPERS ---
 
+/**
+ * Enhanced deepSanitize to handle Firestore FieldValue correctly.
+ * If we don't exclude FieldValue, it gets treated as a plain object and corrupted.
+ */
 export const deepSanitize = (obj: any): any => {
   if (obj === undefined) return null;
   if (obj === null) return null;
   if (obj instanceof Date) return obj.toISOString();
+  
+  // CRITICAL: Handle Firestore FieldValue specifically
+  if (obj instanceof firebase.firestore.FieldValue) {
+    return obj;
+  }
   
   if (Array.isArray(obj)) {
     return obj.map(deepSanitize);
@@ -412,10 +421,14 @@ export const loadDailyAccounting = async (clinicId: string, date: string): Promi
 
 export const saveDailyAccounting = async (record: DailyAccountingRecord, auditEntry?: AuditLogEntry) => {
     const docId = `${record.clinicId}_${record.date}`;
-    const payload: any = deepSanitize(record);
+    const { auditLog, ...otherData } = record;
+    
+    const payload: any = deepSanitize(otherData);
+    
     if (auditEntry) {
         payload.auditLog = firebase.firestore.FieldValue.arrayUnion(deepSanitize(auditEntry));
     }
+    
     await db.collection('daily_accounting').doc(docId).set(payload, { merge: true });
 
     // Update CRM Patient Records (Sync)
@@ -931,17 +944,19 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
     const docId = `${clinicId}_${date}`;
     const batch = db.batch();
     
-    // 1. Lock Daily Record
+    // 1. Lock Daily Record using additive audit entry
     const dailyRef = db.collection('daily_accounting').doc(docId);
-    batch.update(dailyRef, deepSanitize({
+    const lockLogEntry = {
+        timestamp: new Date().toISOString(),
+        userId: user.uid,
+        userName: user.name,
+        action: 'LOCK'
+    };
+    
+    batch.update(dailyRef, {
         isLocked: true,
-        auditLog: firebase.firestore.FieldValue.arrayUnion({
-            timestamp: new Date().toISOString(),
-            userId: user.uid,
-            userName: user.name,
-            action: 'LOCK'
-        })
-    }));
+        auditLog: firebase.firestore.FieldValue.arrayUnion(deepSanitize(lockLogEntry))
+    });
 
     // 2. Group by Composite Key (ChartID + Name)
     const groups: Record<string, AccountingRow[]> = {};
@@ -1017,15 +1032,17 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
 
 export const unlockDailyReport = async (date: string, clinicId: string, user: {uid: string, name: string}) => {
     const docId = `${clinicId}_${date}`;
-    await db.collection('daily_accounting').doc(docId).update(deepSanitize({
+    const unlockLogEntry = {
+        timestamp: new Date().toISOString(),
+        userId: user.uid,
+        userName: user.name,
+        action: 'UNLOCK'
+    };
+    
+    await db.collection('daily_accounting').doc(docId).update({
         isLocked: false,
-        auditLog: firebase.firestore.FieldValue.arrayUnion({
-            timestamp: new Date().toISOString(),
-            userId: user.uid,
-            userName: user.name,
-            action: 'UNLOCK'
-        })
-    }));
+        auditLog: firebase.firestore.FieldValue.arrayUnion(deepSanitize(unlockLogEntry))
+    });
 };
 
 export const seedTestEnvironment = async () => {

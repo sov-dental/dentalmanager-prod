@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord } from '../types';
 import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral } from '../services/firebase';
@@ -256,9 +255,21 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const isLocked = dailyRecord?.isLocked || false;
 
+  // UX Improvement: Sort Daily Report Rows (Calendar First, Manual Last)
   const visibleRows = useMemo(() => {
-      if (!filterDoctorId) return rows;
-      return rows.filter(r => r.doctorId === filterDoctorId);
+      let filtered = rows;
+      if (filterDoctorId) {
+          filtered = rows.filter(r => r.doctorId === filterDoctorId);
+      }
+      
+      return [...filtered].sort((a, b) => {
+          // Primary Sort: Calendar (isManual === false) first, Manual (isManual === true) second
+          if (a.isManual !== b.isManual) {
+              return a.isManual ? 1 : -1;
+          }
+          // Secondary Sort: Start Time
+          return (a.startTime || '').localeCompare(b.startTime || '');
+      });
   }, [rows, filterDoctorId]);
 
   const totals = useMemo(() => {
@@ -1125,7 +1136,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                             placeholder="0" 
                         />
                         {!isLocked && (
-                            <button onClick={() => handleExpenditureChange(expenditures.filter((_, i) => i !== idx))} className="text-slate-400 hover:text-rose-500">
+                            <button onClick={handleExpenditureChange.bind(null, expenditures.filter((_, i) => i !== idx))} className="text-slate-400 hover:text-rose-500">
                                 <Trash2 size={14} />
                             </button>
                         )}

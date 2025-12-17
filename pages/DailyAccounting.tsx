@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord } from '../types';
 import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral } from '../services/firebase';
@@ -422,6 +423,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                   doctorName: isPublic ? PUBLIC_DOCTOR.name : doc.name,
                   treatmentContent: parsed.treatment,
                   npStatus: parsed.isNP ? 'NP' : '',
+                  paymentMethod: 'cash',
+                  paymentBreakdown: { cash: 0, card: 0, transfer: 0 },
                   isManual: false,
                   isPublicCalendar: isPublic || false,
                   attendance: true,
@@ -464,6 +467,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           startTime: new Date().toISOString(),
           chartId: null,
           patientStatus: '',
+          paymentMethod: 'cash',
           paymentBreakdown: { cash: 0, card: 0, transfer: 0 }
       };
       const updated = [...rows, newRow];

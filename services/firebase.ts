@@ -1,4 +1,3 @@
-
 import firebase from "firebase/compat/app";
 import "firebase/compat/auth";
 import "firebase/compat/firestore";
@@ -501,7 +500,10 @@ export const fetchDashboardSnapshot = async (clinics: Clinic[], month: string): 
         
         for (const clinic of clinics) {
             const targetDoc = await db.collection('monthly_targets').doc(`${clinic.id}_${m}`).get();
-            const targets = targetDoc.exists ? targetDoc.data() as MonthlyTarget : { revenueTarget: 0, visitTarget: 0, selfPayTarget: 0 };
+            // Fix: Added missing properties clinicId and month to the fallback target object to match the MonthlyTarget interface.
+            const targets: MonthlyTarget = targetDoc.exists 
+                ? targetDoc.data() as MonthlyTarget 
+                : { clinicId: clinic.id, month: m, revenueTarget: 0, visitTarget: 0, selfPayTarget: 0 };
 
             const rows = await getMonthlyAccounting(clinic.id, m);
             
@@ -754,7 +756,9 @@ export const deleteNPRecord = async (clinicId: string, date: string, patientName
 export const getNPRecord = async (clinicId: string, date: string, patientName: string) => {
     const safeName = (patientName || 'Unknown').replace(/\s+/g, '_');
     const id = `${clinicId}_${date}_${safeName}`;
-    const doc = await db.collection('np_records').doc(id).get();
+    // Fix: Added docRef definition to resolve "Cannot find name 'docRef'"
+    const docRef = db.collection('np_records').doc(id);
+    const doc = await docRef.get();
     return doc.exists ? doc.data() as NPRecord : null;
 };
 
@@ -882,6 +886,7 @@ export const lockMonthlyReport = async (clinicId: string, yearMonth: string, use
         lockedAt: new Date().toISOString(),
         lockedBy: { uid: user.uid, name: user.name }
     };
+    // Fix: Correctly access the document reference before calling set()
     await db.collection('monthly_closings').doc(docId).set(deepSanitize(payload));
 };
 

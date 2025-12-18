@@ -1,22 +1,22 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Clinic, Consultant, DailySchedule, StaffScheduleConfig } from '../types';
 import { StaffScheduleModal } from './StaffScheduleModal';
 import { ChevronLeft, ChevronRight, RefreshCw, Users, Briefcase, Clock, CalendarDays, Loader2, AlertTriangle } from 'lucide-react';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from './ClinicSelector';
+import { db } from '../services/firebase';
 
 interface Props {
   clinics: Clinic[];
   consultants: Consultant[];
-  schedules: DailySchedule[];
+  schedules: DailySchedule[]; // Prop schedules contains data for ALL clinics
   onSave: (schedules: DailySchedule[]) => Promise<void>;
 }
 
 // Helper: Ensure YYYY-MM-DD format
 const normalizeDate = (d: Date | string): string => {
     if (typeof d === 'string') {
-        // Handle explicit split to avoid timezone issues
         const parts = d.split('-');
         if (parts.length === 3) {
             return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
@@ -29,11 +29,39 @@ const normalizeDate = (d: Date | string): string => {
     return `${year}-${month}-${day}`;
 };
 
-export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, onSave }) => {
+export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: propsSchedules, onSave }) => {
   const { selectedClinicId, selectedClinic } = useClinic();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isImporting, setIsImporting] = useState(false);
   const [modalDateStr, setModalDateStr] = useState<string | null>(null);
+  
+  // Real-time local state for the specific clinic's schedules
+  const [schedules, setSchedules] = useState<DailySchedule[]>([]);
+  const [isDataSyncing, setIsDataSyncing] = useState(false);
+
+  // --- Real-time Listener ---
+  useEffect(() => {
+    if (!selectedClinicId) {
+        setSchedules([]);
+        return;
+    }
+
+    setIsDataSyncing(true);
+    const unsubscribe = db.collection('clinics').doc(selectedClinicId)
+      .onSnapshot((doc) => {
+        if (doc.exists) {
+          const data = doc.data();
+          // We only need the schedules for the current clinic for local calculations
+          setSchedules(data?.schedules || []);
+        }
+        setIsDataSyncing(false);
+      }, (error) => {
+        console.error("Schedule listener error:", error);
+        setIsDataSyncing(false);
+      });
+
+    return () => unsubscribe();
+  }, [selectedClinicId]);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -57,57 +85,63 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
 
   // 2. Lookup Helper (Safe Name Resolution)
   const getStaffName = (id: string) => {
-      const staff = consultants.find(c => c.id === id); // Search globally to prevent missing names if clinicId changed
-      return staff ? staff.name : id; // Fallback to ID if not found
+      const staff = consultants.find(c => c.id === id); 
+      return staff ? staff.name : id; 
   };
 
   // 3. Group by Role
   const groupFullTime = activeConsultants.filter(c => !c.role || ['consultant', 'assistant', 'trainee', 'manager'].includes(c.role));
   const groupPartTime = activeConsultants.filter(c => c.role === 'part_time');
 
-  // 4. Helper to extract config from schedule
+  // 4. Helper to extract config from the local schedules state
   const getStaffConfig = (targetDateStr: string): StaffScheduleConfig => {
       const schedule = schedules.find(s => 
-          normalizeDate(s.date) === targetDateStr && 
-          s.clinicId === selectedClinicId
+          normalizeDate(s.date) === targetDateStr
       );
 
       if (schedule?.staffConfiguration) {
-          return schedule.staffConfiguration;
+          const config = schedule.staffConfiguration;
+          return { 
+            off: config.off || [],
+            leave: config.leave || [],
+            work: config.work || [],
+            overtime: config.overtime || [],
+            late: config.late || [] 
+          };
       }
       
-      // Fallback for legacy data structure
       if (schedule?.consultantOffs) {
           const off = schedule.consultantOffs.filter(id => groupFullTime.some(s => s.id === id));
           const work = groupPartTime.filter(s => !schedule.consultantOffs?.includes(s.id)).map(s => s.id);
-          return { off, leave: [], work, overtime: [] };
+          return { off, leave: [], work, overtime: [], late: [] };
       }
-      return { off: [], leave: [], work: [], overtime: [] };
+      
+      return { off: [], leave: [], work: [], overtime: [], late: [] };
   };
 
-  // --- Statistics Calculation ---
+  // --- Statistics Calculation (Derived from local schedules state) ---
   const stats = useMemo(() => {
-    const fullTimeStats: Record<string, { off: string[], leaveDays: number, sundayOT: number, totalShifts: number }> = {};
-    const partTimeStats: Record<string, { work: string[] }> = {};
+    const fullTimeStats: Record<string, { off: string[], leaveDays: number, sundayOT: number, totalShifts: number, lateCount: number }> = {};
+    const partTimeStats: Record<string, { work: string[], lateCount: number }> = {};
 
-    groupFullTime.forEach(c => fullTimeStats[c.id] = { off: [], leaveDays: 0, sundayOT: 0, totalShifts: 0 });
-    groupPartTime.forEach(c => partTimeStats[c.id] = { work: [] });
+    groupFullTime.forEach(c => fullTimeStats[c.id] = { off: [], leaveDays: 0, sundayOT: 0, totalShifts: 0, lateCount: 0 });
+    groupPartTime.forEach(c => partTimeStats[c.id] = { work: [], lateCount: 0 });
 
     for (let d = 1; d <= daysCount; d++) {
         const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
         const dateObj = new Date(year, month, d);
-        const dayOfWeek = dateObj.getDay(); // 0 is Sunday
+        const dayOfWeek = dateObj.getDay(); 
         
         const config = getStaffConfig(dateStr);
         const dayLabel = String(d);
 
-        // Full Time Stats
         groupFullTime.forEach(c => {
             if (!fullTimeStats[c.id]) return;
 
             const isOff = config.off.includes(c.id);
             const leaveEntry = config.leave.find(l => l.id === c.id);
             const overtimeEntry = config.overtime?.find(o => o.id === c.id);
+            const isLate = (config.late || []).includes(c.id);
 
             if (isOff) {
                 fullTimeStats[c.id].off.push(dayLabel);
@@ -115,15 +149,14 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                 const duration = leaveEntry.type.includes('(半)') ? 0.5 : 1.0;
                 fullTimeStats[c.id].leaveDays += duration;
             } else {
-                // Logic: Working logic
-                if (dayOfWeek === 0) { // Sunday
+                if (isLate) fullTimeStats[c.id].lateCount++;
+
+                if (dayOfWeek === 0) { 
                     if (overtimeEntry) {
                         const otDuration = overtimeEntry.type.includes('(半)') ? 0.5 : 1.0;
                         fullTimeStats[c.id].sundayOT += otDuration;
                         fullTimeStats[c.id].totalShifts += otDuration;
                     } else {
-                        // Implicit full shift if not OFF on Sunday? 
-                        // Assuming yes for now based on previous requirements
                         fullTimeStats[c.id].sundayOT += 1.0;
                         fullTimeStats[c.id].totalShifts += 1.0;
                     }
@@ -133,9 +166,13 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
             }
         });
 
-        // Part Time Stats
         config.work.forEach(id => {
-            if (partTimeStats[id]) partTimeStats[id].work.push(dayLabel);
+            if (partTimeStats[id]) {
+                partTimeStats[id].work.push(dayLabel);
+                if ((config.late || []).includes(id)) {
+                    partTimeStats[id].lateCount++;
+                }
+            }
         });
     }
 
@@ -162,7 +199,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
               return;
           }
 
-          let updatedSchedules = [...schedules];
+          let updatedLocalSchedules = [...schedules];
           const fullTimeIds = groupFullTime.map(c => c.id);
 
           for (let d = 1; d <= daysCount; d++) {
@@ -174,15 +211,16 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                       off: fullTimeIds,
                       leave: [], 
                       work: [],
-                      overtime: [] 
+                      overtime: [],
+                      late: [] 
                   };
 
-                  const existingIdx = updatedSchedules.findIndex(s => s.date === dateStr && s.clinicId === selectedClinicId);
+                  const existingIdx = updatedLocalSchedules.findIndex(s => s.date === dateStr);
                   
                   if (existingIdx >= 0) {
-                      updatedSchedules[existingIdx] = { ...updatedSchedules[existingIdx], staffConfiguration: newConfig };
+                      updatedLocalSchedules[existingIdx] = { ...updatedLocalSchedules[existingIdx], staffConfiguration: newConfig };
                   } else {
-                      updatedSchedules.push({
+                      updatedLocalSchedules.push({
                           date: dateStr,
                           clinicId: selectedClinicId,
                           isClosed: true,
@@ -193,7 +231,9 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
               }
           }
 
-          await onSave(updatedSchedules);
+          // Merge with global prop state to ensure other clinics are not wiped
+          const otherClinicsSchedules = propsSchedules.filter(s => s.clinicId !== selectedClinicId);
+          await onSave([...otherClinicsSchedules, ...updatedLocalSchedules]);
           alert("已成功代入預設休診設定！");
 
       } catch (e) {
@@ -226,7 +266,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
 
             <button 
                 onClick={handleImportDefaults}
-                disabled={isImporting}
+                disabled={isImporting || isDataSyncing}
                 className="flex items-center gap-2 bg-orange-50 text-orange-600 hover:bg-orange-100 px-3 py-2 rounded-lg text-sm font-bold border border-orange-200 transition-colors disabled:opacity-50"
             >
                 {isImporting ? <Loader2 size={16} className="animate-spin"/> : <CalendarDays size={16} />}
@@ -238,10 +278,18 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                 className="p-2 bg-slate-100 hover:bg-teal-50 text-slate-500 hover:text-teal-600 rounded-lg transition-colors"
                 title="重新整理"
             >
-                <RefreshCw size={20} />
+                <RefreshCw size={20} className={isDataSyncing ? 'animate-spin' : ''} />
             </button>
         </div>
       </div>
+
+      {/* Syncing Indicator */}
+      {isDataSyncing && (
+          <div className="flex items-center gap-2 text-teal-600 text-sm font-medium bg-teal-50 px-3 py-1.5 rounded-lg border border-teal-100 w-fit">
+              <Loader2 size={14} className="animate-spin" />
+              正在同步最新排班資料...
+          </div>
+      )}
 
       {/* Missing Data Warning */}
       {consultants.length === 0 && (
@@ -249,7 +297,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
               <AlertTriangle size={24} />
               <div>
                   <h3 className="font-bold">警告：未偵測到人員資料</h3>
-                  <p className="text-sm">請前往「人員管理 (HR)」新增資料，或檢查網路連線。若資料存在但未顯示，請嘗試重新整理頁面。</p>
+                  <p className="text-sm">請前往「人員管理 (HR)」新增資料，或檢查網路連線。</p>
               </div>
           </div>
       )}
@@ -266,11 +314,11 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                  const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                  const config = getStaffConfig(dateStr);
                  
-                 // Use getStaffName helper for rendering
                  const offNames = config.off.map(id => getStaffName(id));
                  const leaveItems = config.leave.map(l => ({ name: getStaffName(l.id), type: l.type }));
                  const workNames = config.work.map(id => getStaffName(id));
                  const overtimeItems = (config.overtime || []).map(o => ({ name: getStaffName(o.id), type: o.type }));
+                 const lateNames = (config.late || []).map(id => getStaffName(id));
 
                  return (
                      <div 
@@ -311,6 +359,15 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
                                      ))}
                                  </div>
                              )}
+                             {lateNames.length > 0 && (
+                                 <div className="flex flex-wrap gap-1">
+                                     {lateNames.map((name, i) => (
+                                         <span key={i} className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded border border-amber-200 font-black truncate">
+                                             遲 {name}
+                                         </span>
+                                     ))}
+                                 </div>
+                             )}
                              {workNames.length > 0 && (
                                  <div className="flex flex-wrap gap-1">
                                      {workNames.map((name, i) => (
@@ -329,88 +386,96 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
 
       {/* Statistics Section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Full Time Stats */}
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
               <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center gap-2">
                   <Briefcase size={20} className="text-teal-600" />
                   <h3 className="font-bold text-slate-800">正職人員統計 (Full-Time Stats)</h3>
               </div>
               <div className="p-4">
-                  <table className="w-full text-sm text-left">
-                      <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-xs">
-                          <tr>
-                              <th className="px-3 py-2">姓名</th>
-                              <th className="px-3 py-2 text-right">週日加班 (天)</th>
-                              <th className="px-3 py-2 text-right">請假天數</th>
-                              <th className="px-3 py-2 text-right">排休天數</th>
-                              <th className="px-3 py-2 text-right">總班數</th>
-                          </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                          {groupFullTime.map(c => {
-                              const s = stats.fullTimeStats[c.id];
-                              if (!s) return null;
-                              return (
-                                  <tr key={c.id} className="hover:bg-slate-50">
-                                      <td className="px-3 py-3 font-bold text-slate-700">{c.name}</td>
-                                      <td className={`px-3 py-3 text-right font-bold ${s.sundayOT > 0 ? 'text-amber-600' : 'text-slate-400'}`}>
-                                          {s.sundayOT}
-                                      </td>
-                                      <td className="px-3 py-3 text-right">
-                                          <div className={`font-bold ${s.leaveDays > 0 ? 'text-purple-600' : 'text-slate-400'}`}>{s.leaveDays}</div>
-                                      </td>
-                                      <td className="px-3 py-3 text-right">
-                                          <div className="font-bold text-slate-600">{s.off.length}</div>
-                                      </td>
-                                      <td className="px-3 py-3 text-right">
-                                          <div className="font-bold text-indigo-600">{s.totalShifts}</div>
-                                      </td>
-                                  </tr>
-                              );
-                          })}
-                          {groupFullTime.length === 0 && <tr><td colSpan={5} className="p-4 text-center text-slate-400">無正職人員 (請檢查 Console Log)</td></tr>}
-                      </tbody>
-                  </table>
+                  <div className="overflow-x-auto">
+                      <table className="w-full text-sm text-left">
+                          <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-xs">
+                              <tr>
+                                  <th className="px-3 py-2">姓名</th>
+                                  <th className="px-3 py-2 text-right">週日加班</th>
+                                  <th className="px-3 py-2 text-right">請假天數</th>
+                                  <th className="px-3 py-2 text-right">遲到 (次)</th>
+                                  <th className="px-3 py-2 text-right">排休天數</th>
+                                  <th className="px-3 py-2 text-right">總班數</th>
+                              </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                              {groupFullTime.map(c => {
+                                  const s = stats.fullTimeStats[c.id];
+                                  if (!s) return null;
+                                  return (
+                                      <tr key={c.id} className="hover:bg-slate-50">
+                                          <td className="px-3 py-3 font-bold text-slate-700">{c.name}</td>
+                                          <td className={`px-3 py-3 text-right font-bold ${s.sundayOT > 0 ? 'text-amber-600' : 'text-slate-400'}`}>
+                                              {s.sundayOT}
+                                          </td>
+                                          <td className="px-3 py-3 text-right">
+                                              <div className={`font-bold ${s.leaveDays > 0 ? 'text-purple-600' : 'text-slate-400'}`}>{s.leaveDays}</div>
+                                          </td>
+                                          <td className="px-3 py-3 text-right">
+                                              <div className={`font-black ${s.lateCount > 0 ? 'text-amber-600' : 'text-slate-300'}`}>{s.lateCount}</div>
+                                          </td>
+                                          <td className="px-3 py-3 text-right">
+                                              <div className="font-bold text-slate-600">{s.off.length}</div>
+                                          </td>
+                                          <td className="px-3 py-3 text-right">
+                                              <div className="font-bold text-indigo-600">{s.totalShifts}</div>
+                                          </td>
+                                      </tr>
+                                  );
+                              })}
+                              {groupFullTime.length === 0 && <tr><td colSpan={6} className="p-4 text-center text-slate-400">無正職人員</td></tr>}
+                          </tbody>
+                      </table>
+                  </div>
               </div>
           </div>
 
-          {/* Part Time Stats */}
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
               <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center gap-2">
                   <Clock size={20} className="text-amber-500" />
                   <h3 className="font-bold text-slate-800">打工人員統計 (Part-time)</h3>
               </div>
               <div className="p-4">
-                  <table className="w-full text-sm text-left">
-                      <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-xs">
-                          <tr>
-                              <th className="px-3 py-2">姓名</th>
-                              <th className="px-3 py-2">上班天數</th>
-                              <th className="px-3 py-2">日期</th>
-                          </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                          {groupPartTime.map(c => {
-                              const s = stats.partTimeStats[c.id];
-                              if (!s) return null;
-                              return (
-                                  <tr key={c.id} className="hover:bg-slate-50">
-                                      <td className="px-3 py-3 font-bold text-slate-700">{c.name}</td>
-                                      <td className="px-3 py-3 font-bold text-amber-600">{s.work.length} 天</td>
-                                      <td className="px-3 py-3 text-xs text-slate-500 break-words max-w-[200px]">
-                                          {s.work.join(', ') || '-'}
-                                      </td>
-                                  </tr>
-                              );
-                          })}
-                          {groupPartTime.length === 0 && <tr><td colSpan={3} className="p-4 text-center text-slate-400">無打工人員 (請檢查 Console Log)</td></tr>}
-                      </tbody>
-                  </table>
+                  <div className="overflow-x-auto">
+                      <table className="w-full text-sm text-left">
+                          <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-xs">
+                              <tr>
+                                  <th className="px-3 py-2">姓名</th>
+                                  <th className="px-3 py-2 text-right">遲到 (次)</th>
+                                  <th className="px-3 py-2 text-right">上班天數</th>
+                                  <th className="px-3 py-2">日期</th>
+                              </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                              {groupPartTime.map(c => {
+                                  const s = stats.partTimeStats[c.id];
+                                  if (!s) return null;
+                                  return (
+                                      <tr key={c.id} className="hover:bg-slate-50">
+                                          <td className="px-3 py-3 font-bold text-slate-700">{c.name}</td>
+                                          <td className="px-3 py-3 text-right font-black text-amber-600">{s.lateCount}</td>
+                                          <td className="px-3 py-3 text-right font-bold text-indigo-600">{s.work.length} 天</td>
+                                          <td className="px-3 py-3 text-xs text-slate-500 break-words max-w-[200px]">
+                                              {s.work.join(', ') || '-'}
+                                          </td>
+                                      </tr>
+                                  );
+                              })}
+                              {groupPartTime.length === 0 && <tr><td colSpan={4} className="p-4 text-center text-slate-400">無打工人員</td></tr>}
+                          </tbody>
+                      </table>
+                  </div>
               </div>
           </div>
       </div>
 
-      {/* Reusable Modal */}
+      {/* Reusable Modal with wrapped onSave to prevent clinic overwriting */}
       <StaffScheduleModal 
           isOpen={!!modalDateStr}
           onClose={() => setModalDateStr(null)}
@@ -418,7 +483,10 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules, o
           clinicId={selectedClinicId}
           schedules={schedules}
           consultants={consultants}
-          onSave={onSave}
+          onSave={async (updatedClinicSchedules) => {
+              const otherClinicsSchedules = propsSchedules.filter(s => s.clinicId !== selectedClinicId);
+              await onSave([...otherClinicsSchedules, ...updatedClinicSchedules]);
+          }}
       />
     </div>
   );

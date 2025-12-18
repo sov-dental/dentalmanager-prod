@@ -1,6 +1,7 @@
 
 
 
+
 export type ShiftType = 'Morning' | 'Afternoon' | 'Evening';
 
 export enum DayOfWeek {
@@ -163,6 +164,8 @@ export interface StaffScheduleConfig {
     leave: { id: string; type: string }[]; // IDs of Consultant/Assistant on Leave
     work: string[]; // IDs of Part-time working
     overtime?: { id: string; type: string }[]; // IDs of Sunday Overtime
+    // Fix: Added late property to track staff who were late
+    late?: string[]; // IDs of staff who were late
 }
 
 export interface DailySchedule {
@@ -323,8 +326,9 @@ export interface SalaryAdjustment {
 
 // NEW: Monthly Target for Dashboard
 export interface MonthlyTarget {
-    clinicId?: string; // Optional context
-    yearMonth?: string; // Optional context
+    id?: string;
+    clinicId: string;
+    month: string; // YYYY-MM
     revenueTarget: number;
     visitTarget: number;
     selfPayTarget: number;

@@ -669,9 +669,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const handleUnlockDay = async () => {
       if (!currentUser || !selectedClinicId) return;
       
-      const canUnlock = ['admin', 'manager', 'team_leader'].includes(userRole || '');
+      const canUnlock = ['admin', 'manager', 'team_leader', 'staff'].includes(userRole || '');
       if (!canUnlock) {
-          alert("權限不足：僅管理員或組長可解鎖");
+          alert("權限不足：您沒有權限執行此操作");
           return;
       }
       if (isMonthLocked) {
@@ -790,7 +790,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                 {saveStatus === 'saved' && <span className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle size={12}/> Saved</span>}
                 {saveStatus === 'error' && <span className="text-xs text-rose-500 flex items-center gap-1"><WifiOff size={12}/> Disconnected</span>}
                 
-                {isLocked && (['admin', 'manager', 'team_leader'].includes(userRole || '')) && (
+                {isLocked && (['admin', 'manager', 'team_leader', 'staff'].includes(userRole || '')) && (
                     <div className="relative group">
                         <button 
                             onClick={handleUnlockDay} 

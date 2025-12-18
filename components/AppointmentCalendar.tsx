@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { Clinic, Doctor, DailySchedule, Consultant, StaffScheduleConfig, Laboratory } from '../types';
 import { listEvents, initGoogleClient, authorizeCalendar, getConnectedCalendarEmail } from '../services/googleCalendar';
 import { parseCalendarEvent } from '../utils/eventParser';
-import { Patient } from '../services/firebase';
+import { Patient, db } from '../services/firebase';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, RefreshCw, Building2, Filter, Briefcase, Check, LayoutGrid, Columns, Search, PlugZap } from 'lucide-react';
 import { StaffScheduleModal } from './StaffScheduleModal';
 import { PatientHistoryModal } from './PatientHistoryModal';
@@ -58,7 +58,7 @@ const toLocalISODate = (date: Date): string => {
 
 const WEEKDAYS_ZH = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
 
-export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consultants = [], schedules = [], onSave }) => {
+export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consultants = [], laboratories = [], schedules: propsSchedules = [], onSave }) => {
   const navigate = useNavigate();
   // Global Clinic State
   const { selectedClinicId, selectedClinic } = useClinic();
@@ -76,6 +76,9 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
   const [connectedEmail, setConnectedEmail] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   
+  // Real-time local state for the specific clinic's schedules
+  const [realtimeSchedules, setRealtimeSchedules] = useState<DailySchedule[]>([]);
+
   // --- View & Filter State ---
   const [viewMode, setViewMode] = useState<'day' | 'week' | 'search'>('day');
   const [showPublicEvents, setShowPublicEvents] = useState(true);
@@ -104,6 +107,32 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
   // Split Staff into Groups
   const groupA = activeClinicStaff.filter(c => !c.role || c.role === 'consultant' || c.role === 'assistant');
   const groupB = activeClinicStaff.filter(c => c.role === 'part_time');
+
+  // Lookup Helper
+  const getStaffName = (id: string) => {
+    const staff = consultants.find(c => c.id === id);
+    return staff ? staff.name : id;
+  };
+
+  // --- Real-time Schedule Listener ---
+  useEffect(() => {
+    if (!selectedClinicId) {
+        setRealtimeSchedules([]);
+        return;
+    }
+
+    const unsubscribe = db.collection('clinics').doc(selectedClinicId)
+      .onSnapshot((doc) => {
+        if (doc.exists) {
+          const data = doc.data();
+          setRealtimeSchedules(data?.schedules || []);
+        }
+      }, (error) => {
+        console.error("Schedule listener error:", error);
+      });
+
+    return () => unsubscribe();
+  }, [selectedClinicId]);
 
   // 1. Init Google Client
   useEffect(() => {
@@ -410,7 +439,8 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
 
   const getStaffStatusString = (date: Date) => {
       const dateStr = toLocalISODate(date);
-      const schedule = schedules.find(s => s.date === dateStr && s.clinicId === selectedClinicId);
+      // Use realtimeSchedules instead of prop to ensure UI stays synced
+      const schedule = realtimeSchedules.find(s => s.date === dateStr);
       
       let config: StaffScheduleConfig;
 
@@ -691,15 +721,7 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
                                             className="p-2 text-center border-r border-slate-200 last:border-0 bg-white shrink-0"
                                             style={COLUMN_WIDTH_STYLE}
                                         >
-                                            <div className="inline-flex flex-col items-center justify-center h-full">
-                                                <div 
-                                                    className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shadow-sm mb-1"
-                                                    style={{ backgroundColor: doc.avatarBgColor || doc.color || '#3b82f6' }}
-                                                >
-                                                    {doc.avatarText || doc.name.charAt(0)}
-                                                </div>
-                                                <span className="text-sm font-bold text-slate-700 truncate max-w-[140px]">{doc.name}</span>
-                                            </div>
+                                            <div className="inline-flex flex-col items-center justify-center h-full"><div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shadow-sm mb-1" style={{ backgroundColor: doc.avatarBgColor || doc.color || '#3b82f6' }}>{doc.avatarText || doc.name.charAt(0)}</div><span className="text-sm font-bold text-slate-700 truncate max-w-[140px]">{doc.name}</span></div>
                                         </div>
                                     ))}
                                 </>
@@ -1034,7 +1056,7 @@ export const AppointmentCalendar: React.FC<Props> = ({ clinics, doctors, consult
             onClose={() => setEditingStaffDate(null)}
             dateStr={editingStaffDate || ''}
             clinicId={selectedClinicId}
-            schedules={schedules}
+            schedules={realtimeSchedules} // Replaced props with realtime state
             consultants={consultants}
             onSave={onSave || (async () => {})}
         />

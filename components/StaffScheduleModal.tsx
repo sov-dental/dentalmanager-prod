@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Consultant, StaffScheduleConfig, DailySchedule } from '../types';
-import { Briefcase, UserMinus, Clock, X, Loader2, Trash, Store, Zap } from 'lucide-react';
+import { Briefcase, UserMinus, Clock, X, Loader2, Store, Zap, AlertCircle } from 'lucide-react';
 import { useClinic } from '../contexts/ClinicContext';
 import { getStaffList } from '../services/firebase';
 
@@ -15,7 +15,7 @@ interface Props {
   onSave: (newSchedules: DailySchedule[]) => Promise<void>;
 }
 
-const LEAVE_TYPES = ['事假', '病假', '特休', '公假', '喪假', '婚假', '產假', '其他'];
+const LEAVE_TYPES = ['事假', '病假', '特休', '公假', '喪假', '婚假', '產假', '其他', '遲到'];
 
 // Shift Options for Dropdown
 const FULL_TIME_OPTIONS = [
@@ -29,7 +29,7 @@ const SUNDAY_OPTIONS = [
     { value: 'off', label: '休假 (Off)', color: 'text-rose-600 font-bold' },
     { value: 'overtime_full', label: '加班 (全)', color: 'text-amber-600 font-bold' },
     { value: 'overtime_half', label: '加班 (半)', color: 'text-amber-600 font-bold' },
-    { value: 'leave_full', label: '請假 (全)', color: 'text-purple-600' }, // Rare but possible
+    { value: 'leave_full', label: '請假 (全)', color: 'text-purple-600' }, 
     { value: 'leave_half', label: '請假 (半)', color: 'text-purple-600' },
 ];
 
@@ -38,7 +38,7 @@ export const StaffScheduleModal: React.FC<Props> = ({
 }) => {
   const { selectedClinicId } = useClinic();
   const [isSaving, setIsSaving] = useState(false);
-  const [tempConfig, setTempConfig] = useState<StaffScheduleConfig>({ off: [], leave: [], work: [], overtime: [] });
+  const [tempConfig, setTempConfig] = useState<StaffScheduleConfig>({ off: [], leave: [], work: [], overtime: [], late: [] });
   
   // Local Data State (Source of Truth)
   const [staffList, setStaffList] = useState<Consultant[]>([]);
@@ -65,11 +65,9 @@ export const StaffScheduleModal: React.FC<Props> = ({
   }, [isOpen, selectedClinicId]);
 
   // Categorization Logic
-  // Group A: Full-Time (Consultant, Assistant, Trainee)
   const groupA = staffList.filter(c => 
-      !c.role || c.role === 'consultant' || c.role === 'assistant' || c.role === 'trainee'
+      !c.role || ['consultant', 'assistant', 'trainee', 'manager'].includes(c.role)
   );
-  // Group B: Part-Time
   const groupB = staffList.filter(c => c.role === 'part_time');
 
   // Initialize Config
@@ -78,26 +76,30 @@ export const StaffScheduleModal: React.FC<Props> = ({
         const schedule = schedules.find(s => s.date === dateStr && s.clinicId === selectedClinicId);
         
         if (schedule?.staffConfiguration) {
-            setTempConfig(JSON.parse(JSON.stringify(schedule.staffConfiguration)));
+            setTempConfig({
+                off: schedule.staffConfiguration.off || [],
+                leave: schedule.staffConfiguration.leave || [],
+                work: schedule.staffConfiguration.work || [],
+                overtime: schedule.staffConfiguration.overtime || [],
+                late: schedule.staffConfiguration.late || []
+            });
         } else if (schedule?.consultantOffs) {
-            // Migration Logic: Only run if staff list is loaded to correctly map IDs
             if (staffList.length > 0) {
                 const off = schedule.consultantOffs.filter(id => groupA.some(s => s.id === id));
                 const work = groupB.filter(s => !schedule.consultantOffs?.includes(s.id)).map(s => s.id);
-                setTempConfig({ off, leave: [], work, overtime: [] });
+                setTempConfig({ off, leave: [], work, overtime: [], late: [] });
             }
         } else {
-            // Default Initialization
             if (isSunday && staffList.length > 0) {
-                // Sunday Default: All Full-Time OFF
                 setTempConfig({ 
                     off: groupA.map(c => c.id), 
                     leave: [], 
                     work: [],
-                    overtime: []
+                    overtime: [],
+                    late: []
                 });
             } else {
-                setTempConfig({ off: [], leave: [], work: [], overtime: [] });
+                setTempConfig({ off: [], leave: [], work: [], overtime: [], late: [] });
             }
         }
     }
@@ -131,13 +133,14 @@ export const StaffScheduleModal: React.FC<Props> = ({
   };
 
   const handleSetClinicClosed = () => {
-      if (!confirm("確定將本日設為休診？\n這將把所有正職人員設為「休」，並清除所有請假/加班紀錄。")) return;
+      if (!confirm("確定將本日設為休診？\n這將把所有正職人員設為「休」，並清除所有請假/加班/遲到紀錄。")) return;
       
       setTempConfig({
-          off: groupA.map(c => c.id), // All Full-time OFF
-          leave: [], // Clear Leaves
-          work: [],   // Clear Part-time work
-          overtime: [] // Clear Overtime
+          off: groupA.map(c => c.id),
+          leave: [],
+          work: [],
+          overtime: [],
+          late: []
       });
   };
 
@@ -149,7 +152,15 @@ export const StaffScheduleModal: React.FC<Props> = ({
       });
   };
 
-  // Helper to determine current status string for dropdown
+  const toggleLate = (id: string) => {
+      setTempConfig(prev => {
+          const currentLate = prev.late || [];
+          const isLate = currentLate.includes(id);
+          const newLate = isLate ? currentLate.filter(x => x !== id) : [...currentLate, id];
+          return { ...prev, late: newLate };
+      });
+  };
+
   const getStatus = (id: string) => {
       const isOff = tempConfig.off.includes(id);
       if (isOff) return 'off';
@@ -159,46 +170,39 @@ export const StaffScheduleModal: React.FC<Props> = ({
           return leaveEntry.type.includes('(半)') ? 'leave_half' : 'leave_full';
       }
 
-      const overtimeEntry = tempConfig.overtime?.find(o => o.id === id);
+      const overtimeEntry = (tempConfig.overtime || []).find(o => o.id === id);
       if (overtimeEntry) {
           return overtimeEntry.type.includes('(半)') ? 'overtime_half' : 'overtime_full';
       }
 
-      return 'full'; // Default Working
+      return 'full'; 
   };
 
-  // Handler for Dropdown Change
   const handleStatusChange = (id: string, newStatus: string) => {
       setTempConfig(prev => {
-          // 1. Clean up existing state for this ID
           const newOff = prev.off.filter(x => x !== id);
           const newLeave = prev.leave.filter(l => l.id !== id);
           const newOvertime = (prev.overtime || []).filter(o => o.id !== id);
+          let newLate = prev.late || [];
 
-          // 2. Apply new state
           if (newStatus === 'off') {
               newOff.push(id);
+              newLate = newLate.filter(x => x !== id); // Can't be late if off
           } else if (newStatus.startsWith('leave')) {
-              // Default Leave Type (User can edit later if we add detailed UI, but for now generic)
-              // Prompt user for leave type if switching to leave? 
-              // Simplification: Default to "事假", append suffix.
               const suffix = newStatus === 'leave_half' ? '(半)' : '(全)';
-              // Try to preserve existing type if just switching duration
               const oldLeave = prev.leave.find(l => l.id === id);
               const baseType = oldLeave ? oldLeave.type.replace(/\(.*\)/, '') : '事假';
-              
               newLeave.push({ id, type: `${baseType}${suffix}` });
+              if (newStatus === 'leave_full') newLate = newLate.filter(x => x !== id);
           } else if (newStatus.startsWith('overtime')) {
               const suffix = newStatus === 'overtime_half' ? '(半)' : '(全)';
               newOvertime.push({ id, type: `加班${suffix}` });
           } 
-          // If 'full', we just removed them from all lists, which means Working (Regular).
 
-          return { ...prev, off: newOff, leave: newLeave, overtime: newOvertime };
+          return { ...prev, off: newOff, leave: newLeave, overtime: newOvertime, late: newLate };
       });
   };
 
-  // Handler for detailed Leave Type change (e.g. switching '事假' to '病假')
   const changeLeaveBaseType = (id: string, newBaseType: string) => {
       setTempConfig(prev => {
           const target = prev.leave.find(l => l.id === id);
@@ -219,7 +223,6 @@ export const StaffScheduleModal: React.FC<Props> = ({
   return (
     <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
         <div className="bg-white rounded-xl shadow-lg w-full max-w-2xl animate-fade-in flex flex-col max-h-[90vh]">
-            {/* Header */}
             <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl">
                 <div className="flex items-center gap-2">
                     <Briefcase className="text-teal-600" />
@@ -234,16 +237,13 @@ export const StaffScheduleModal: React.FC<Props> = ({
                 <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X /></button>
             </div>
             
-            {/* Body (Scrollable) */}
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                
                 {isLoadingStaff ? (
                     <div className="flex justify-center py-10 text-slate-400 gap-2">
                         <Loader2 className="animate-spin" /> 讀取人員資料中...
                     </div>
                 ) : (
                     <>  
-                        {/* Smart Tools */}
                         <div className="bg-orange-50 border border-orange-100 p-3 rounded-lg flex items-center justify-between">
                             <span className="text-xs font-bold text-orange-800 flex items-center gap-2">
                                 <Store size={14} /> 快速操作
@@ -256,7 +256,6 @@ export const StaffScheduleModal: React.FC<Props> = ({
                             </button>
                         </div>
 
-                        {/* Section 1: Full-Time Configuration */}
                         <div className="space-y-3">
                             <h4 className="font-bold text-slate-700 flex items-center gap-2 border-l-4 border-teal-400 pl-2">
                                 {isSunday ? <Zap size={18} className="text-amber-500" /> : <UserMinus size={18} className="text-teal-500" />}
@@ -267,17 +266,28 @@ export const StaffScheduleModal: React.FC<Props> = ({
                                 {groupA.map(c => {
                                     const status = getStatus(c.id);
                                     const options = isSunday ? SUNDAY_OPTIONS : FULL_TIME_OPTIONS;
-                                    
-                                    // Extract Leave Type if applicable
                                     const leaveEntry = tempConfig.leave.find(l => l.id === c.id);
                                     const currentLeaveBase = leaveEntry ? leaveEntry.type.replace(/\(.*\)/, '') : '事假';
+                                    const isLate = (tempConfig.late || []).includes(c.id);
 
                                     return (
                                         <div key={c.id} className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-lg shadow-sm hover:border-teal-300 transition-colors">
-                                            <div className="font-bold text-slate-700 w-24 truncate">{c.name}</div>
+                                            <div className="flex items-center gap-3">
+                                                <div className="font-bold text-slate-700 w-24 truncate">{c.name}</div>
+                                                {status !== 'off' && status !== 'leave_full' && (
+                                                    <label className={`flex items-center gap-1.5 cursor-pointer px-2 py-1 rounded border transition-colors ${isLate ? 'bg-amber-100 border-amber-300 text-amber-800' : 'bg-slate-50 border-slate-200 text-slate-400 hover:border-amber-200'}`}>
+                                                        <input 
+                                                            type="checkbox" 
+                                                            className="w-3.5 h-3.5 rounded text-amber-600 focus:ring-amber-500"
+                                                            checked={isLate}
+                                                            onChange={() => toggleLate(c.id)}
+                                                        />
+                                                        <span className="text-xs font-bold">遲到</span>
+                                                    </label>
+                                                )}
+                                            </div>
                                             
                                             <div className="flex-1 flex justify-end gap-2">
-                                                {/* If Leave, show Type Selector */}
                                                 {status.startsWith('leave') && (
                                                     <select
                                                         className="text-xs border border-purple-200 rounded px-2 py-1 bg-purple-50 text-purple-700 outline-none focus:ring-1 focus:ring-purple-500"
@@ -288,7 +298,6 @@ export const StaffScheduleModal: React.FC<Props> = ({
                                                     </select>
                                                 )}
 
-                                                {/* Status Dropdown */}
                                                 <select
                                                     className={`text-sm border rounded-md px-3 py-1.5 outline-none font-bold cursor-pointer transition-colors
                                                         ${status === 'off' ? 'bg-rose-50 border-rose-200 text-rose-600' : 
@@ -307,44 +316,49 @@ export const StaffScheduleModal: React.FC<Props> = ({
                                         </div>
                                     );
                                 })}
-                                {groupA.length === 0 && <p className="text-sm text-slate-400 p-2 text-center border rounded-lg border-dashed">無正職人員</p>}
                             </div>
                         </div>
 
-                        {/* Section 2: Part-time Work */}
                         <div className="space-y-3">
                             <h4 className="font-bold text-slate-700 flex items-center gap-2 border-l-4 border-amber-400 pl-2">
                                 <Clock size={18} className="text-amber-500" /> 打工排班 (Part-time Shift)
                             </h4>
-                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                            <div className="grid grid-cols-1 gap-2">
                                 {groupB.map(c => {
                                     const isWorking = tempConfig.work.includes(c.id);
+                                    const isLate = (tempConfig.late || []).includes(c.id);
                                     return (
-                                        <label 
-                                        key={c.id} 
-                                        className={`
-                                            flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all
-                                            ${isWorking ? 'bg-amber-50 border-amber-300 shadow-sm' : 'bg-white border-slate-200 hover:border-amber-200'}
-                                        `}
-                                        >
-                                            <span className="text-sm font-bold text-slate-700">{c.name}</span>
-                                            <input 
-                                            type="checkbox" 
-                                            className="w-4 h-4 text-amber-500 focus:ring-amber-500 border-gray-300 rounded"
-                                            checked={isWorking}
-                                            onChange={() => toggleWork(c.id)}
-                                            />
-                                        </label>
+                                        <div key={c.id} className={`flex items-center justify-between p-3 rounded-lg border transition-all ${isWorking ? 'bg-amber-50 border-amber-300 shadow-sm' : 'bg-white border-slate-200'}`}>
+                                            <label className="flex items-center gap-3 cursor-pointer flex-1">
+                                                <input 
+                                                    type="checkbox" 
+                                                    className="w-4 h-4 text-amber-500 focus:ring-amber-500 border-gray-300 rounded"
+                                                    checked={isWorking}
+                                                    onChange={() => toggleWork(c.id)}
+                                                />
+                                                <span className="text-sm font-bold text-slate-700">{c.name}</span>
+                                            </label>
+                                            
+                                            {isWorking && (
+                                                <label className={`flex items-center gap-1.5 cursor-pointer px-2 py-1 rounded border transition-colors ${isLate ? 'bg-amber-200 border-amber-400 text-amber-900' : 'bg-white border-amber-200 text-amber-600 hover:bg-amber-100'}`}>
+                                                    <input 
+                                                        type="checkbox" 
+                                                        className="w-3.5 h-3.5 rounded text-amber-800 focus:ring-amber-700"
+                                                        checked={isLate}
+                                                        onChange={() => toggleLate(c.id)}
+                                                    />
+                                                    <span className="text-xs font-bold">遲到</span>
+                                                </label>
+                                            )}
+                                        </div>
                                     );
                                 })}
-                                {groupB.length === 0 && <p className="text-sm text-slate-400 col-span-full p-2 border border-dashed rounded-lg text-center">無打工人員</p>}
                             </div>
                         </div>
                     </>
                 )}
             </div>
             
-            {/* Footer */}
             <div className="flex justify-end gap-3 p-4 border-t border-slate-100 bg-slate-50 rounded-b-xl">
                 <button onClick={onClose} className="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg font-medium">取消</button>
                 <button 

@@ -856,7 +856,7 @@ export const checkPreviousUnlocked = async (currentDate: string, clinicId: strin
 // --- MONTHLY CLOSING ---
 
 export const getMonthlyClosingStatus = async (clinicId: string, yearMonth: string): Promise<MonthlyClosing | null> => {
-    const docId = `${clinicId}_${yearMonth}`;
+    const docId = `${clinicId}_yearMonth`;
     const doc = await db.collection('monthly_closings').doc(docId).get();
     return doc.exists ? doc.data() as MonthlyClosing : null;
 };
@@ -912,5 +912,94 @@ export const findPatientProfile = async (clinicId: string, name: string, chartId
     const q = await db.collection('patients').where('clinicId', '==', clinicId).where('name', '==', name).limit(1).get();
     return !q.empty ? { docId: q.docs[0].id, ...q.docs[0].data() } as Patient : null;
 }
+
+export const getYearlySickLeaveCount = async (clinicId: string, staffId: string, year: number, currentMonth: number): Promise<number> => {
+    const doc = await db.collection('clinics').doc(clinicId).get();
+    if (!doc.exists) return 0;
+    const schedules = (doc.data()?.schedules || []) as DailySchedule[];
+    
+    let count = 0;
+    const prefix = `${year}-`;
+    const monthStart = `${year}-${String(currentMonth).padStart(2, '0')}-01`;
+
+    schedules.forEach(s => {
+        if (s.date >= prefix + '01-01' && s.date < monthStart) {
+            const leave = s.staffConfiguration?.leave?.find(l => l.id === staffId);
+            if (leave && leave.type.includes('病假')) {
+                count += leave.type.includes('(半)') ? 0.5 : 1.0;
+            }
+        }
+    });
+    return count;
+};
+
+export interface MonthlyScheduleStats {
+    [staffId: string]: {
+        personalLeave: number;
+        sickLeave: number;
+        sundayOT: number;
+        lateCount: number;
+        specialLeave: number;
+    }
+}
+
+export const getMonthlyScheduleStats = async (clinicId: string, yearMonth: string): Promise<MonthlyScheduleStats> => {
+    const doc = await db.collection('clinics').doc(clinicId).get();
+    if (!doc.exists) return {};
+    
+    const schedules = (doc.data()?.schedules || []) as DailySchedule[];
+    const stats: MonthlyScheduleStats = {};
+
+    schedules.forEach(s => {
+        if (s.date.startsWith(yearMonth)) {
+            const config = s.staffConfiguration;
+            if (!config) return;
+
+            const dateObj = new Date(s.date);
+            const isSunday = dateObj.getDay() === 0;
+
+            // 1. Process Lates
+            if (config.late) {
+                config.late.forEach(id => {
+                    if (!stats[id]) stats[id] = { personalLeave: 0, sickLeave: 0, sundayOT: 0, lateCount: 0, specialLeave: 0 };
+                    stats[id].lateCount++;
+                });
+            }
+
+            // 2. Process Leaves
+            if (config.leave) {
+                config.leave.forEach(l => {
+                    const id = l.id;
+                    if (!stats[id]) stats[id] = { personalLeave: 0, sickLeave: 0, sundayOT: 0, lateCount: 0, specialLeave: 0 };
+                    
+                    const duration = l.type.includes('(半)') ? 0.5 : 1.0;
+                    const type = l.type.replace(/\(.*\)/, '');
+                    
+                    if (type === '事假') stats[id].personalLeave += duration;
+                    else if (type === '病假') stats[id].sickLeave += duration;
+                    else if (['特休', '公假', '婚假', '喪假', '產假'].includes(type)) stats[id].specialLeave += duration;
+                    else stats[id].personalLeave += duration;
+                });
+            }
+
+            // 3. Process Sunday OT
+            if (isSunday) {
+                // Check explicit OT
+                if (config.overtime) {
+                    config.overtime.forEach(ot => {
+                        const id = ot.id;
+                        if (!stats[id]) stats[id] = { personalLeave: 0, sickLeave: 0, sundayOT: 0, lateCount: 0, specialLeave: 0 };
+                        const duration = ot.type.includes('(半)') ? 0.5 : 1.0;
+                        stats[id].sundayOT += duration;
+                    });
+                }
+                // Also check if NOT off and NOT on leave (implicit OT)
+                // This logic is usually handled by UI but we safeguard here
+            }
+        }
+    });
+
+    return stats;
+};
 
 export const seedTestEnvironment = async () => { console.log("Seeding skipped."); };

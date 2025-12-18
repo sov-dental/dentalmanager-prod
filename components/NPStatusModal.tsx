@@ -1,8 +1,7 @@
-
 import React, { useState, useEffect } from 'react';
 import { AccountingRow, NPRecord } from '../types';
 import { getStaffList, saveNPRecord, getNPRecord, getMarketingTags, saveMarketingTags } from '../services/firebase';
-import { X, Save, Loader2, Tag, MessageCircle, User, DollarSign, Settings, Plus, Trash2, CheckSquare, FileText } from 'lucide-react';
+import { X, Save, Loader2, Tag, MessageCircle, User, DollarSign, Settings, Plus, Trash2, CheckSquare, FileText, AlertCircle } from 'lucide-react';
 
 interface Props {
     isOpen: boolean;
@@ -44,6 +43,12 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, row, clinicId,
     }, [isOpen, clinicId, row]);
 
     const loadData = async () => {
+        // Safety Check: Must have a name to proceed
+        if (row && !row.patientName) {
+            setIsLoading(false);
+            return;
+        }
+
         setIsLoading(true);
         try {
             // 1. Fetch Consultants
@@ -179,7 +184,7 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, row, clinicId,
             return <span className="text-xs bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold border border-emerald-200">已成交</span>;
         }
         if (formData.isVisited) {
-            return <span className="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-bold border border-blue-200">已報到</span>;
+            return <span className="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-bold border border-blue-100">已報到</span>;
         }
         return <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-bold border border-slate-200">未到診</span>;
     };
@@ -198,7 +203,15 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, row, clinicId,
                 </div>
 
                 <div className="p-6 space-y-6 overflow-y-auto">
-                    {isLoading ? (
+                    {/* Safety Check Warning */}
+                    {row && !row.patientName ? (
+                        <div className="flex flex-col items-center justify-center py-12 text-rose-500 animate-fade-in">
+                            <AlertCircle size={48} className="mb-4" />
+                            <p className="font-bold text-lg">請先輸入病患姓名</p>
+                            <p className="text-sm opacity-70">需有病患姓名方可建立追蹤紀錄</p>
+                            <button onClick={onClose} className="mt-6 px-6 py-2 bg-slate-100 text-slate-600 rounded-lg font-bold hover:bg-slate-200">返回</button>
+                        </div>
+                    ) : isLoading ? (
                         <div className="flex justify-center py-8">
                             <Loader2 className="animate-spin text-indigo-600" size={32} />
                         </div>
@@ -245,6 +258,7 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, row, clinicId,
                                 </div>
                             )}
 
+                            {/* Rest of the form remains same... */}
                             <div className="grid grid-cols-1 gap-4">
                                 {/* MARKETING TAG */}
                                 <div>
@@ -370,14 +384,16 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, row, clinicId,
                     <button onClick={onClose} className="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg text-sm font-bold" disabled={isSaving}>
                         取消
                     </button>
-                    <button 
-                        onClick={handleSave} 
-                        disabled={isSaving || isLoading}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg text-sm font-bold shadow-md flex items-center gap-2"
-                    >
-                        {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                        儲存紀錄
-                    </button>
+                    {(!row || row.patientName) && (
+                        <button 
+                            onClick={handleSave} 
+                            disabled={isSaving || isLoading}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg text-sm font-bold shadow-md flex items-center gap-2"
+                        >
+                            {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                            儲存紀錄
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

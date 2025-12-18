@@ -1,7 +1,3 @@
-
-
-
-
 export type ShiftType = 'Morning' | 'Afternoon' | 'Evening';
 
 export enum DayOfWeek {
@@ -220,6 +216,7 @@ export interface AccountingRow {
     isPaymentManual: boolean;
     npStatus: string;
     treatmentContent: string;
+    calendarTreatment?: string; // Hint from Google Calendar
     labName: string;
     labFee?: number;
     isManual: boolean;

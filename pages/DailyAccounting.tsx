@@ -1,7 +1,6 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord, MonthlyClosing } from '../types';
-import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral, getMonthlyClosingStatus } from '../services/firebase';
+import { hydrateRow, getStaffList, db, deepSanitize, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral, getMonthlyClosingStatus, saveNPRecord } from '../services/firebase';
 import { exportDailyReportToExcel } from '../services/excelExport';
 import { listEvents } from '../services/googleCalendar';
 import { parseCalendarEvent } from '../utils/eventParser';
@@ -157,10 +156,10 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const [expenditures, setExpenditures] = useState<Expenditure[]>([]);
   const [fullStaffList, setFullStaffList] = useState<Consultant[]>([]);
   
-  // Monthly Closing State
+  // Real-time Data States
   const [monthlyStatus, setMonthlyStatus] = useState<MonthlyClosing | null>(null);
-  
   const [todaysNPRecords, setTodaysNPRecords] = useState<Record<string, NPRecord>>({});
+  const [realtimeSovReferrals, setRealtimeSovReferrals] = useState<SOVReferral[]>(sovReferrals);
   
   const [isLoading, setIsLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -195,6 +194,26 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           getMonthlyClosingStatus(selectedClinicId, yearMonth).then(setMonthlyStatus);
       }
   }, [selectedClinicId, currentDate]);
+
+  // Real-time SOV Referrals Listener
+  useEffect(() => {
+      if (!selectedClinicId) {
+          setRealtimeSovReferrals(sovReferrals);
+          return;
+      }
+
+      const unsubscribe = db.collection('clinics').doc(selectedClinicId)
+          .onSnapshot((doc) => {
+              if (doc.exists) {
+                  const data = doc.data();
+                  setRealtimeSovReferrals(data?.sovReferrals || []);
+              }
+          }, (error) => {
+              console.error("Referral listener error:", error);
+          });
+
+      return () => unsubscribe();
+  }, [selectedClinicId, sovReferrals]);
 
   useEffect(() => {
       if (!selectedClinicId || !currentDate) {
@@ -433,7 +452,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                   patientName: parsed.name,
                   doctorId: isPublic ? PUBLIC_DOCTOR.id : doc.id,
                   doctorName: isPublic ? PUBLIC_DOCTOR.name : doc.name,
-                  treatmentContent: parsed.treatment,
+                  treatmentContent: "", // Explicitly empty
+                  calendarTreatment: parsed.treatment, // Set as hint/placeholder
                   npStatus: parsed.isNP ? 'NP' : '',
                   paymentMethod: 'cash',
                   paymentBreakdown: { cash: 0, card: 0, transfer: 0 },
@@ -629,11 +649,33 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                   const sovAmount = updates.treatments.sov;
                   if (sovAmount > 0) {
                       const pName = (newRow.patientName || '').trim();
-                      const isReferral = sovReferrals.some(ref => 
+                      // CRITICAL FIX: Use realtimeSovReferrals state instead of static prop
+                      const isReferral = realtimeSovReferrals.some(ref => 
                           ref.name.trim() === pName && 
                           ref.clinicId === selectedClinicId
                       );
                       newRow.labName = isReferral ? "SOV轉介" : "SOV自約";
+                  }
+              }
+
+              // --- AUTO NP DETECTION LOGIC ---
+              if (newRow.patientName && newRow.patientName.trim()) {
+                  const searchStr = `${newRow.npStatus || ''} ${newRow.treatmentContent || ''}`.toUpperCase();
+                  const isNPDetected = searchStr.includes('NP') || searchStr.includes('新患') || searchStr.includes('初診');
+                  
+                  if (isNPDetected) {
+                      // Fix: Added isClosed: false to satisfy NPRecord interface
+                      saveNPRecord({
+                          date: currentDate,
+                          clinicId: selectedClinicId,
+                          patientName: newRow.patientName.trim(),
+                          treatment: newRow.treatmentContent || '',
+                          isVisited: true,
+                          isClosed: false,
+                          source: '過路客',
+                          marketingTag: '一般健保',
+                          updatedAt: new Date().toISOString()
+                      }).catch(e => console.error("[AutoNP] Creation failed:", e));
                   }
               }
 
@@ -893,7 +935,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                 disabled={isSyncing}
                                 className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3.5 px-6 rounded-xl font-bold text-lg flex items-center justify-center gap-3 shadow-lg shadow-indigo-200 hover:shadow-indigo-300 transition-all active:scale-95 disabled:opacity-70 disabled:scale-100"
                             >
-                                {isSyncing ? <Loader2 className="animate-spin" /> : <RefreshCw size={20} />}
+                                {isSyncing ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={20} />}
                                 同步 Google 日曆
                             </button>
                             <div className="relative flex py-2 items-center">
@@ -1029,7 +1071,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                             <td className="px-2 py-1 border-r border-gray-200 bg-emerald-50/10 text-right font-black text-emerald-600 text-lg font-bold">{totalAmount > 0 ? totalAmount.toLocaleString() : '-'}</td>
                                             <td className="px-1 py-1 border-r border-gray-200 bg-emerald-50/10"><select className={`w-full bg-transparent text-[10px] font-bold outline-none uppercase text-center ${row.paymentMethod === 'card' ? 'text-pink-600' : row.paymentMethod === 'transfer' ? 'text-amber-600' : 'text-emerald-600'} ${isLocked ? 'opacity-50' : ''}`} value={row.paymentMethod} onChange={(e) => updateRow(row.id, { paymentMethod: e.target.value })} disabled={isLocked}><option value="cash">CASH</option><option value="card">CARD</option><option value="transfer">TRANS</option></select></td>
                                             <td className="px-1 py-1 border-r border-gray-200 text-center align-middle">{isNP ? (<button onClick={() => setNpModalData({ row })} className={`w-full ${btnClass} border px-1 py-1 rounded text-xs font-bold flex items-center justify-center gap-1 transition-colors`}>{btnIcon} NP</button>) : (<InputCell initialValue={row.npStatus || (row as any).note || ""} onCommit={(v) => updateRow(row.id, { npStatus: v })} />)}</td>
-                                            <td className="px-1 py-1 border-r border-gray-200"><InputCell initialValue={row.treatmentContent} onCommit={(v) => updateRow(row.id, { treatmentContent: v })} /></td>
+                                            <td className="px-1 py-1 border-r border-gray-200"><InputCell initialValue={row.treatmentContent} onCommit={(v) => updateRow(row.id, { treatmentContent: v })} placeholder={row.calendarTreatment} /></td>
                                             <td className="px-1 py-1 border-r border-gray-200"><select className="w-full bg-transparent text-xs outline-none text-slate-600" value={row.labName || ''} onChange={(e) => updateRow(row.id, { labName: e.target.value })}><option value=""></option>{clinicLabs.map(l => <option key={l.id} value={l.name}>{l.name}</option>)}</select></td>
                                             <td className="px-1 py-1 text-center">{row.isManual && !isLocked && (<button onClick={() => handleDeleteRow(row.id)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={14} /></button>)}</td>
                                         </tr>
@@ -1046,7 +1088,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
             <div className="p-4 bg-rose-50 border-b border-rose-100 flex justify-between items-center"><h4 className="font-bold text-rose-700 text-sm">診所支出</h4><div className="flex items-center gap-4"><span className="text-xs font-bold text-rose-600">總計: ${totals.totalExpenditure.toLocaleString()}</span>{!isLocked && (<button onClick={() => handleExpenditureChange([...expenditures, { id: crypto.randomUUID(), item: '', amount: 0 }])} className="text-xs bg-white text-rose-600 px-2 py-1 rounded border border-rose-200 font-bold hover:bg-rose-100">+ 新增</button>)}</div></div>
             <div className="p-2 space-y-2 max-h-[200px] overflow-y-auto">{expenditures.map((ex, idx) => (<div key={ex.id} className="flex gap-2 items-center bg-slate-50 p-1.5 rounded border border-slate-100"><input className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none" value={ex.item} disabled={isLocked} onChange={e => { const newEx = [...expenditures]; newEx[idx].item = e.target.value; handleExpenditureChange(newEx); }} placeholder="項目名稱" /><input type="number" className="w-24 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none text-right font-bold text-rose-600" value={ex.amount} disabled={isLocked} onChange={e => { const newEx = [...expenditures]; newEx[idx].amount = Number(e.target.value); handleExpenditureChange(newEx); }} placeholder="0" />{!isLocked && (<button onClick={() => handleExpenditureChange(expenditures.filter((_, i) => i !== idx))} className="text-slate-400 hover:text-rose-500"><Trash2 size={14} /></button>)}</div>))}</div>
         </div>
-        <ClosingSummaryModal isOpen={isClosingModalOpen} onClose={() => setIsClosingModalOpen(false)} onConfirm={handleLockDay} date={currentDate} clinicId={selectedClinicId} rows={rows} totals={{ cash: totals.cashBalance, card: totals.cardRevenue, transfer: totals.transferRevenue, total: totals.totalRevenue }} validationErrors={validationErrors} />
+        <ClosingSummaryModal isOpen={isClosingModalOpen} onClose={() => setIsClosingModalOpen(false)} onConfirm={handleLockDay} date={currentDate} clinicId={selectedClinicId} rows={rows} totals={{ cash: totals.cashBalance, card: totals.cardRevenue, transfer: totals.transferRevenue, total: totals.netTotal }} validationErrors={validationErrors} />
         <AuditLogModal isOpen={isAuditModalOpen} onClose={() => setIsAuditModalOpen(false)} logs={dailyRecord?.auditLog || []} />
         {npModalData && <NPStatusModal isOpen={!!npModalData} onClose={() => setNpModalData(null)} row={npModalData.row} clinicId={selectedClinicId} date={currentDate} />}
     </div>

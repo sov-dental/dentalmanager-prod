@@ -152,6 +152,7 @@ export const hydrateRow = (row: any): AccountingRow => {
         ...row,
         chartId: row.chartId || "",
         paymentMethod: row.paymentMethod || "cash",
+        calendarTreatment: row.calendarTreatment || "",
         treatments: {
             regFee: 0, copayment: 0, sov: 0, ortho: 0, prostho: 0, 
             implant: 0, whitening: 0, perio: 0, inv: 0, otherSelfPay: 0, consultant: '',

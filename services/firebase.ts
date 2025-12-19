@@ -308,6 +308,7 @@ export const saveDoctors = async (clinicId: string, doctors: Doctor[]) => {
     await db.collection('clinics').doc(clinicId).update({ doctors: sanitizedDoctors });
 };
 
+// Fix: Renamed laboratoriesSave to saveLaboratories to match the expected export in App.tsx
 export const saveLaboratories = async (clinicId: string, labs: Laboratory[]) => {
     await db.collection('clinics').doc(clinicId).update({ laboratories: deepSanitize(labs) });
 };
@@ -497,17 +498,17 @@ export const fetchDashboardSnapshot = async (clinics: Clinic[], month: string): 
     lastYear: ClinicMonthlySummary[]
 }> => {
     const processMonth = async (m: string) => {
-        const summaries: ClinicMonthlySummary[] = [];
-        
-        for (const clinic of clinics) {
-            const targetDoc = await db.collection('monthly_targets').doc(`${clinic.id}_${m}`).get();
-            // Fix: Added missing properties clinicId and month to the fallback target object to match the MonthlyTarget interface.
+        const promises = clinics.map(async (clinic) => {
+            const targetDocPromise = db.collection('monthly_targets').doc(`${clinic.id}_${m}`).get();
+            const rowsPromise = getMonthlyAccounting(clinic.id, m);
+            const nhiRecordsPromise = getNHIRecords(clinic.id, m);
+
+            const [targetDoc, rows, nhiRecords] = await Promise.all([targetDocPromise, rowsPromise, nhiRecordsPromise]);
+
             const targets: MonthlyTarget = targetDoc.exists 
                 ? targetDoc.data() as MonthlyTarget 
                 : { clinicId: clinic.id, month: m, revenueTarget: 0, visitTarget: 0, selfPayTarget: 0 };
 
-            const rows = await getMonthlyAccounting(clinic.id, m);
-            
             let revenue = 0;
             let selfPay = 0;
             let visits = 0;
@@ -520,20 +521,20 @@ export const fetchDashboardSnapshot = async (clinics: Clinic[], month: string): 
                 selfPay += sp;
             });
 
-            const nhiRecords = await getNHIRecords(clinic.id, m);
             const nhiTotal = nhiRecords.reduce((sum, r) => sum + r.amount, 0);
             revenue += nhiTotal;
 
-            summaries.push({
+            return {
                 clinicId: clinic.id,
                 clinicName: clinic.name,
                 actualRevenue: revenue,
                 actualVisits: visits,
                 actualSelfPay: selfPay,
                 targets
-            });
-        }
-        return summaries;
+            } as ClinicMonthlySummary;
+        });
+
+        return Promise.all(promises);
     };
 
     const [y, mStr] = month.split('-').map(Number);
@@ -857,7 +858,7 @@ export const checkPreviousUnlocked = async (currentDate: string, clinicId: strin
 // --- MONTHLY CLOSING ---
 
 export const getMonthlyClosingStatus = async (clinicId: string, yearMonth: string): Promise<MonthlyClosing | null> => {
-    const docId = `${clinicId}_yearMonth`;
+    const docId = `${clinicId}_${yearMonth}`;
     const doc = await db.collection('monthly_closings').doc(docId).get();
     return doc.exists ? doc.data() as MonthlyClosing : null;
 };

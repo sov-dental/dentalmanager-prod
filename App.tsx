@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/Layout';
@@ -12,7 +11,7 @@ import { MonthlyScheduler } from './components/MonthlyScheduler';
 import { Integrations } from './components/Integrations';
 import { AppointmentCalendar } from './components/AppointmentCalendar';
 import { AssistantScheduling } from './components/AssistantScheduling';
-import { DailyAccounting } from './pages/DailyAccounting';
+import DailyAccounting from './pages/DailyAccounting';
 import { AssistantBonus } from './components/AssistantBonus';
 import { AssistantSalary } from './pages/AssistantSalary';
 import { LabReconciliation } from './components/LabReconciliation';

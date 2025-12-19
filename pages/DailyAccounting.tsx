@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord, MonthlyClosing } from '../types';
 import { hydrateRow, getStaffList, db, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral, getMonthlyClosingStatus, saveNPRecord } from '../services/firebase';
 import { exportDailyReportToExcel } from '../services/excelExport';
@@ -120,6 +120,18 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const [isClosingModalOpen, setIsClosingModalOpen] = useState(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [npModalData, setNpModalData] = useState<{row: AccountingRow} | null>(null);
+
+  // Use Refs to prevent stale closures in useCallback
+  const rowsRef = useRef(rows);
+  const expendituresRef = useRef(expenditures);
+
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
+
+  useEffect(() => {
+    expendituresRef.current = expenditures;
+  }, [expenditures]);
 
   const getDocId = (clinicId: string, dateStr: string) => `${clinicId}_${dateStr}`;
 
@@ -318,120 +330,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       return errors;
   }, [rows]);
 
-  const handleSyncCalendar = async () => {
-      if (isLocked) { alert("今日已結帳，無法同步。"); return; }
-      if (!selectedClinic?.googleCalendarMapping) { alert("此診所尚未設定 Google 日曆連結"); return; }
-      
-      setIsSyncing(true);
-      try {
-          const start = new Date(currentDate); start.setHours(0,0,0,0);
-          const end = new Date(currentDate); end.setHours(23,59,59,999);
-          const mapping = selectedClinic.googleCalendarMapping;
-          const existingIds = new Set(rows.map(r => r.id));
-          const newRows: AccountingRow[] = [];
-
-          const allEvents: any[] = [];
-
-          for (const doc of clinicDocs) {
-              const calendarId = mapping[doc.id];
-              if (calendarId) {
-                  const events = await listEvents(calendarId, start, end);
-                  events.forEach(ev => {
-                      if (!existingIds.has(ev.id) && !ev.allDay) {
-                          allEvents.push({ event: ev, doc });
-                      }
-                  });
-              }
-          }
-
-          const publicCalId = mapping['clinic_public'] || mapping['clinic_shared'];
-          if (publicCalId) {
-              const pEvents = await listEvents(publicCalId, start, end);
-              pEvents.forEach(ev => {
-                  if (!existingIds.has(ev.id) && !ev.allDay) {
-                      allEvents.push({ event: ev, isPublic: true });
-                  }
-              });
-          }
-
-          const processedRows = await Promise.all(allEvents.map(async (item) => {
-              const { event, doc, isPublic } = item;
-              const parsed = parseCalendarEvent(event.summary);
-              if (!parsed) return null;
-
-              let lastConsultant = '';
-              let finalChartId = parsed.chartId;
-
-              try {
-                  const profile = await findPatientProfile(selectedClinicId, parsed.name, parsed.chartId);
-                  if (profile) {
-                      if (profile.lastConsultant) lastConsultant = profile.lastConsultant;
-                      if (profile.chartId) finalChartId = profile.chartId;
-                  }
-              } catch (e) {
-                  console.warn("CRM lookup failed", e);
-              }
-
-              return {
-                  ...hydrateRow({}),
-                  id: event.id,
-                  patientName: parsed.name,
-                  doctorId: isPublic ? PUBLIC_DOCTOR.id : doc.id,
-                  doctorName: isPublic ? PUBLIC_DOCTOR.name : doc.name,
-                  treatmentContent: "", 
-                  calendarTreatment: parsed.treatment, 
-                  npStatus: parsed.isNP ? 'NP' : '',
-                  paymentMethod: 'cash',
-                  paymentBreakdown: { cash: 0, card: 0, transfer: 0 },
-                  isManual: false,
-                  isPublicCalendar: isPublic || false,
-                  attendance: true,
-                  startTime: event.start.dateTime || new Date().toISOString(),
-                  chartId: finalChartId || undefined,
-                  patientStatus: parsed.status,
-                  isNP: parsed.isNP,
-                  treatments: {
-                      ...hydrateRow({}).treatments,
-                      consultant: lastConsultant
-                  }
-              } as AccountingRow;
-          }));
-
-          processedRows.forEach(row => {
-              if (row) newRows.push(row);
-          });
-
-          if (newRows.length > 0) {
-              const updated = [...rows, ...newRows].sort((a,b) => (a.startTime||'').localeCompare(b.startTime||''));
-              await persistData(updated, expenditures);
-          } else {
-              alert("已同步，無新增項目");
-          }
-      } catch (e) {
-          console.error(e);
-          alert("同步失敗");
-      } finally {
-          setIsSyncing(false);
-      }
-  };
-
-  const handleAddRow = () => {
-      if (isLocked) return;
-      const newRow: AccountingRow = {
-          ...hydrateRow({}),
-          id: crypto.randomUUID(),
-          isManual: true,
-          attendance: true,
-          startTime: new Date().toISOString(),
-          chartId: null,
-          patientStatus: '',
-          paymentMethod: 'cash',
-          paymentBreakdown: { cash: 0, card: 0, transfer: 0 }
-      };
-      const updated = [...rows, newRow];
-      persistData(updated, expenditures);
-  };
-
   const prepareDataForSave = (currentRows: AccountingRow[]) => {
       return currentRows.map(row => {
           const t = row.treatments;
@@ -513,12 +411,129 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       }
   }, [selectedClinicId, currentDate, dailyRecord?.isLocked, currentUser]);
 
+  const handleSyncCalendar = async () => {
+      if (isLocked) { alert("今日已結帳，無法同步。"); return; }
+      if (!selectedClinic?.googleCalendarMapping) { alert("此診所尚未設定 Google 日曆連結"); return; }
+      
+      setIsSyncing(true);
+      try {
+          const start = new Date(currentDate); start.setHours(0,0,0,0);
+          const end = new Date(currentDate); end.setHours(23,59,59,999);
+          const mapping = selectedClinic.googleCalendarMapping;
+          const currentRows = rowsRef.current;
+          const existingIds = new Set(currentRows.map(r => r.id));
+          const newRows: AccountingRow[] = [];
+
+          const allEvents: any[] = [];
+
+          for (const doc of clinicDocs) {
+              const calendarId = mapping[doc.id];
+              if (calendarId) {
+                  const events = await listEvents(calendarId, start, end);
+                  events.forEach(ev => {
+                      if (!existingIds.has(ev.id) && !ev.allDay) {
+                          allEvents.push({ event: ev, doc });
+                      }
+                  });
+              }
+          }
+
+          const publicCalId = mapping['clinic_public'] || mapping['clinic_shared'];
+          if (publicCalId) {
+              const pEvents = await listEvents(publicCalId, start, end);
+              pEvents.forEach(ev => {
+                  if (!existingIds.has(ev.id) && !ev.allDay) {
+                      allEvents.push({ event: ev, isPublic: true });
+                  }
+              });
+          }
+
+          const processedRows = await Promise.all(allEvents.map(async (item) => {
+              const { event, doc, isPublic } = item;
+              const parsed = parseCalendarEvent(event.summary);
+              if (!parsed) return null;
+
+              let lastConsultant = '';
+              let finalChartId = parsed.chartId;
+
+              try {
+                  const profile = await findPatientProfile(selectedClinicId, parsed.name, parsed.chartId);
+                  if (profile) {
+                      if (profile.lastConsultant) lastConsultant = profile.lastConsultant;
+                      if (profile.chartId) finalChartId = profile.chartId;
+                  }
+              } catch (e) {
+                  console.warn("CRM lookup failed", e);
+              }
+
+              return {
+                  ...hydrateRow({}),
+                  id: event.id,
+                  patientName: parsed.name,
+                  doctorId: isPublic ? PUBLIC_DOCTOR.id : doc.id,
+                  doctorName: isPublic ? PUBLIC_DOCTOR.name : doc.name,
+                  treatmentContent: "", 
+                  calendarTreatment: parsed.treatment, 
+                  npStatus: parsed.isNP ? 'NP' : '',
+                  paymentMethod: 'cash',
+                  paymentBreakdown: { cash: 0, card: 0, transfer: 0 },
+                  isManual: false,
+                  isPublicCalendar: isPublic || false,
+                  attendance: true,
+                  startTime: event.start.dateTime || new Date().toISOString(),
+                  chartId: finalChartId || undefined,
+                  patientStatus: parsed.status,
+                  isNP: parsed.isNP,
+                  treatments: {
+                      ...hydrateRow({}).treatments,
+                      consultant: lastConsultant
+                  }
+              } as AccountingRow;
+          }));
+
+          processedRows.forEach(row => {
+              if (row) newRows.push(row);
+          });
+
+          if (newRows.length > 0) {
+              const updated = [...currentRows, ...newRows].sort((a,b) => (a.startTime||'').localeCompare(b.startTime||''));
+              setRows(updated);
+              await persistData(updated, expendituresRef.current);
+          } else {
+              alert("已同步，無新增項目");
+          }
+      } catch (e) {
+          console.error(e);
+          alert("同步失敗");
+      } finally {
+          setIsSyncing(false);
+      }
+  };
+
+  const handleAddRow = useCallback(() => {
+      if (isLocked) return;
+      const newRow: AccountingRow = {
+          ...hydrateRow({}),
+          id: crypto.randomUUID(),
+          isManual: true,
+          attendance: true,
+          startTime: new Date().toISOString(),
+          chartId: null,
+          patientStatus: '',
+          paymentMethod: 'cash',
+          paymentBreakdown: { cash: 0, card: 0, transfer: 0 }
+      };
+      const updated = [...rowsRef.current, newRow];
+      setRows(updated);
+      persistData(updated, expendituresRef.current);
+  }, [isLocked, persistData]);
+
   const handleManualSave = async () => {
       if (isLocked) { alert("已結帳鎖定，無法修改"); return; }
       if (!selectedClinicId) { alert("請先選擇診所"); return; }
       setIsManualSaving(true);
       try {
-          await persistData(rows, expenditures);
+          await persistData(rowsRef.current, expendituresRef.current);
           alert("✅ 儲存成功！");
       } catch (error: any) {
           alert("❌ 儲存失敗: " + error.message);
@@ -528,6 +543,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   };
 
   const updateRow = useCallback((id: string, updates: Partial<AccountingRow> | any) => {
+      const currentRows = rowsRef.current;
       const isRestrictedField = Object.keys(updates).some(key => 
           ['treatments', 'retail', 'patientName', 'paymentMethod', 'doctorId', 'chartId'].includes(key)
       );
@@ -538,7 +554,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
       let diffString: string | null = null;
 
-      const updatedRows = rows.map(r => {
+      const updatedRows = currentRows.map(r => {
           if (r.id === id) {
               const newRow = { ...r };
               Object.keys(updates).forEach(key => {
@@ -602,21 +618,21 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       });
 
       setRows(updatedRows);
-      persistData(updatedRows, expenditures, diffString || undefined);
-  }, [rows, isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, expenditures, persistData]);
+      persistData(updatedRows, expendituresRef.current, diffString || undefined);
+  }, [isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, persistData]);
 
   const handleDeleteRow = useCallback((id: string) => {
       if (isLocked) return;
       if (!confirm("確定刪除此列？")) return;
-      const updated = rows.filter(r => r.id !== id);
+      const updated = rowsRef.current.filter(r => r.id !== id);
       setRows(updated);
-      persistData(updated, expenditures);
-  }, [rows, isLocked, expenditures, persistData]);
+      persistData(updated, expendituresRef.current);
+  }, [isLocked, persistData]);
 
   const handleExpenditureChange = (newExp: Expenditure[]) => {
       if (isLocked) return;
       setExpenditures(newExp);
-      persistData(rows, newExp);
+      persistData(rowsRef.current, newExp);
   };
 
   const handleLockDay = async () => {
@@ -625,7 +641,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           throw new Error("Validation failed: Incomplete rows detected.");
       }
       try {
-          await lockDailyReport(currentDate, selectedClinicId, rows, { uid: currentUser.uid, name: currentUser.email || 'User' });
+          await lockDailyReport(currentDate, selectedClinicId, rowsRef.current, { uid: currentUser.uid, name: currentUser.email || 'User' });
       } catch (e) {
           alert("結帳失敗，請重試");
           throw e; 
@@ -650,7 +666,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       setIsSyncing(true);
       try {
           let hasUpdates = false;
-          const updatedRows = [...rows];
+          const updatedRows = [...rowsRef.current];
           
           await Promise.all(updatedRows.map(async (row, idx) => {
               if (!row.chartId && row.patientName) {
@@ -663,8 +679,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           }));
 
           if (hasUpdates) {
-              await persistData(updatedRows, expenditures);
               setRows(updatedRows);
+              await persistData(updatedRows, expendituresRef.current);
           }
 
           await unlockDailyReport(currentDate, selectedClinicId, { uid: currentUser.uid, name: currentUser.email || 'User' });
@@ -679,7 +695,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const handleSafeDateChange = async (targetDate: string) => {
       const todayStr = getTodayStr();
       const isCurrentPagePast = currentDate < todayStr;
-      const hasData = rows.length > 0;
+      const hasData = rowsRef.current.length > 0;
       const isLockedStatus = dailyRecord?.isLocked === true;
       const isUnlocked = !isLockedStatus;
 
@@ -707,7 +723,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       const handleBeforeUnload = (e: BeforeUnloadEvent) => {
           const todayStr = getTodayStr();
           const isCurrentPagePast = currentDate < todayStr;
-          const hasData = rows.length > 0;
+          const hasData = rowsRef.current.length > 0;
           const isLockedStatus = dailyRecord?.isLocked === true;
           const isUnlocked = !isLockedStatus;
           
@@ -719,7 +735,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       
       window.addEventListener('beforeunload', handleBeforeUnload);
       return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [dailyRecord, currentDate, rows.length]);
+  }, [dailyRecord, currentDate]);
 
   return (
     <div className="space-y-6 pb-20">

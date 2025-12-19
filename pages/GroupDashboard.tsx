@@ -34,7 +34,6 @@ const CLINIC_COLORS = ['#6366f1', '#a855f7', '#10b981', '#f59e0b', '#f43f5e', '#
 const CustomTooltip = memo(({ active, payload, label, valuePrefix = '$', isCount = false, sortedClinics = [] }: any) => {
     if (active && payload && payload.length) {
         if (isCount) {
-            // Aggregate totals across all clinics for this day
             const totalAppt = payload.reduce((acc: number, p: any) => p.dataKey.startsWith('appt_') ? acc + (p.value || 0) : acc, 0);
             const totalVisit = payload.reduce((acc: number, p: any) => p.dataKey.startsWith('visit_') ? acc + (p.value || 0) : acc, 0);
             const totalClosed = payload.reduce((acc: number, p: any) => p.dataKey.startsWith('closed_') ? acc + (p.value || 0) : acc, 0);
@@ -49,8 +48,9 @@ const CustomTooltip = memo(({ active, payload, label, valuePrefix = '$', isCount
                             </span>
                         </div>
                     </div>
-                    <div className="space-y-1.5">
-                        {sortedClinics.map((clinic: Clinic, idx: number) => {
+                    <div className="space-y-1.5 max-h-60 overflow-y-auto custom-scrollbar pr-1">
+                        {sortedClinics.map((clinic: Clinic) => {
+                            const originalIndex = sortedClinics.findIndex((sc: Clinic) => sc.id === clinic.id);
                             const appt = payload.find((p: any) => p.dataKey === `appt_${clinic.id}`)?.value || 0;
                             const visit = payload.find((p: any) => p.dataKey === `visit_${clinic.id}`)?.value || 0;
                             const closed = payload.find((p: any) => p.dataKey === `closed_${clinic.id}`)?.value || 0;
@@ -60,7 +60,7 @@ const CustomTooltip = memo(({ active, payload, label, valuePrefix = '$', isCount
                             return (
                                 <div key={clinic.id} className="flex items-center justify-between gap-4">
                                     <div className="flex items-center gap-2">
-                                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: CLINIC_COLORS[idx % CLINIC_COLORS.length] }}></div>
+                                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: CLINIC_COLORS[originalIndex % CLINIC_COLORS.length] }}></div>
                                         <span className="font-bold text-slate-700">{clinic.name}:</span>
                                     </div>
                                     <span className="font-mono text-slate-600 bg-slate-50 px-1.5 rounded border border-slate-100">
@@ -80,18 +80,23 @@ const CustomTooltip = memo(({ active, payload, label, valuePrefix = '$', isCount
                     <span>{label}</span>
                 </div>
                 <div className="space-y-1">
-                    <div className="max-h-48 overflow-y-auto custom-scrollbar pr-1">
-                        {payload.map((entry: any, index: number) => (
-                            <div key={index} className="flex items-center gap-4 mb-1 last:mb-0">
-                                <div className="flex items-center gap-2">
-                                    <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: entry.color }}></div>
-                                    <span className="text-slate-500 whitespace-nowrap">{entry.name}:</span>
+                    <div className="max-h-60 overflow-y-auto custom-scrollbar pr-1">
+                        {sortedClinics.map((clinic: Clinic) => {
+                            const entry = payload.find((p: any) => p.dataKey === clinic.id);
+                            if (!entry) return null;
+                            const originalIndex = sortedClinics.findIndex((sc: Clinic) => sc.id === clinic.id);
+                            return (
+                                <div key={clinic.id} className="flex items-center gap-4 mb-1 last:mb-0">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: CLINIC_COLORS[originalIndex % CLINIC_COLORS.length] }}></div>
+                                        <span className="text-slate-500 whitespace-nowrap">{clinic.name}:</span>
+                                    </div>
+                                    <span className="font-mono font-bold text-slate-700 ml-auto">
+                                        {valuePrefix}{entry.value.toLocaleString()}
+                                    </span>
                                 </div>
-                                <span className="font-mono font-bold text-slate-700 ml-auto">
-                                    {valuePrefix}{entry.value.toLocaleString()}
-                                </span>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 </div>
             </div>
@@ -129,24 +134,38 @@ const KPICard = memo(({ title, actual, target, prev, yearPrev, prefix = '', suff
     );
 });
 
-const RevenueTrendChart = memo(({ data, sortedClinics, filterId, getClinicName }: any) => (
-    <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 20, right: 30, left: 10, bottom: 10 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-            <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 11 }} />
-            <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 11 }} tickFormatter={(v) => `$${v/1000}k`} />
-            <Tooltip content={<CustomTooltip valuePrefix="$" />} cursor={{ fill: '#f8fafc' }} />
-            <Legend iconType="circle" wrapperStyle={{ paddingTop: '20px', fontSize: '11px', fontWeight: 'bold' }} />
-            {filterId === 'all' ? (
-                sortedClinics.map((clinic: Clinic, index: number) => (
-                    <Bar key={clinic.id} stackId="a" dataKey={clinic.id} name={clinic.name} fill={CLINIC_COLORS[index % CLINIC_COLORS.length]} radius={[0, 0, 0, 0]} />
-                ))
-            ) : (
-                <Bar dataKey={filterId} name={getClinicName(filterId)} fill="#6366f1" radius={[4, 4, 0, 0]} barSize={32} />
-            )}
-        </BarChart>
-    </ResponsiveContainer>
-));
+const RevenueTrendChart = memo(({ data, sortedClinics, filterId, getClinicName }: any) => {
+    const visibleClinics = filterId === 'all' ? sortedClinics : sortedClinics.filter((c: Clinic) => c.id === filterId);
+    
+    const legendPayload = useMemo(() => visibleClinics.map((c: Clinic) => {
+        const originalIndex = sortedClinics.findIndex((sc: Clinic) => sc.id === c.id);
+        return {
+            value: c.name,
+            type: 'rect',
+            color: CLINIC_COLORS[originalIndex % CLINIC_COLORS.length],
+            id: c.id
+        };
+    }), [visibleClinics, sortedClinics]);
+
+    return (
+        <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={data} margin={{ top: 20, right: 30, left: 10, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 11 }} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 11 }} tickFormatter={(v) => `$${v/1000}k`} />
+                <Tooltip content={<CustomTooltip valuePrefix="$" sortedClinics={sortedClinics} />} cursor={{ fill: '#f8fafc' }} />
+                <Legend payload={legendPayload} wrapperStyle={{ paddingTop: '20px', fontSize: '11px', fontWeight: 'bold' }} />
+                {visibleClinics.map((clinic: Clinic) => {
+                    const originalIndex = sortedClinics.findIndex((sc: Clinic) => sc.id === clinic.id);
+                    const color = CLINIC_COLORS[originalIndex % CLINIC_COLORS.length];
+                    return (
+                        <Bar key={clinic.id} stackId="a" dataKey={clinic.id} name={clinic.name} fill={color} radius={[0, 0, 0, 0]} isAnimationActive={false} />
+                    );
+                })}
+            </BarChart>
+        </ResponsiveContainer>
+    );
+});
 
 const KPIProgressChart = memo(({ data, color, valuePrefix = '$' }: any) => (
     <ResponsiveContainer width="100%" height="100%">
@@ -188,6 +207,16 @@ const SelfPayAchievementChart = memo(({ data }: any) => (
 
 const MarketingTrendChart = memo(({ data, sortedClinics, filterId }: any) => {
     const visibleClinics = filterId === 'all' ? sortedClinics : sortedClinics.filter((c: Clinic) => c.id === filterId);
+    
+    const legendPayload = useMemo(() => visibleClinics.map((c: Clinic) => {
+        const originalIndex = sortedClinics.findIndex((sc: Clinic) => sc.id === c.id);
+        return {
+            value: c.name,
+            type: 'rect',
+            color: CLINIC_COLORS[originalIndex % CLINIC_COLORS.length],
+            id: c.id
+        };
+    }), [visibleClinics, sortedClinics]);
 
     return (
         <ResponsiveContainer width="100%" height="100%">
@@ -196,18 +225,15 @@ const MarketingTrendChart = memo(({ data, sortedClinics, filterId }: any) => {
                 <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 11 }} />
                 <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 11 }} />
                 <Tooltip content={<CustomTooltip isCount={true} sortedClinics={sortedClinics} />} cursor={{ fill: '#f8fafc' }} />
-                <Legend 
-                    iconType="circle" 
-                    wrapperStyle={{ paddingTop: '20px', fontSize: '11px', fontWeight: 'bold' }} 
-                />
-                {visibleClinics.map((clinic: Clinic, index: number) => {
-                    const color = CLINIC_COLORS[index % CLINIC_COLORS.length];
+                <Legend payload={legendPayload} wrapperStyle={{ paddingTop: '20px', fontSize: '11px', fontWeight: 'bold' }} />
+                {visibleClinics.map((clinic: Clinic) => {
+                    const originalIndex = sortedClinics.findIndex((sc: Clinic) => sc.id === clinic.id);
+                    const color = CLINIC_COLORS[originalIndex % CLINIC_COLORS.length];
                     return (
                         <React.Fragment key={clinic.id}>
-                            {/* Use legendType="none" to hide intermediate series from Legend */}
                             <Bar stackId="a" dataKey={`appt_${clinic.id}`} fill={color} fillOpacity={0.2} stroke={color} strokeWidth={1} isAnimationActive={false} legendType="none" />
                             <Bar stackId="b" dataKey={`visit_${clinic.id}`} fill={color} fillOpacity={0.5} stroke={color} strokeWidth={1} isAnimationActive={false} legendType="none" />
-                            <Bar stackId="c" dataKey={`closed_${clinic.id}`} name={clinic.name} fill={color} fillOpacity={1.0} isAnimationActive={false} />
+                            <Bar stackId="c" dataKey={`closed_${clinic.id}`} fill={color} fillOpacity={1.0} isAnimationActive={false} legendType="none" />
                         </React.Fragment>
                     );
                 })}
@@ -216,7 +242,7 @@ const MarketingTrendChart = memo(({ data, sortedClinics, filterId }: any) => {
     );
 });
 
-const SelfPayBreakdownChart = memo(({ data }: any) => (
+const SelfPayBreakdownChart = memo(({ data, hideLegend = false, isCurrency = true }: any) => (
     <ResponsiveContainer width="100%" height="100%">
         <PieChart>
             <Pie data={data} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={4} dataKey="value" animationBegin={0} animationDuration={800}>
@@ -224,8 +250,8 @@ const SelfPayBreakdownChart = memo(({ data }: any) => (
                     <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} stroke="none" />
                 ))}
             </Pie>
-            <Tooltip formatter={(val: number) => `$${val.toLocaleString()}`} />
-            <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px' }} />
+            <Tooltip formatter={(val: number) => isCurrency ? `$${val.toLocaleString()}` : `${val.toLocaleString()} 人`} />
+            {!hideLegend && <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px' }} />}
         </PieChart>
     </ResponsiveContainer>
 ));
@@ -271,7 +297,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
     const [selectedTagFilter, setSelectedTagFilter] = useState('all');
     const [marketingMode, setMarketingMode] = useState<'tag' | 'source'>('tag');
 
-    // Enforce business rule sort order
     const sortedClinics = useMemo(() => {
         return [...clinics].sort((a, b) => (CLINIC_ORDER[a.name] ?? 999) - (CLINIC_ORDER[b.name] ?? 999));
     }, [clinics]);
@@ -284,7 +309,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
     const [tableFilters, setTableFilters] = useState<Record<string, string>>({});
     const [editingNP, setEditingNP] = useState<NPRecord | null>(null);
 
-    // --- DATA FETCHING ---
     useEffect(() => {
         if (!clinics.length) return;
         const loadAllData = async () => {
@@ -351,7 +375,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         loadAllData();
     }, [currentMonth, clinics]);
 
-    // --- MEMOIZED CALCULATIONS ---
     const getClinicName = (id: string) => clinics.find(c => c.id === id)?.name || id;
 
     const availableMarketingTags = useMemo(() => {
@@ -548,35 +571,25 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         statuses: ['已成交', '已報到', '待到診', '未到診']
     }), [npRecords, clinics, staffMap]);
 
-    // --- ACTIONS ---
     const handleUpdateTarget = async (clinicId: string, type: 'revenue' | 'selfPay', value: string) => {
         const numVal = parseInt(value) || 0;
-        
-        // 1. Optimistic UI Update
         setSnapshot(prev => ({
             ...prev,
             current: prev.current.map(c => {
                 if (c.clinicId !== clinicId) return c;
                 return {
                     ...c,
-                    targets: {
-                        ...c.targets,
-                        [type === 'revenue' ? 'revenueTarget' : 'selfPayTarget']: numVal
-                    }
+                    targets: { ...c.targets, [type === 'revenue' ? 'revenueTarget' : 'selfPayTarget']: numVal }
                 };
             })
         }));
-
-        // 2. Persist to DB
         try {
             const currentItem = snapshot.current.find(c => c.clinicId === clinicId);
             if (!currentItem) return;
-            
             const updatedTarget: MonthlyTarget = {
                 ...currentItem.targets,
                 [type === 'revenue' ? 'revenueTarget' : 'selfPayTarget']: numVal
             };
-            
             await saveMonthlyTarget(clinicId, currentMonth, updatedTarget);
         } catch (e) {
             console.error("[GroupDashboard] Failed to save target", e);
@@ -616,7 +629,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
 
             {activeTab === 'revenue' && (
                 <div className="space-y-6 animate-fade-in">
-                    {/* TIER 1: Daily Revenue Trend */}
                     <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
                             <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><LineChart className="text-indigo-500" size={22} /> 每日營收趨勢 (Stacked Trend)</h3>
@@ -625,13 +637,12 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                         <div className="h-96 w-full"><RevenueTrendChart data={dailyTrendData} sortedClinics={sortedClinics} filterId={trendFilter} getClinicName={getClinicName} /></div>
                     </div>
 
-                    {/* TIER 2: Performance Achievement Grid */}
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                        <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col">
+                    <div className="flex flex-col md:flex-row gap-6 h-auto md:h-[500px]">
+                        <div className="w-full md:w-2/3 bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[300px] md:h-full">
                              <div className="flex justify-between items-center mb-6 shrink-0">
                                 <h3 className="font-bold text-slate-800 flex items-center gap-2"><Target className="text-indigo-600" /> 院所達成率圖表 (Revenue Achievement)</h3>
                              </div>
-                             <div className="flex-1 min-h-[500px] w-full">
+                             <div className="flex-1 min-h-0 w-full">
                                 <KPIProgressChart 
                                     data={performanceMatrix.map(p => ({ 
                                         name: p.name, 
@@ -644,42 +655,63 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                              </div>
                         </div>
 
-                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col">
-                            <div className="flex items-center gap-2 mb-6 text-slate-800 border-b border-slate-50 pb-4">
+                        <div className="w-full md:w-1/3 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[400px] md:h-full overflow-hidden">
+                            <div className="sticky top-0 bg-white z-10 p-5 border-b border-slate-50 flex items-center gap-2 text-slate-800 shrink-0">
                                 <Medal className="text-amber-500" />
-                                <h3 className="font-black">達成排行榜 (Ranking)</h3>
+                                <h3 className="font-black uppercase tracking-wider text-sm">達成排行榜 (Ranking)</h3>
                             </div>
-                            <div className="flex-1 space-y-4 overflow-y-auto custom-scrollbar pr-1">
-                                {achievementRanking.map((item, idx) => (
-                                    <div key={item.id} className={`p-4 rounded-xl border transition-all ${idx === 0 ? 'bg-indigo-50 border-indigo-100 ring-1 ring-indigo-200 shadow-sm' : 'bg-slate-50 border-slate-100'}`}>
-                                        <div className="flex justify-between items-center mb-2">
-                                            <div className="flex items-center gap-3">
-                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center font-black text-sm ${idx === 0 ? 'bg-amber-400 text-white shadow-md' : 'bg-slate-200 text-slate-500'}`}>
-                                                    {idx + 1}
+                            <div className="flex-1 overflow-y-auto custom-scrollbar p-5 pt-2 space-y-3">
+                                {achievementRanking.map((item, idx) => {
+                                    let RankIcon = null;
+                                    let rankColor = "bg-slate-100 text-slate-500";
+                                    let rowBg = "bg-slate-50 border-slate-100";
+                                    let nameColor = "text-slate-700";
+
+                                    if (idx === 0) {
+                                        RankIcon = "🥇";
+                                        rankColor = "bg-amber-100 text-amber-600";
+                                        rowBg = "bg-amber-50/50 border-amber-100 ring-1 ring-amber-200/50 shadow-sm";
+                                        nameColor = "text-amber-900";
+                                    } else if (idx === 1) {
+                                        RankIcon = "🥈";
+                                        rankColor = "bg-slate-100 text-slate-500";
+                                        rowBg = "bg-slate-100/50 border-slate-200";
+                                    } else if (idx === 2) {
+                                        RankIcon = "🥉";
+                                        rankColor = "bg-orange-100 text-orange-600";
+                                        rowBg = "bg-orange-50/30 border-orange-100";
+                                    }
+
+                                    return (
+                                        <div key={item.id} className={`p-3 rounded-xl border transition-all ${rowBg}`}>
+                                            <div className="flex justify-between items-center mb-1.5">
+                                                <div className="flex items-center gap-3">
+                                                    <div className={`w-7 h-7 rounded-full flex items-center justify-center font-black text-xs ${rankColor}`}>
+                                                        {RankIcon || (idx + 1)}
+                                                    </div>
+                                                    <span className={`font-bold text-sm ${nameColor}`}>{item.name}</span>
                                                 </div>
-                                                <span className={`font-bold ${idx === 0 ? 'text-indigo-900' : 'text-slate-700'}`}>{item.name}</span>
+                                                <span className={`font-black tabular-nums text-sm ${item.revenueRate >= 100 ? 'text-emerald-600' : item.revenueRate >= 80 ? 'text-amber-600' : 'text-rose-500'}`}>
+                                                    {item.revenueRate.toFixed(1)}%
+                                                </span>
                                             </div>
-                                            <span className={`font-black tabular-nums ${item.revenueRate >= 100 ? 'text-emerald-600' : item.revenueRate >= 80 ? 'text-amber-600' : 'text-rose-500'}`}>
-                                                {item.revenueRate.toFixed(1)}%
-                                            </span>
+                                            <div className="w-full h-1.5 bg-white/50 rounded-full overflow-hidden border border-slate-200/30">
+                                                <div 
+                                                    className={`h-full transition-all duration-1000 ease-out ${item.revenueRate >= 100 ? 'bg-emerald-500' : item.revenueRate >= 80 ? 'bg-amber-400' : 'bg-rose-400'}`}
+                                                    style={{ width: `${Math.min(item.revenueRate, 100)}%` }}
+                                                />
+                                            </div>
+                                            <div className="flex justify-between mt-1.5 text-[9px] text-slate-400 font-bold uppercase">
+                                                <span>實收: ${item.revenueActual.toLocaleString()}</span>
+                                                <span>目標: ${item.revenueTarget.toLocaleString()}</span>
+                                            </div>
                                         </div>
-                                        <div className="w-full h-2 bg-white rounded-full overflow-hidden border border-slate-200/50">
-                                            <div 
-                                                className={`h-full transition-all duration-1000 ease-out ${item.revenueRate >= 100 ? 'bg-emerald-500' : item.revenueRate >= 80 ? 'bg-amber-400' : 'bg-rose-400'}`}
-                                                style={{ width: `${Math.min(item.revenueRate, 100)}%` }}
-                                            />
-                                        </div>
-                                        <div className="flex justify-between mt-2 text-[10px] text-slate-400 font-bold uppercase">
-                                            <span>實收: ${item.revenueActual.toLocaleString()}</span>
-                                            <span>目標: ${item.revenueTarget.toLocaleString()}</span>
-                                        </div>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
                     </div>
 
-                    {/* TIER 3: Achievement Matrix Table */}
                     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                         <div className="p-5 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
                             <h3 className="font-bold text-slate-700 flex items-center gap-2"><Trophy size={18} className="text-amber-500" /> 各院所績效目標設定 Matrix</h3>
@@ -840,8 +872,42 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                              <div className="mt-4 grid grid-cols-3 gap-4"><div className="text-center"><div className="text-[10px] text-slate-400 font-bold uppercase">總報名</div><div className="text-xl font-black text-indigo-600">{totals.marketing.leads}</div></div><div className="text-center border-l border-slate-100"><div className="text-[10px] text-slate-400 font-bold uppercase">到診率</div><div className="text-xl font-black text-teal-600">{totals.marketing.leads > 0 ? (totals.marketing.visited / totals.marketing.leads * 100).toFixed(0) : 0}%</div></div><div className="text-center border-l border-slate-100"><div className="text-[10px] text-slate-400 font-bold uppercase">最終成交</div><div className="text-xl font-black text-rose-600">{totals.marketing.closed}</div></div></div>
                         </div>
                         <div className="lg:col-span-2 bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col">
-                            <div className="flex justify-between items-center mb-8"><h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><PieChartIcon className="text-indigo-500" /> 客群特徵分佈</h3><div className="flex gap-2 bg-slate-100 p-1 rounded-xl"><button onClick={() => setMarketingMode('tag')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${marketingMode === 'tag' ? 'bg-white shadow text-indigo-600' : 'text-slate-50'}`}>項目</button><button onClick={() => setMarketingMode('source')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${marketingMode === 'source' ? 'bg-white shadow text-indigo-600' : 'text-slate-50'}`}>管道</button></div></div>
-                            <div className="flex-1 min-h-[500px] md:min-h-[400px]"><SelfPayBreakdownChart data={marketingAnalytics.distData} /></div>
+                            <div className="flex justify-between items-center mb-8 shrink-0">
+                                <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><PieChartIcon className="text-indigo-500" /> 客群特徵分佈</h3>
+                                <div className="flex gap-2 bg-slate-100 p-1 rounded-xl">
+                                    <button onClick={() => setMarketingMode('tag')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${marketingMode === 'tag' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}>項目</button>
+                                    <button onClick={() => setMarketingMode('source')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${marketingMode === 'source' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}>管道</button>
+                                </div>
+                            </div>
+                            
+                            {/* Refactored Left Chart, Right Details Layout */}
+                            <div className="flex flex-col md:flex-row items-center gap-8 flex-1 min-h-[400px]">
+                                <div className="w-full md:w-1/2 h-[350px]">
+                                    <SelfPayBreakdownChart data={marketingAnalytics.distData} hideLegend isCurrency={false} />
+                                </div>
+                                <div className="w-full md:w-1/2 max-h-[350px] overflow-y-auto custom-scrollbar pr-2 py-4">
+                                    <div className="space-y-3">
+                                        {(() => {
+                                            const total = marketingAnalytics.distData.reduce((acc, d) => acc + d.value, 0);
+                                            return marketingAnalytics.distData.sort((a, b) => b.value - a.value).map((d, i) => (
+                                                <div key={i} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100 shadow-sm transition-all hover:bg-white hover:border-indigo-200">
+                                                    <div className="flex items-center gap-3 min-w-0">
+                                                        <div className="w-3 h-3 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: PIE_COLORS[marketingAnalytics.distData.indexOf(d) % PIE_COLORS.length] }}></div>
+                                                        <span className="font-bold text-slate-700 truncate text-sm">{d.name}</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-4 shrink-0">
+                                                        <span className="text-sm font-black text-slate-900 tabular-nums">{d.value.toLocaleString()} <span className="text-[10px] text-slate-400 font-bold ml-0.5">人</span></span>
+                                                        <div className="w-px h-4 bg-slate-200"></div>
+                                                        <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100 min-w-[48px] text-center tabular-nums">
+                                                            {total > 0 ? ((d.value / total) * 100).toFixed(1) : 0}%
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            ));
+                                        })()}
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 

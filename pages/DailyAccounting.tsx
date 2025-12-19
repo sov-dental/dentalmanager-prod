@@ -116,6 +116,11 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const [isManualSaving, setIsManualSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
+  // Performance Optimization: Debounce State
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  // Fix: Replaced NodeJS.Timeout with ReturnType<typeof setTimeout> to avoid cross-environment namespace errors
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [filterDoctorId, setFilterDoctorId] = useState<string>('');
   const [isClosingModalOpen, setIsClosingModalOpen] = useState(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
@@ -132,6 +137,13 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   useEffect(() => {
     expendituresRef.current = expenditures;
   }, [expenditures]);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+        if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, []);
 
   const getDocId = (clinicId: string, dateStr: string) => `${clinicId}_${dateStr}`;
 
@@ -404,6 +416,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           await saveDailyAccounting(payload, auditEntry);
           
           setSaveStatus('saved');
+          setHasUnsavedChanges(false); // Clear the unsaved flag upon successful save
           setTimeout(() => setSaveStatus('idle'), 2000);
       } catch (e) {
           console.error(e);
@@ -498,6 +511,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           if (newRows.length > 0) {
               const updated = [...currentRows, ...newRows].sort((a,b) => (a.startTime||'').localeCompare(b.startTime||''));
               setRows(updated);
+              // Immediate save for calendar sync since it's a large operation
               await persistData(updated, expendituresRef.current);
           } else {
               alert("已同步，無新增項目");
@@ -525,13 +539,19 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       };
       const updated = [...rowsRef.current, newRow];
       setRows(updated);
-      persistData(updated, expendituresRef.current);
+      setHasUnsavedChanges(true);
+
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+          persistData(rowsRef.current, expendituresRef.current);
+      }, 2000);
   }, [isLocked, persistData]);
 
   const handleManualSave = async () => {
       if (isLocked) { alert("已結帳鎖定，無法修改"); return; }
       if (!selectedClinicId) { alert("請先選擇診所"); return; }
       setIsManualSaving(true);
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       try {
           await persistData(rowsRef.current, expendituresRef.current);
           alert("✅ 儲存成功！");
@@ -618,7 +638,13 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       });
 
       setRows(updatedRows);
-      persistData(updatedRows, expendituresRef.current, diffString || undefined);
+      setHasUnsavedChanges(true);
+
+      // Performance Optimization: Debounce Firestore Write
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+          persistData(rowsRef.current, expendituresRef.current, diffString || undefined);
+      }, 2000); // 2 second delay after last interaction
   }, [isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, persistData]);
 
   const handleDeleteRow = useCallback((id: string) => {
@@ -626,13 +652,23 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       if (!confirm("確定刪除此列？")) return;
       const updated = rowsRef.current.filter(r => r.id !== id);
       setRows(updated);
-      persistData(updated, expendituresRef.current);
+      setHasUnsavedChanges(true);
+      
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+          persistData(rowsRef.current, expendituresRef.current);
+      }, 2000);
   }, [isLocked, persistData]);
 
   const handleExpenditureChange = (newExp: Expenditure[]) => {
       if (isLocked) return;
       setExpenditures(newExp);
-      persistData(rowsRef.current, newExp);
+      setHasUnsavedChanges(true);
+
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+          persistData(rowsRef.current, expendituresRef.current);
+      }, 2000);
   };
 
   const handleLockDay = async () => {
@@ -640,8 +676,10 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       if (validationErrors.length > 0) {
           throw new Error("Validation failed: Incomplete rows detected.");
       }
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       try {
           await lockDailyReport(currentDate, selectedClinicId, rowsRef.current, { uid: currentUser.uid, name: currentUser.email || 'User' });
+          setHasUnsavedChanges(false);
       } catch (e) {
           alert("結帳失敗，請重試");
           throw e; 
@@ -768,9 +806,10 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
             </div>
 
             <div className="flex gap-2 items-center">
-                {saveStatus === 'saving' && <span className="text-xs text-slate-400 flex items-center gap-1"><Loader2 size={12} className="animate-spin"/> Saving...</span>}
-                {saveStatus === 'saved' && <span className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle size={12}/> Saved</span>}
-                {saveStatus === 'error' && <span className="text-xs text-rose-500 flex items-center gap-1"><WifiOff size={12}/> Disconnected</span>}
+                {saveStatus === 'saving' && <span className="text-xs text-blue-500 flex items-center gap-1 font-bold animate-pulse"><Loader2 size={12} className="animate-spin"/> 儲存中...</span>}
+                {hasUnsavedChanges && saveStatus !== 'saving' && <span className="text-xs text-amber-600 flex items-center gap-1 font-bold"><AlertCircle size={12}/> 變更未儲存 (等待中...)</span>}
+                {!hasUnsavedChanges && saveStatus === 'saved' && <span className="text-xs text-emerald-600 flex items-center gap-1 font-bold"><CheckCircle size={12}/> 資料已儲存</span>}
+                {saveStatus === 'error' && <span className="text-xs text-rose-500 flex items-center gap-1 font-bold"><WifiOff size={12}/> 連線中斷</span>}
                 
                 {isLocked && (['admin', 'manager', 'team_leader', 'staff'].includes(userRole || '')) && (
                     <div className="relative group">

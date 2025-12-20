@@ -220,7 +220,7 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, recordId, pati
                                         日曆備註 (Calendar Note)
                                     </label>
                                     <textarea 
-                                        className="w-full h-24 bg-transparent text-sm text-slate-600 font-medium resize-none outline-none border-none cursor-default custom-scrollbar italic"
+                                        className="w-full h-12 bg-transparent text-sm text-slate-600 font-medium resize-none outline-none border-none cursor-default custom-scrollbar italic"
                                         value={formData.calendarNote}
                                         readOnly
                                     />

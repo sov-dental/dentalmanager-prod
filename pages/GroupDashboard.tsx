@@ -1243,17 +1243,17 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                              {/* Conversion Stats Summary */}
                              <div className="grid grid-cols-3 gap-2 w-full mt-6 pt-6 border-t border-slate-50 shrink-0">
                                 <div className="text-center">
-                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">總約診 (Leads)</div>
+                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">總約診</div>
                                     <div className="text-xl font-black text-indigo-600 tabular-nums">{marketingAnalytics.leads}</div>
                                 </div>
                                 <div className="text-center border-x border-slate-100">
-                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">到診率 (Visit)</div>
+                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">到診率</div>
                                     <div className="text-xl font-black text-emerald-600 tabular-nums">
                                         {marketingAnalytics.leads > 0 ? ((marketingAnalytics.visited / marketingAnalytics.leads) * 100).toFixed(0) : 0}%
                                     </div>
                                 </div>
                                 <div className="text-center">
-                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">成交率 (Closed)</div>
+                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">成交率</div>
                                     <div className="text-xl font-black text-pink-600 tabular-nums">
                                         {marketingAnalytics.leads > 0 ? ((marketingAnalytics.closed / marketingAnalytics.leads) * 100).toFixed(0) : 0}%
                                     </div>

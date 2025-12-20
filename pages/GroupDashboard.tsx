@@ -1005,11 +1005,13 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                                     </div>
                                                 </div>
                                                 <div className="flex items-center gap-4 shrink-0">
-                                                    <div className="flex flex-col items-end">
-                                                        <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100 min-w-[80px] text-center tabular-nums">
-                                                            {d.value}.{d.visit}.{d.closed}
-                                                        </span>
-                                                        <span className="text-[9px] text-slate-400 font-bold uppercase mt-0.5 mr-1">[約.到.成]</span>
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="flex flex-col items-end">
+                                                            <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100 min-w-[80px] text-center tabular-nums">
+                                                                {d.value}.{d.visit}.{d.closed}
+                                                            </span>
+                                                            <span className="text-[9px] text-slate-400 font-bold uppercase mt-0.5 mr-1">[約.到.成]</span>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1080,7 +1082,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     </div>
                 </div>
             )}
-            {editingNP && <NPStatusModal isOpen={!!editingNP} onClose={() => setEditingNP(null)} row={{ patientName: editingNP.patientName, treatmentContent: editingNP.treatment } as any} clinicId={editingNP.clinicId} date={editingNP.date} />}
+            {editingNP && <NPStatusModal isOpen={!!editingNP} onClose={() => setEditingNP(null)} row={editingNP as any} clinicId={editingNP.clinicId} date={editingNP.date} />}
         </div>
     );
 };

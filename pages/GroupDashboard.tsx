@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { 
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-    PieChart, Pie, Cell, ComposedChart, Line, Funnel, FunnelChart, LabelList
+    PieChart, Pie, Cell, ComposedChart, Line, LabelList
 } from 'recharts';
 
 // --- TYPES & INTERFACES ---
@@ -205,7 +205,7 @@ const SelfPayAchievementChart = memo(({ data }: any) => (
             <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fill: '#f59e0b', fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
             <Tooltip 
                 contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                formatter={(val: number, name: string) => [name === '達成率' ? `${val.toFixed(1)}%` : `$val.toLocaleString()}`, name]}
+                formatter={(val: number, name: string) => [name === '達成率' ? `${val.toFixed(1)}%` : `$${val.toLocaleString()}`, name]}
             />
             <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '20px', fontSize: '11px' }} />
             <Bar yAxisId="left" dataKey="target" name="自費目標" fill="#e2e8f0" radius={[4, 4, 0, 0]} barSize={40} />
@@ -216,7 +216,7 @@ const SelfPayAchievementChart = memo(({ data }: any) => (
 ));
 
 const SelfPayBreakdownChart = memo(({ data }: any) => {
-    const total = data.reduce((s: number, i: any) => s + i.value, 0);
+    const total = data.reduce((s: number, i: any) => s + (i.value || 0), 0);
 
     const renderCustomLegend = (props: any) => {
         const { payload } = props;
@@ -301,17 +301,23 @@ const MarketingTrendChart = memo(({ data, sortedClinics, filterId }: any) => {
     );
 });
 
-const MarketingFunnelChart = memo(({ data }: any) => (
+const MarketingConversionChart = memo(({ data }: any) => (
     <ResponsiveContainer width="100%" height="100%">
-        <FunnelChart margin={{ top: 20, right: 40, left: 40, bottom: 20 }}>
-            <Tooltip cursor={{ fill: '#f8fafc' }} />
-            <Funnel dataKey="value" data={data} isAnimationActive>
-                <LabelList position="right" fill="#64748b" stroke="none" dataKey="name" fontSize={11} fontWeight="bold" />
+        <BarChart
+            layout="vertical"
+            data={data}
+            margin={{ top: 20, right: 60, left: 20, bottom: 20 }}
+        >
+            <XAxis type="number" hide />
+            <YAxis type="category" dataKey="name" width={100} axisLine={false} tickLine={false} tick={{ fontSize: 11, fontWeight: 'bold', fill: '#64748b' }} />
+            <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+            <Bar dataKey="value" barSize={35} radius={[0, 10, 10, 0]}>
+                <LabelList dataKey="value" position="right" offset={10} style={{ fontSize: '14px', fontWeight: 'bold', fill: '#1e293b' }} />
                 {data.map((entry: any, index: number) => (
                     <Cell key={`cell-${index}`} fill={entry.fill} />
                 ))}
-            </Funnel>
-        </FunnelChart>
+            </Bar>
+        </BarChart>
     </ResponsiveContainer>
 ));
 
@@ -526,6 +532,9 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         }
 
         npRecords.forEach(r => {
+            // Apply Exclude NHI Filter
+            if (excludeNHI && r.marketingTag && r.marketingTag.includes('健保')) return;
+
             if (trendTagFilter !== 'all' && (r.marketingTag || '未分類') !== trendTagFilter) return;
             
             const d = parseInt(r.date.split('-')[2]);
@@ -556,17 +565,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         });
 
         return [...Object.values(dataMap)].sort((a, b) => a.day - b.day);
-    }, [npRecords, clinics, currentMonth, trendTagFilter]);
-
-    const trendTagOptions = useMemo(() => {
-        const records = marketingFilter === 'all' ? npRecords : npRecords.filter(r => r.clinicId === marketingFilter);
-        const counts: Record<string, number> = {};
-        records.forEach(r => {
-            const tag = r.marketingTag || '未分類';
-            counts[tag] = (counts[tag] || 0) + 1;
-        });
-        return Object.entries(counts).map(([tag, count]) => ({ tag, count })).sort((a, b) => b.count - a.count);
-    }, [npRecords, marketingFilter]);
+    }, [npRecords, clinics, currentMonth, trendTagFilter, excludeNHI]);
 
     const chartFilteredRecords = useMemo(() => {
         return npRecords.filter(r => {
@@ -574,6 +573,19 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             return true;
         });
     }, [npRecords, excludeNHI]);
+
+    const trendTagOptions = useMemo(() => {
+        const records = (marketingFilter === 'all' ? chartFilteredRecords : chartFilteredRecords.filter(r => r.clinicId === marketingFilter));
+        const counts: Record<string, number> = {};
+        records.forEach(r => {
+            const tag = r.marketingTag || '未分類';
+            counts[tag] = (counts[tag] || 0) + 1;
+        });
+        return {
+            options: Object.entries(counts).map(([tag, count]) => ({ tag, count })).sort((a, b) => b.count - a.count),
+            total: records.length
+        };
+    }, [chartFilteredRecords, marketingFilter]);
 
     const performanceMatrix = useMemo(() => {
         return [...snapshot.current]
@@ -675,10 +687,10 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         const visited = records.filter(r => r.isVisited).length;
         const closed = records.filter(r => r.isClosed).length;
         
-        const funnelData = [
-            { name: 'Leads (總約診)', value: leads, fill: '#818cf8' }, 
-            { name: 'Visited (已到診)', value: visited, fill: '#34d399' }, 
-            { name: 'Closed (成交)', value: closed, fill: '#f472b6' }
+        const conversionData = [
+            { name: '約診', value: leads, fill: '#818cf8' }, 
+            { name: '到診', value: visited, fill: '#34d399' }, 
+            { name: '成交', value: closed, fill: '#f472b6' }
         ];
         
         const consultantMap: Record<string, { leads: number, visited: number, closed: number }> = {};
@@ -696,8 +708,21 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             .sort((a,b) => b.closed - a.closed)
             .slice(0, 5);
 
-        return { funnelData, scorecard, leads, visited, closed };
+        return { conversionData, scorecard, leads, visited, closed };
     }, [chartFilteredRecords, marketingFilter, staffMap]);
+
+    const pieTagOptions = useMemo(() => {
+        const filtered = chartFilteredRecords.filter(r => pieClinicFilter === 'all' || r.clinicId === pieClinicFilter);
+        const counts: Record<string, number> = {};
+        filtered.forEach(r => {
+            const tag = r.marketingTag || '未分類';
+            counts[tag] = (counts[tag] || 0) + 1;
+        });
+        return {
+            options: Object.entries(counts).map(([tag, count]) => ({ tag, count })).sort((a, b) => b.count - a.count),
+            total: filtered.length
+        };
+    }, [chartFilteredRecords, pieClinicFilter]);
 
     const marketingPieData = useMemo(() => {
         const filtered = chartFilteredRecords.filter(r => {
@@ -1000,7 +1025,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     </div>
 
                     {/* Detailed Data & Target Table */}
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                         <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center gap-2">
                             <LayoutGrid className="text-indigo-600" />
                             <h3 className="font-black text-slate-800 uppercase tracking-wider text-sm">各院數據明細與目標設定 (Detailed Data & Targets)</h3>
@@ -1115,7 +1140,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     </div>
 
                     {/* Matrix Table */}
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                         <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center gap-2">
                             <LayoutGrid className="text-indigo-600" />
                             <h3 className="font-black text-slate-800 uppercase tracking-wider text-sm">自費療程數據矩陣 (Clinic x Category Matrix)</h3>
@@ -1207,15 +1232,15 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                          </div>
                     </div>
 
-                    {/* Row 1: Funnel + Source Pie (Equal Height) */}
+                    {/* Row 1: Conversion Chart + Source Pie (Equal Height) */}
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                        {/* Conversion Funnel */}
-                        <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center h-[400px]">
-                             <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Target size={22} className="text-indigo-500" /> 顧客轉化漏斗</h3>
+                        {/* Conversion Horizontal Bar Chart */}
+                        <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[400px]">
+                             <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Target size={22} className="text-indigo-500" /> 顧客轉化分析</h3>
                              <div className="w-full flex-1 min-h-0">
-                                <MarketingFunnelChart data={marketingAnalytics.funnelData} />
+                                <MarketingConversionChart data={marketingAnalytics.conversionData} />
                              </div>
-                             {/* Funnel Metrics Row */}
+                             {/* Conversion Stats Summary */}
                              <div className="grid grid-cols-3 gap-2 w-full mt-6 pt-6 border-t border-slate-50 shrink-0">
                                 <div className="text-center">
                                     <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">總約診 (Leads)</div>
@@ -1228,8 +1253,10 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                     </div>
                                 </div>
                                 <div className="text-center">
-                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">總成交 (Closed)</div>
-                                    <div className="text-xl font-black text-pink-600 tabular-nums">{marketingAnalytics.closed}</div>
+                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">成交率 (Closed)</div>
+                                    <div className="text-xl font-black text-pink-600 tabular-nums">
+                                        {marketingAnalytics.leads > 0 ? ((marketingAnalytics.closed / marketingAnalytics.leads) * 100).toFixed(0) : 0}%
+                                    </div>
                                 </div>
                              </div>
                         </div>
@@ -1240,17 +1267,19 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><PieChartIcon className="text-indigo-500" /> 客群來源分佈 (Source)</h3>
                                 <div className="flex wrap gap-2 w-full sm:w-auto">
                                     <div className="flex items-center gap-1.5 bg-slate-50 p-1 rounded-lg border">
+                                        <Tag size={12} className="text-slate-400 ml-1.5" />
+                                        <select className="bg-transparent text-[10px] font-black text-slate-600 py-1 px-1 outline-none cursor-pointer" value={pieTagFilter} onChange={e => setPieTagFilter(e.target.value)}>
+                                            <option value="all">全部標籤 ({pieTagOptions.total})</option>
+                                            {pieTagOptions.options.map(({ tag, count }) => (
+                                                <option key={tag} value={tag}>{tag} ({count})</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="flex items-center gap-1.5 bg-slate-50 p-1 rounded-lg border">
                                         <Filter size={12} className="text-slate-400 ml-1.5" />
                                         <select className="bg-transparent text-[10px] font-black text-slate-600 py-1 px-1 outline-none cursor-pointer" value={pieClinicFilter} onChange={e => setPieClinicFilter(e.target.value)}>
                                             <option value="all">全集團診所</option>
                                             {sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                        </select>
-                                    </div>
-                                    <div className="flex items-center gap-1.5 bg-slate-50 p-1 rounded-lg border">
-                                        <Tag size={12} className="text-slate-400 ml-1.5" />
-                                        <select className="bg-transparent text-[10px] font-black text-slate-600 py-1 px-1 outline-none cursor-pointer" value={pieTagFilter} onChange={e => setPieTagFilter(e.target.value)}>
-                                            <option value="all">全部標籤</option>
-                                            {availableMarketingTags.map(({ tag }) => <option key={tag} value={tag}>{tag}</option>)}
                                         </select>
                                     </div>
                                 </div>
@@ -1303,8 +1332,8 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                 <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-lg border">
                                     <Tag size={14} className="text-slate-400 ml-2" />
                                     <select className="bg-transparent text-xs font-black text-slate-600 py-1.5 px-2 outline-none cursor-pointer" value={trendTagFilter} onChange={e => setTrendTagFilter(e.target.value)}>
-                                        <option value="all">全部標籤 (All Tags)</option>
-                                        {trendTagOptions.map(({ tag, count }) => (
+                                        <option value="all">全部標籤 ({trendTagOptions.total})</option>
+                                        {trendTagOptions.options.map(({ tag, count }) => (
                                             <option key={tag} value={tag}>{tag} ({count})</option>
                                         ))}
                                     </select>
@@ -1324,14 +1353,14 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     </div>
 
                     {/* Row 3: Consultant Scorecard */}
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                         <div className="p-6 border-b border-slate-50 flex items-center gap-2">
                              <Trophy className="text-amber-500" />
                              <h3 className="font-bold text-slate-800 uppercase tracking-wider text-sm">諮詢師戰報 (Top 5)</h3>
                         </div>
                         <div className="overflow-x-auto">
                             <table className="w-full text-sm text-left">
-                                <thead className="bg-slate-50 text-slate-400 font-bold uppercase text-[10px] border-b border-slate-100">
+                                <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-[10px] border-b border-slate-100">
                                     <tr>
                                         <th className="px-6 py-4">諮詢師姓名</th>
                                         <th className="px-6 py-4 text-center">總進單 (Leads)</th>
@@ -1368,7 +1397,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     </div>
 
                     {/* NP Raw Data Table */}
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                         <div className="p-6 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
                             <h3 className="font-bold text-slate-700">NP 進單原始資料 (Raw Data)</h3>
                         </div>
@@ -1376,15 +1405,15 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                              <table className="w-full text-sm text-left">
                                 <thead className="bg-white border-b border-slate-100 sticky top-0 z-20 shadow-sm">
                                     <tr>
-                                        <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="日期" value={filterDate} onChange={setFilterDate} options={filterOptions.dates} /></th>
-                                        <th className="px-4 py-4 w-[140px] font-bold text-slate-400 text-[10px] uppercase">姓名</th>
-                                        <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="診所" value={filterClinic} onChange={setFilterClinic} options={filterOptions.clinics} /></th>
-                                        <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="醫師" value={filterDoctor} onChange={setFilterDoctor} options={filterOptions.doctors} /></th>
+                                        <th className="px-4 py-4 min-w-[140px]"><TableHeaderFilter label="日期" value={filterDate} onChange={setFilterDate} options={filterOptions.dates} /></th>
+                                        <th className="px-4 py-4 font-bold text-slate-400 text-[10px] uppercase">姓名</th>
+                                        <th className="px-4 py-4 min-w-[140px]"><TableHeaderFilter label="診所" value={filterClinic} onChange={setFilterClinic} options={filterOptions.clinics} /></th>
+                                        <th className="px-4 py-4 min-w-[140px]"><TableHeaderFilter label="醫師" value={filterDoctor} onChange={setFilterDoctor} options={filterOptions.doctors} /></th>
                                         <th className="px-4 py-4 font-bold text-slate-400 text-[10px] uppercase min-w-[150px]">預約療程</th>
-                                        <th className="px-4 py-4 w-[160px]"><TableHeaderFilter label="行銷標籤" value={filterTag} onChange={setFilterTag} options={marketingTags} /></th>
-                                        <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="諮詢師" value={filterConsultant} onChange={setFilterConsultant} options={filterOptions.consultants} /></th>
-                                        <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="來源" value={filterSource} onChange={setFilterSource} options={filterOptions.sources} /></th>
-                                        <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="狀態" value={filterStatus} onChange={setFilterStatus} options={filterOptions.statuses} /></th>
+                                        <th className="px-4 py-4 min-w-[160px]"><TableHeaderFilter label="行銷標籤" value={filterTag} onChange={setFilterTag} options={marketingTags} /></th>
+                                        <th className="px-4 py-4 min-w-[140px]"><TableHeaderFilter label="諮詢師" value={filterConsultant} onChange={setFilterConsultant} options={filterOptions.consultants} /></th>
+                                        <th className="px-4 py-4 min-w-[140px]"><TableHeaderFilter label="來源" value={filterSource} onChange={setFilterSource} options={filterOptions.sources} /></th>
+                                        <th className="px-4 py-4 min-w-[140px]"><TableHeaderFilter label="狀態" value={filterStatus} onChange={setFilterStatus} options={filterOptions.statuses} /></th>
                                         <th className="px-4 py-4 text-center text-[10px] text-slate-400 font-bold uppercase w-16">刪除</th>
                                     </tr>
                                 </thead>

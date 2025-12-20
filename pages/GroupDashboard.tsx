@@ -250,7 +250,7 @@ const SelfPayBreakdownChart = memo(({ data }: any) => {
                 <Pie
                     data={data}
                     cx="50%"
-                    cy="40%"
+                    cy="50%"
                     innerRadius={50}
                     outerRadius={85}
                     paddingAngle={5}

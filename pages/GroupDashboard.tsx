@@ -14,7 +14,7 @@ import {
     Trophy, Activity, Target, PieChart as PieChartIcon,
     Filter, LineChart, CheckCircle, ArrowUp, ArrowDown,
     Medal, Star, Trash2, Clock, AlertCircle, User, Info as InfoIcon,
-    Tag, MessageCircle, ShieldX
+    Tag, MessageCircle, ShieldOff
 } from 'lucide-react';
 import { 
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -148,9 +148,9 @@ const RevenueTrendChart = memo(({ data, sortedClinics, filterId, getClinicName }
     const legendPayload = useMemo(() => visibleClinics.map((c: Clinic) => {
         const originalIndex = sortedClinics.findIndex((sc: Clinic) => sc.id === c.id);
         return {
+            color: CLINIC_COLORS[originalIndex % CLINIC_COLORS.length],
             value: c.name,
             type: 'rect',
-            color: CLINIC_COLORS[originalIndex % CLINIC_COLORS.length],
             id: c.id
         };
     }), [visibleClinics, sortedClinics]);
@@ -219,9 +219,9 @@ const MarketingTrendChart = memo(({ data, sortedClinics, filterId }: any) => {
     const legendPayload = useMemo(() => visibleClinics.map((c: Clinic) => {
         const originalIndex = sortedClinics.findIndex((sc: Clinic) => sc.id === c.id);
         return {
+            color: CLINIC_COLORS[originalIndex % CLINIC_COLORS.length],
             value: c.name,
             type: 'rect',
-            color: CLINIC_COLORS[originalIndex % CLINIC_COLORS.length],
             id: c.id
         };
     }), [visibleClinics, sortedClinics]);
@@ -945,7 +945,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                     className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
                                  />
                                  <div className="flex items-center gap-1.5">
-                                    <ShieldX size={14} className={excludeNHI ? "text-rose-500" : "text-slate-400"} />
+                                    <ShieldOff size={14} className={excludeNHI ? "text-rose-500" : "text-slate-400"} />
                                     <span className={`text-sm font-black ${excludeNHI ? "text-indigo-600" : "text-slate-500"}`}>排除健保項目 (Exclude NHI)</span>
                                  </div>
                              </label>

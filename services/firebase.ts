@@ -742,26 +742,29 @@ export const getPatientHistory = async (clinicId: string, name: string, chartId:
 };
 
 // --- NP RECORDS ---
-export const saveNPRecord = async (record: NPRecord) => {
-    const safeName = (record.patientName || 'Unknown').replace(/\s+/g, '_');
-    const id = `${record.clinicId}_${record.date}_${safeName}`;
-    const docRef = db.collection('np_records').doc(id);
-    await docRef.set(deepSanitize({ ...record, id, updatedAt: new Date().toISOString() }), { merge: true });
+export const saveNPRecord = async (recordId: string, record: NPRecord) => {
+    const docRef = db.collection('np_records').doc(recordId);
+    await docRef.set(deepSanitize({ ...record, id: recordId, updatedAt: new Date().toISOString() }), { merge: true });
 };
 
-export const deleteNPRecord = async (clinicId: string, date: string, patientName: string) => {
-    const safeName = (patientName || 'Unknown').replace(/\s+/g, '_');
-    const id = `${clinicId}_${date}_${safeName}`;
-    await db.collection('np_records').doc(id).delete();
+export const updateNPRecord = async (recordId: string, updates: Partial<NPRecord>) => {
+    const docRef = db.collection('np_records').doc(recordId);
+    await docRef.update(deepSanitize({ ...updates, updatedAt: new Date().toISOString() }));
+};
+
+export const deleteNPRecord = async (id: string) => {
+    await db.collection('np_records').doc(id).set({ isHidden: true }, { merge: true });
 };
 
 export const getNPRecord = async (clinicId: string, date: string, patientName: string) => {
-    const safeName = (patientName || 'Unknown').replace(/\s+/g, '_');
-    const id = `${clinicId}_${date}_${safeName}`;
-    // Fix: Added docRef definition to resolve "Cannot find name 'docRef'"
-    const docRef = db.collection('np_records').doc(id);
-    const doc = await docRef.get();
-    return doc.exists ? doc.data() as NPRecord : null;
+    const q = await db.collection('np_records')
+        .where('clinicId', '==', clinicId)
+        .where('date', '==', date)
+        .where('patientName', '==', patientName)
+        .limit(1)
+        .get();
+        
+    return !q.empty ? q.docs[0].data() as NPRecord : null;
 };
 
 export const getMarketingTags = async (): Promise<string[]> => {

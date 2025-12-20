@@ -368,8 +368,10 @@ export interface NPRecord {
     dealAmount?: number;
     consultant?: string;
     note?: string;
+    calendarTreatment?: string; // New: Parsed treatment content
     calendarNote?: string; // New: Full Calendar Description
     updatedAt: any;
+    isHidden?: boolean; // Soft delete flag
 }
 
 export interface AppData {

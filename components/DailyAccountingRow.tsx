@@ -121,7 +121,7 @@ const DailyAccountingRow: React.FC<RowProps> = ({
 
     return (
         <tr className="hover:bg-blue-50/30 group">
-            <td className="px-1 py-1 border-r border-gray-200 text-center sticky left-0 bg-white group-hover:bg-blue-50/30 z-30">
+            <td className="px-1 py-1 border-r border-gray-200 text-center sticky left-0 bg-white group-hover:bg-blue-50/30 z-30 w-8 min-w-[32px]">
                 <div className="flex flex-col items-center gap-1">
                     <button onClick={() => onUpdate(row.id, { attendance: !row.attendance })} className="transition-colors" disabled={isLocked}>
                         {row.attendance ? <CheckCircle size={14} className="text-emerald-500" /> : <Circle size={14} className="text-slate-300" />}
@@ -129,13 +129,13 @@ const DailyAccountingRow: React.FC<RowProps> = ({
                     <span className="text-[9px] text-slate-400">{index+1}</span>
                 </div>
             </td>
-            <td className="px-1 py-1 border-r border-gray-200 sticky left-[24px] bg-white group-hover:bg-blue-50/30 z-30 align-middle">
+            <td className="px-1 py-1 border-r border-gray-200 sticky left-[32px] bg-white group-hover:bg-blue-50/30 z-30 align-middle w-20 min-w-[80px]">
                 <InputCell initialValue={row.chartId} onCommit={(v) => onUpdate(row.id, { chartId: v })} className={`text-slate-700 font-mono text-[11px] ${isChartIdLocked ? 'bg-slate-50' : ''}`} placeholder="病歷號" disabled={isChartIdLocked} />
             </td>
-            <td className="px-1 py-1 border-r border-gray-200 sticky left-[104px] bg-white group-hover:bg-blue-50/30 z-30 align-middle">
+            <td className="px-1 py-1 border-r border-gray-200 sticky left-[112px] bg-white group-hover:bg-blue-50/30 z-30 align-middle w-32 min-w-[128px]">
                 <InputCell initialValue={row.patientName} onCommit={(v) => onUpdate(row.id, { patientName: v })} className={getPatientNameClass(row)} disabled={isLocked} />
             </td>
-            <td className="px-1 py-1 border-r border-gray-200 text-center align-middle">
+            <td className="px-1 py-1 border-r-2 border-gray-300 sticky left-[240px] bg-white group-hover:bg-blue-50/30 z-30 text-center align-middle w-28 min-w-[112px]">
                 {row.isManual || (row as any).isPublicCalendar ? (
                     <select className="w-full bg-transparent text-xs outline-none text-slate-700 font-medium text-right" dir="rtl" value={row.doctorId} onChange={(e) => { const val = e.target.value; const name = val === 'clinic_public' ? PUBLIC_DOCTOR.name : (clinicDocs.find(d=>d.id===val)?.name||''); onUpdate(row.id, { doctorId: val, doctorName: name }); }} disabled={isLocked}>
                         <option value="">選醫師</option><option value="clinic_public">診所 (Public)</option>{clinicDocs.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}

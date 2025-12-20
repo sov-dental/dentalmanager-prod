@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord, MonthlyClosing } from '../types';
-import { hydrateRow, getStaffList, db, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral, getMonthlyClosingStatus, saveNPRecord } from '../services/firebase';
+import { hydrateRow, getStaffList, db, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral, getMonthlyClosingStatus, saveNPRecord, deleteNPRecord } from '../services/firebase';
 import { exportDailyReportToExcel } from '../services/excelExport';
-import { listEvents } from '../services/googleCalendar';
-import { parseCalendarEvent } from '../utils/eventParser';
+import { listEvents, initGoogleClient, authorizeCalendar } from '../services/googleCalendar';
+import { parseCalendarEvent, parseSourceFromNote } from '../utils/eventParser';
 import { ClinicSelector } from '../components/ClinicSelector';
 import { useClinic } from '../contexts/ClinicContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -118,7 +118,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   // Performance Optimization: Debounce State
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  // Fix: Replaced NodeJS.Timeout with ReturnType<typeof setTimeout> to avoid cross-environment namespace errors
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [filterDoctorId, setFilterDoctorId] = useState<string>('');
@@ -202,8 +201,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               const map: Record<string, NPRecord> = {};
               snapshot.forEach(doc => {
                   const data = doc.data() as NPRecord;
-                  if (data.patientName) {
-                      map[data.patientName.trim()] = data;
+                  if (!data.isHidden) {
+                    map[doc.id] = { id: doc.id, ...data };
                   }
               });
               setTodaysNPRecords(map);
@@ -318,7 +317,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       };
   }, [rows, expenditures]);
 
-  // --- VALIDATION LOGIC ---
   const validationErrors = useMemo(() => {
       const errors: string[] = [];
       rows.forEach((row, idx) => {
@@ -416,7 +414,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           await saveDailyAccounting(payload, auditEntry);
           
           setSaveStatus('saved');
-          setHasUnsavedChanges(false); // Clear the unsaved flag upon successful save
+          setHasUnsavedChanges(false);
           setTimeout(() => setSaveStatus('idle'), 2000);
       } catch (e) {
           console.error(e);
@@ -511,7 +509,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           if (newRows.length > 0) {
               const updated = [...currentRows, ...newRows].sort((a,b) => (a.startTime||'').localeCompare(b.startTime||''));
               setRows(updated);
-              // Immediate save for calendar sync since it's a large operation
               await persistData(updated, expendituresRef.current);
           } else {
               alert("已同步，無新增項目");
@@ -562,6 +559,24 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       }
   };
 
+  const handleRevokeNP = useCallback((rowId: string) => {
+    const currentRows = rowsRef.current;
+    const updatedRows = currentRows.map(r => {
+        if (r.id === rowId) {
+            // Revert NP status indicators
+            return { ...r, npStatus: "", isNP: false };
+        }
+        return r;
+    });
+    setRows(updatedRows);
+    setHasUnsavedChanges(true);
+    
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+        persistData(rowsRef.current, expendituresRef.current);
+    }, 1000);
+  }, [persistData]);
+
   const updateRow = useCallback((id: string, updates: Partial<AccountingRow> | any) => {
       const currentRows = rowsRef.current;
       const isRestrictedField = Object.keys(updates).some(key => 
@@ -611,13 +626,16 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                   }
               }
 
-              // --- AUTO NP DETECTION LOGIC ---
+              // --- AUTO NP DETECTION & RESTORATION LOGIC ---
               if (newRow.patientName && newRow.patientName.trim()) {
-                  const searchStr = `${newRow.npStatus || ''} ${newRow.treatmentContent || ''}`.toUpperCase();
+                  const searchStr = `${newRow.npStatus || ''} ${(newRow as any).note || ''} ${newRow.treatmentContent || ''}`.toUpperCase();
                   const isNPDetected = searchStr.includes('NP') || searchStr.includes('新患') || searchStr.includes('初診');
                   
                   if (isNPDetected) {
-                      saveNPRecord({
+                      // Trigger restoration in local UI immediately
+                      (newRow as any).isNP = true;
+                      
+                      saveNPRecord(newRow.id, {
                           date: currentDate,
                           clinicId: selectedClinicId,
                           patientName: newRow.patientName.trim(),
@@ -626,8 +644,10 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                           isClosed: false,
                           source: '過路客',
                           marketingTag: '一般健保',
-                          updatedAt: new Date().toISOString()
-                      }).catch(e => console.error("[AutoNP] Creation failed:", e));
+                          calendarTreatment: newRow.calendarTreatment,
+                          updatedAt: new Date().toISOString(),
+                          isHidden: false // Critical Fix: Explicitly restore the record
+                      }).catch(e => console.error("[AutoNP] Restoration failed:", e));
                   }
               }
 
@@ -640,16 +660,23 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       setRows(updatedRows);
       setHasUnsavedChanges(true);
 
-      // Performance Optimization: Debounce Firestore Write
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
           persistData(rowsRef.current, expendituresRef.current, diffString || undefined);
-      }, 2000); // 2 second delay after last interaction
+      }, 2000);
   }, [isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, persistData]);
 
-  const handleDeleteRow = useCallback((id: string) => {
+  const handleDeleteRow = useCallback(async (id: string) => {
       if (isLocked) return;
       if (!confirm("確定刪除此列？")) return;
+
+      // Soft-delete NP if it exists
+      try {
+          await deleteNPRecord(id);
+      } catch (e) {
+          console.warn("NP soft-delete failed or record didn't exist", e);
+      }
+
       const updated = rowsRef.current.filter(r => r.id !== id);
       setRows(updated);
       setHasUnsavedChanges(true);
@@ -937,11 +964,11 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                     <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-300px)] custom-scrollbar flex-1 min-h-[400px] border-b border-slate-200">
                         <table className="w-full border-collapse text-xs">
                             <thead className="bg-gray-50 z-40 shadow-sm font-bold tracking-tight">
-                                <tr className="sticky top-[2px] z-40">
-                                    <th className="px-2 py-2 border-r border-gray-200 text-center sticky left-0 bg-gray-50 z-50 min-w-[24px] text-slate-600" rowSpan={2}>#</th>
-                                    <th className="px-2 py-2 border-r border-gray-200 sticky left-[24px] bg-gray-50 z-50 min-w-[80px] text-left text-slate-600" rowSpan={2}>病歷號</th>
-                                    <th className="px-2 py-2 border-r border-gray-200 sticky left-[104px] bg-gray-50 z-50 min-w-[100px] text-left text-slate-600" rowSpan={2}>病患姓名</th>
-                                    <th className="px-2 py-2 border-r border-gray-200 min-w-[100px] text-right bg-gray-50" rowSpan={2}>
+                                <tr className="sticky top-[2px] z-[60]">
+                                    <th className="px-2 py-2 border-r border-gray-200 text-center sticky left-0 bg-gray-50 z-[70] w-8 min-w-[32px] text-slate-600" rowSpan={2}>#</th>
+                                    <th className="px-2 py-2 border-r border-gray-200 sticky left-[32px] bg-gray-50 z-[70] w-20 min-w-[80px] text-left text-slate-600" rowSpan={2}>病歷號</th>
+                                    <th className="px-2 py-2 border-r border-gray-200 sticky left-[112px] bg-gray-50 z-[70] w-32 min-w-[128px] text-left text-slate-600" rowSpan={2}>病患姓名</th>
+                                    <th className="px-2 py-2 border-r-2 border-gray-300 sticky left-[240px] bg-gray-50 z-[70] w-28 min-w-[112px] text-right" rowSpan={2}>
                                         <div className="flex items-center gap-1 justify-end">
                                             <span className="text-slate-600">醫師</span>
                                             <div className="relative group">
@@ -998,7 +1025,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                         clinicLabs={clinicLabs}
                                         consultantOptions={consultantOptions}
                                         staffOptions={staffOptions}
-                                        npRec={todaysNPRecords[(row.patientName || '').trim()]}
+                                        npRec={todaysNPRecords[row.id]}
                                         onUpdate={updateRow}
                                         onDelete={handleDeleteRow}
                                         onOpenNPModal={(r) => setNpModalData({ row: r })}
@@ -1017,7 +1044,19 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
         </div>
         <ClosingSummaryModal isOpen={isClosingModalOpen} onClose={() => setIsClosingModalOpen(false)} onConfirm={handleLockDay} date={currentDate} clinicId={selectedClinicId} rows={rows} totals={{ cash: totals.cashBalance, card: totals.cardRevenue, transfer: totals.transferRevenue, total: totals.netTotal }} validationErrors={validationErrors} />
         <AuditLogModal isOpen={isAuditModalOpen} onClose={() => setIsAuditModalOpen(false)} logs={dailyRecord?.auditLog || []} />
-        {npModalData && <NPStatusModal isOpen={!!npModalData} onClose={() => setNpModalData(null)} row={npModalData.row} clinicId={selectedClinicId} date={currentDate} />}
+        {npModalData && (
+            <NPStatusModal 
+                isOpen={!!npModalData} 
+                onClose={() => setNpModalData(null)} 
+                recordId={npModalData.row.id}
+                patientName={npModalData.row.patientName}
+                calendarTreatment={npModalData.row.calendarTreatment}
+                actualTreatment={npModalData.row.treatmentContent}
+                clinicId={selectedClinicId} 
+                date={currentDate} 
+                onRevokeNP={() => handleRevokeNP(npModalData.row.id)}
+            />
+        )}
     </div>
   );
 };

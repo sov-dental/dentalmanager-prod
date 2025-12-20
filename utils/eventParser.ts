@@ -1,4 +1,3 @@
-
 export interface ParsedEvent {
   chartId: string | null;
   name: string;
@@ -14,21 +13,15 @@ export const parseCalendarEvent = (title: string): ParsedEvent | null => {
   if (!title.includes('-')) return null;
 
   // 1. Regex Strategy for Chart ID Extraction
-  // Looks for: [Prefix/Status][Digits]-[Rest]
-  // Group 1 (Prefix): Non-greedy match for anything before the digits
-  // Group 2 (Digits): Any sequence of digits
-  // Group 3 (Rest): Everything after the hyphen
   const match = title.match(/^(.*?)(\d+)-(.+)$/);
 
   if (match) {
-    const rawStatus = match[1].trim(); // e.g. "@(60不)" or empty
-    const digits = match[2];           // e.g. "0820110" or "0912345678"
-    const rest = match[3].trim();      // e.g. "Name-Treatment"
+    const rawStatus = match[1].trim();
+    const digits = match[2];
+    const rest = match[3].trim();
 
-    // STRICT LENGTH RULE: Chart ID must be 4 to 7 digits.
     const isValidChartId = digits.length >= 4 && digits.length <= 7;
 
-    // Parse Name and Treatment from 'rest'
     let name = rest;
     let treatment = '';
     const firstHyphenIndex = rest.indexOf('-');
@@ -37,15 +30,12 @@ export const parseCalendarEvent = (title: string): ParsedEvent | null => {
         treatment = rest.substring(firstHyphenIndex + 1).trim();
     }
 
-    // Handle "Name-ID-Treatment" case (Legacy Format)
-    // If the captured 'prefix' ends with a hyphen, the regex captured "Name-" as Group 1
     if (rawStatus.endsWith('-')) {
         const namePart = rawStatus.slice(0, -1).trim();
         if (namePart) {
             return {
                 chartId: isValidChartId ? digits : null,
                 name: namePart,
-                // If invalid ID (e.g. phone), append it back to treatment to preserve info
                 treatment: isValidChartId ? rest : `${digits}-${rest}`, 
                 status: '',
                 isNP: !isValidChartId
@@ -53,7 +43,6 @@ export const parseCalendarEvent = (title: string): ParsedEvent | null => {
         }
     }
 
-    // Standard Format: [Status]ID-Name-Treatment
     if (isValidChartId) {
         return {
             chartId: digits,
@@ -63,8 +52,6 @@ export const parseCalendarEvent = (title: string): ParsedEvent | null => {
             isNP: false
         };
     } else {
-        // Digits found, but length invalid (e.g. 10 digits = Phone Number).
-        // Treat as NP, preserve digits in status.
         const combinedStatus = rawStatus ? `${rawStatus}${digits}` : digits;
         return {
             chartId: null,
@@ -76,12 +63,10 @@ export const parseCalendarEvent = (title: string): ParsedEvent | null => {
     }
   }
 
-  // 2. Fallback: NP (New Patient) or Unknown Format
-  // Structure: Name-Treatment (No ID detected before hyphen)
   const parts = title.split('-').map(p => p.trim());
   if (parts.length >= 2) {
     const name = parts[0];
-    if (name.includes('+')) return null; // Exclusion rule for fallback
+    if (name.includes('+')) return null;
 
     return {
       chartId: null,
@@ -93,4 +78,42 @@ export const parseCalendarEvent = (title: string): ParsedEvent | null => {
   }
 
   return null;
+};
+
+/**
+ * Smart Source Parser (Refined)
+ * Analyzes Calendar Description and returns the Source based on priority keywords.
+ * Priority: Line -> FB -> 官網 -> SOV轉介 -> 介紹 -> 小幫手 -> 電話 -> 過路客 -> 其他
+ */
+export const parseSourceFromNote = (note: string): string => {
+  if (!note) return '其他';
+  const n = note.toLowerCase();
+  
+  // 1. Line
+  if (n.includes('line')) return 'Line';
+  
+  // 2. FB / Social
+  if (n.includes('fb') || n.includes('臉書') || n.includes('ig')) return 'FB';
+  
+  // 3. Official Site
+  if (n.includes('官網') || n.includes('後台')) return '官網';
+
+  // 4. SOV Referral (New Rule)
+  if (n.includes('轉')) return 'SOV轉介';
+  
+  // 5. Referral (CRITICAL: Check "幫約" before "幫")
+  if (n.includes('介紹') || n.includes('朋友') || n.includes('老婆') || n.includes('媽媽') || n.includes('男友') || n.includes('幫約')) {
+      return '介紹';
+  }
+  
+  // 6. Assistant
+  if (n.includes('小幫手') || n.includes('幫')) return '小幫手';
+  
+  // 7. Phone
+  if (n.includes('電') || n.includes('電話') || n.includes('tel')) return '電話';
+  
+  // 8. Walk-in
+  if (n.includes('現') || n.includes('現場')) return '過路客';
+  
+  return '其他';
 };

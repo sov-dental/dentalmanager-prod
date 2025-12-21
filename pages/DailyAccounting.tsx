@@ -276,12 +276,32 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       }
       
       return [...filtered].sort((a, b) => {
+          // 1. Primary Sort: Manual Rows vs Calendar Events
           if (a.isManual !== b.isManual) {
               return a.isManual ? 1 : -1;
           }
+
+          // Both are same type (Manual or Auto)
+          // 2. Secondary Sort: Group by Doctor Order (For non-manual entries)
+          if (!a.isManual) {
+              const getDocIndex = (id: string) => {
+                  if (id === 'clinic_public') return 9999;
+                  const idx = clinicDocs.findIndex(d => d.id === id);
+                  return idx === -1 ? 9998 : idx; // Unknown docs come before public but after established
+              };
+
+              const idxA = getDocIndex(a.doctorId);
+              const idxB = getDocIndex(b.doctorId);
+
+              if (idxA !== idxB) {
+                  return idxA - idxB;
+              }
+          }
+
+          // 3. Tertiary Sort: Time (startTime)
           return (a.startTime || '').localeCompare(b.startTime || '');
       });
-  }, [rows, filterDoctorId]);
+  }, [rows, filterDoctorId, clinicDocs]);
 
   const totals = useMemo(() => {
       let cashRevenue = 0;
@@ -507,7 +527,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           });
 
           if (newRows.length > 0) {
-              const updated = [...currentRows, ...newRows].sort((a,b) => (a.startTime||'').localeCompare(b.startTime||''));
+              const updated = [...currentRows, ...newRows];
               setRows(updated);
               await persistData(updated, expendituresRef.current);
           } else {

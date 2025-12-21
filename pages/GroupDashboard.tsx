@@ -200,7 +200,7 @@ const SelfPayAchievementChart = memo(({ data }: any) => (
     <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11, fontWeight: 'bold' }} />
+            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11, fontWeights: 'bold' }} />
             <YAxis yAxisId="left" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10 }} tickFormatter={(v) => `$${v/1000}k`} />
             <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fill: '#f59e0b', fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
             <Tooltip 
@@ -401,26 +401,35 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     return { clinicId: clinic.id, rows, staff };
                 });
 
+                const prevMonthStr = prevMonth;
                 const prevGranularPromises = clinics.map(async (clinic) => {
-                    const rows = await getMonthlyAccounting(clinic.id, prevMonth);
+                    const rows = await getMonthlyAccounting(clinic.id, prevMonthStr);
                     return { clinicId: clinic.id, rows };
                 });
 
-                const [snap, granularResults, prevGranularResults] = await Promise.all([
+                // FIX: Use explicit any type for await and cast the resulting tuple to ensure types are known
+                // This resolves errors where destructuring result of Promise.all on heterogeneous array results in 'unknown' type
+                const allData = (await Promise.all([
                     snapshotPromise, 
                     Promise.all(granularPromises), 
                     Promise.all(prevGranularPromises)
-                ]);
+                ])) as [any, any[], any[]];
+
+                const snap = allData[0];
+                const granularResults = allData[1];
+                const prevGranularResults = allData[2];
 
                 const newRows: Record<string, AccountingRow[]> = {};
                 const newStaffMap: Record<string, string> = {};
-                granularResults.forEach(res => {
+                // FIX: Cast granularResults elements to any during iteration to ensure access to clinicId, rows, and staff properties
+                granularResults.forEach((res: any) => {
                     newRows[res.clinicId] = res.rows;
-                    res.staff.forEach(s => newStaffMap[s.id] = s.name);
+                    res.staff.forEach((s: any) => newStaffMap[s.id] = s.name);
                 });
 
                 const newPrevRows: Record<string, AccountingRow[]> = {};
-                prevGranularResults.forEach(res => {
+                // FIX: Cast prevGranularResults elements to any during iteration to ensure access to clinicId and rows properties
+                prevGranularResults.forEach((res: any) => {
                     newPrevRows[res.clinicId] = res.rows;
                 });
 
@@ -650,7 +659,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     const amount = k === 'retail' ? (r.products || 0) + (r.diyWhitening || 0) : (t[k] || 0);
                     clinicBreakdown[cid].prev[idx] += amount;
                     if (breakdownFilter === 'all' || breakdownFilter === cid) {
-                        globalPrevTotals[idx] += amount;
+                        globalCurrentTotals[idx] += amount;
                     }
                 });
             });
@@ -688,9 +697,9 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         const closed = records.filter(r => r.isClosed).length;
         
         const conversionData = [
-            { name: '約診', value: leads, fill: '#818cf8' }, 
-            { name: '到診', value: visited, fill: '#34d399' }, 
-            { name: '成交', value: closed, fill: '#f472b6' }
+            { name: '約診 (Leads)', value: leads, fill: '#8884d8' }, 
+            { name: '到診 (Visited)', value: visited, fill: '#82ca9d' }, 
+            { name: '成交 (Closed)', value: closed, fill: '#ffc658' }
         ];
         
         const consultantMap: Record<string, { leads: number, visited: number, closed: number }> = {};
@@ -705,8 +714,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         const scorecard = Object.keys(consultantMap)
             .map(name => ({ name, ...consultantMap[name], rate: consultantMap[name].leads > 0 ? (consultantMap[name].closed / consultantMap[name].leads) * 100 : 0 }))
             .filter(c => c.name && c.name !== '未指定' && c.name !== 'Unknown')
-            .sort((a,b) => b.closed - a.closed)
-            .slice(0, 5);
+            .sort((a,b) => b.closed - a.closed);
 
         return { conversionData, scorecard, leads, visited, closed };
     }, [chartFilteredRecords, marketingFilter, staffMap]);
@@ -978,12 +986,12 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                         </div>
                     </div>
 
-                    <div className="flex flex-col lg:flex-row gap-6 lg:h-[500px] min-h-[400px]">
-                        <div className="w-full lg:w-2/3 bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col">
-                             <div className="flex justify-between items-center mb-6">
+                    <div className="flex flex-col lg:flex-row gap-6">
+                        <div className="w-full lg:w-2/3 bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[400px] lg:h-[500px]">
+                             <div className="flex justify-between items-center mb-6 shrink-0">
                                 <h3 className="font-bold text-slate-800 flex items-center gap-2"><Target className="text-indigo-600" /> 院所達成率圖表 (Revenue Achievement)</h3>
                              </div>
-                             <div className="flex-1 w-full overflow-hidden">
+                             <div className="flex-1 w-full overflow-hidden min-h-0">
                                 <KPIProgressChart 
                                     data={performanceMatrix.map(p => ({ 
                                         name: p.name, 
@@ -996,8 +1004,8 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                              </div>
                         </div>
 
-                        <div className="w-full lg:w-1/3 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
-                            <div className="sticky top-0 bg-white z-10 p-5 border-b border-slate-50 flex items-center gap-2 text-slate-800">
+                        <div className="w-full lg:w-1/3 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-auto max-h-[400px] lg:h-[500px] lg:max-h-none overflow-hidden">
+                            <div className="sticky top-0 bg-white z-10 p-5 border-b border-slate-50 flex items-center gap-2 text-slate-800 shrink-0">
                                 <Medal className="text-amber-500" />
                                 <h3 className="font-black uppercase tracking-wider text-sm">達成排行榜 (Ranking)</h3>
                             </div>
@@ -1071,7 +1079,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                                     <span className="text-slate-400 text-[10px]">$</span>
                                                     <input 
                                                         type="number" 
-                                                        className="w-28 border border-slate-200 rounded px-2 py-1 text-right font-mono font-bold bg-white focus:ring-2 focus:ring-purple-500 outline-none"
+                                                        className="w-28 border border-slate-200 rounded px-2 py-1 text-right font-mono font-bold bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
                                                         value={item.selfPayTarget}
                                                         onChange={(e) => handleTargetUpdate(item.id, 'selfPayTarget', e.target.value)}
                                                     />
@@ -1282,6 +1290,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                             {sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                                         </select>
                                     </div>
+
                                 </div>
                             </div>
                             <div className="flex flex-col md:flex-row items-center gap-8 flex-1 min-h-0">
@@ -1333,9 +1342,13 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                     <Tag size={14} className="text-slate-400 ml-2" />
                                     <select className="bg-transparent text-xs font-black text-slate-600 py-1.5 px-2 outline-none cursor-pointer" value={trendTagFilter} onChange={e => setTrendTagFilter(e.target.value)}>
                                         <option value="all">全部標籤 ({trendTagOptions.total})</option>
-                                        {trendTagOptions.options.map(({ tag, count }) => (
-                                            <option key={tag} value={tag}>{tag} ({count})</option>
-                                        ))}
+                                        {trendTagOptions.options.map(({ tag, count }) => {
+                                            // UI Refinement: Respect Exclude NHI in Trend Chart Filter
+                                            if (excludeNHI && tag.includes('健保')) return null;
+                                            return (
+                                                <option key={tag} value={tag}>{tag} ({count})</option>
+                                            );
+                                        })}
                                     </select>
                                 </div>
                                 <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-lg border">
@@ -1356,17 +1369,17 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                         <div className="p-6 border-b border-slate-50 flex items-center gap-2">
                              <Trophy className="text-amber-500" />
-                             <h3 className="font-bold text-slate-800 uppercase tracking-wider text-sm">諮詢師戰報 (Top 5)</h3>
+                             <h3 className="font-bold text-slate-800 uppercase tracking-wider text-sm">諮詢師戰報 (Full List)</h3>
                         </div>
-                        <div className="overflow-x-auto">
+                        <div className="max-h-[400px] overflow-y-auto custom-scrollbar">
                             <table className="w-full text-sm text-left">
-                                <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-[10px] border-b border-slate-100">
+                                <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-[10px] border-b border-slate-100 sticky top-0 z-10">
                                     <tr>
-                                        <th className="px-6 py-4">諮詢師姓名</th>
-                                        <th className="px-6 py-4 text-center">總進單 (Leads)</th>
-                                        <th className="px-6 py-4 text-center">已到診 (Visited)</th>
-                                        <th className="px-6 py-4 text-center">已成交 (Closed)</th>
-                                        <th className="px-6 py-4 text-right">轉換率 (%)</th>
+                                        <th className="px-6 py-4 bg-slate-50">諮詢師姓名</th>
+                                        <th className="px-6 py-4 text-center bg-slate-50">總進單 (Leads)</th>
+                                        <th className="px-6 py-4 text-center bg-slate-50">已到診 (Visited)</th>
+                                        <th className="px-6 py-4 text-center bg-slate-50">已成交 (Closed)</th>
+                                        <th className="px-6 py-4 text-right bg-slate-50">轉換率 (%)</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-50">
@@ -1398,22 +1411,22 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
 
                     {/* NP Raw Data Table */}
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div className="p-6 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
+                        <div className="p-6 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
                             <h3 className="font-bold text-slate-700">NP 進單原始資料 (Raw Data)</h3>
                         </div>
                         <div className="overflow-x-auto max-h-[600px] custom-scrollbar">
                              <table className="w-full text-sm text-left">
                                 <thead className="bg-white border-b border-slate-100 sticky top-0 z-20 shadow-sm">
                                     <tr>
-                                        <th className="px-4 py-4 min-w-[140px]"><TableHeaderFilter label="日期" value={filterDate} onChange={setFilterDate} options={filterOptions.dates} /></th>
-                                        <th className="px-4 py-4 font-bold text-slate-400 text-[10px] uppercase">姓名</th>
-                                        <th className="px-4 py-4 min-w-[140px]"><TableHeaderFilter label="診所" value={filterClinic} onChange={setFilterClinic} options={filterOptions.clinics} /></th>
-                                        <th className="px-4 py-4 min-w-[140px]"><TableHeaderFilter label="醫師" value={filterDoctor} onChange={setFilterDoctor} options={filterOptions.doctors} /></th>
+                                        <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="日期" value={filterDate} onChange={setFilterDate} options={filterOptions.dates} /></th>
+                                        <th className="px-4 py-4 w-[145px] font-bold text-slate-400 text-[10px] uppercase">姓名</th>
+                                        <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="診所" value={filterClinic} onChange={setFilterClinic} options={filterOptions.clinics} /></th>
+                                        <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="醫師" value={filterDoctor} onChange={setFilterDoctor} options={filterOptions.doctors} /></th>
                                         <th className="px-4 py-4 font-bold text-slate-400 text-[10px] uppercase min-w-[150px]">預約療程</th>
-                                        <th className="px-4 py-4 min-w-[160px]"><TableHeaderFilter label="行銷標籤" value={filterTag} onChange={setFilterTag} options={marketingTags} /></th>
-                                        <th className="px-4 py-4 min-w-[140px]"><TableHeaderFilter label="諮詢師" value={filterConsultant} onChange={setFilterConsultant} options={filterOptions.consultants} /></th>
-                                        <th className="px-4 py-4 min-w-[140px]"><TableHeaderFilter label="來源" value={filterSource} onChange={setFilterSource} options={filterOptions.sources} /></th>
-                                        <th className="px-4 py-4 min-w-[140px]"><TableHeaderFilter label="狀態" value={filterStatus} onChange={setFilterStatus} options={filterOptions.statuses} /></th>
+                                        <th className="px-4 py-4 w-[160px]"><TableHeaderFilter label="行銷標籤" value={filterTag} onChange={setFilterTag} options={marketingTags} /></th>
+                                        <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="諮詢師" value={filterConsultant} onChange={setFilterConsultant} options={filterOptions.consultants} /></th>
+                                        <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="來源" value={filterSource} onChange={setFilterSource} options={filterOptions.sources} /></th>
+                                        <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="狀態" value={filterStatus} onChange={setFilterStatus} options={filterOptions.statuses} /></th>
                                         <th className="px-4 py-4 text-center text-[10px] text-slate-400 font-bold uppercase w-16">刪除</th>
                                     </tr>
                                 </thead>
@@ -1481,3 +1494,5 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         </div>
     );
 };
+
+export default GroupDashboard;

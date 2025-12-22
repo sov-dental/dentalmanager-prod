@@ -34,18 +34,18 @@ export const exportDailyReportToExcel = async (
   dateStr: string,
   rows: AccountingRow[],
   expenditures: Expenditure[],
-  consultants: Consultant[] = [] // Added consultants argument with default empty array
+  consultants: Consultant[] = []
 ) => {
   // --- 0. Data Preparation ---
   
-  // A. Build Staff Lookup Map (ID -> Name)
+  // A. Build Staff Lookup Map (ID -> Name) for resolving Consultant names in NP records
   const staffMap = new Map<string, string>();
   consultants.forEach(c => {
       staffMap.set(c.id, c.name);
   });
 
-  // B. Fetch NP Details from Firestore
-  let npMap = new Map<string, NPRecord>();
+  // B. Fetch NP Details from Firestore for this specific clinic and date
+  const npMap = new Map<string, NPRecord>();
   try {
       const npSnap = await db.collection('np_records')
         .where('clinicId', '==', clinicId)
@@ -54,13 +54,13 @@ export const exportDailyReportToExcel = async (
       
       npSnap.docs.forEach(doc => {
           const data = doc.data() as NPRecord;
-          if (data.patientName) {
-              npMap.set(data.patientName.trim(), data);
+          if (!data.isHidden) {
+              // CRITICAL FIX: Match by Document ID (which corresponds to row.id)
+              npMap.set(doc.id, data);
           }
       });
   } catch (e) {
       console.error("Error fetching NP records for export:", e);
-      // Continue without detailed NP info if fetch fails
   }
 
   // C. Group/Sort by Doctor Name
@@ -98,7 +98,7 @@ export const exportDailyReportToExcel = async (
     { key: 'merch', width: 9 },     // M: 物販/小金庫
     { key: 'deposit', width: 8 },   // N: 押單
     { key: 'doc', width: 12 },      // O: 醫師 (Full Name)
-    { key: 'note', width: 25 },     // P: 備註/NP (Widened to 25 to fit details)
+    { key: 'note', width: 35 },     // P: 備註/NP (Widened to fit merged info)
     { key: 'content', width: 25 },  // Q: 療程內容
     { key: 'consultant', width: 10 },// R: 諮詢師
     { key: 'retailItem', width: 15 },// S: 販售品項
@@ -133,7 +133,6 @@ export const exportDailyReportToExcel = async (
   headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
   headerRow.height = 24;
   
-  // Apply borders/bg to header
   headerRow.eachCell((cell) => {
     cell.border = {
       top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' }
@@ -141,19 +140,16 @@ export const exportDailyReportToExcel = async (
     cell.fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: 'FFF0F0F0' } // Light Gray
+      fgColor: { argb: 'FFF0F0F0' }
     };
   });
 
   // --- 4. Data Rows ---
   let currentRowIdx = 4;
-  
-  // Track Totals for Footer Calculation
   let totalCash = 0;
   let totalCard = 0;
   let totalTransfer = 0;
 
-  // Column Sums (Raw Numbers for display row)
   let colTotals = {
     reg: 0, copay: 0, prostho: 0, implant: 0, whitening: 0, ortho: 0, sov: 0, inv: 0, perio: 0, other: 0, merch: 0
   };
@@ -161,11 +157,8 @@ export const exportDailyReportToExcel = async (
   sortedRows.forEach((row, index) => {
     const r = sheet.getRow(currentRowIdx);
     const method = row.paymentMethod || 'cash';
-
-    // Update Financial Totals based on breakdown or method fallback
     const rowTotal = row.actualCollected || 0;
     
-    // Explicit breakdown check first, fallback to method
     const bd = row.paymentBreakdown || { cash: 0, card: 0, transfer: 0 };
     if (bd.cash > 0 || bd.card > 0 || bd.transfer > 0) {
         totalCash += bd.cash;
@@ -177,7 +170,6 @@ export const exportDailyReportToExcel = async (
         else totalCash += rowTotal;
     }
 
-    // Update Column Totals (Pure numbers for sum row)
     colTotals.reg += (row.treatments.regFee || 0);
     colTotals.copay += (row.treatments.copayment || 0);
     colTotals.prostho += (row.treatments.prostho || 0);
@@ -190,51 +182,53 @@ export const exportDailyReportToExcel = async (
     colTotals.other += (row.treatments.otherSelfPay || 0);
     colTotals.merch += (row.retail.products || 0) + (row.retail.diyWhitening || 0);
 
-    // Format Note (P Column) - Merge NP Data
+    // CRITICAL FIX: Merge NP details from fetched map using unique ID
     let noteStr = "";
-    // Check if this patient is in the fetched NP Map
-    const npData = npMap.get(row.patientName.trim());
+    const npData = npMap.get(row.id);
     
     if (npData) {
-        // Resolve Consultant Name from ID using staffMap
+        // Resolve Consultant Name from ID
         const consultantId = npData.consultant || '';
-        const consultantName = staffMap.get(consultantId) || consultantId || '-';
+        const consultantName = staffMap.get(consultantId) || consultantId || '';
         
-        // Found detailed record: NP / Tag / Consultant Name
-        noteStr = `NP / ${npData.marketingTag || '-'} / ${consultantName}`;
+        // Detailed string format: NP / [Tag] / [Source] / [Consultant]
+        const npParts = [
+            npData.marketingTag,
+            npData.source,
+            consultantName
+        ].filter(p => p && p !== '-');
+        
+        noteStr = "NP" + (npParts.length > 0 ? " / " + npParts.join(" / ") : "");
     } else {
-        // Fallback to row data
+        // Fallback to existing manual notes if no NP tracking record found
         noteStr = row.npStatus || (row as any).note || "";
     }
 
-    // Map Data
     r.values = [
-      index + 1,                                // A: No
-      row.patientName,                          // B: Name
-      formatCurrency(row.treatments.regFee, method),      // C
-      formatCurrency(row.treatments.copayment, method),   // D
-      formatCurrency(row.treatments.prostho, method),     // E
-      formatCurrency(row.treatments.implant, method),     // F
-      formatCurrency(row.treatments.whitening, method),   // G
-      formatCurrency(row.treatments.ortho, method),       // H
-      formatCurrency(row.treatments.sov, method),         // I
-      formatCurrency(row.treatments.inv, method),         // J
-      formatCurrency(row.treatments.perio, method),       // K
-      formatCurrency(row.treatments.otherSelfPay, method),// L
-      formatCurrency((row.retail.products||0) + (row.retail.diyWhitening||0), method), // M
-      '',                                       // N: Deposit
-      row.doctorName || '',                     // O: Doctor Full Name
-      noteStr,                                  // P: Note/NP (Detailed)
-      row.treatmentContent || '',               // Q: Content
-      row.treatments.consultant || '',          // R: Consultant
-      row.retailItem || row.retail.productNote || '', // S: Retail Item
-      row.retail.staff || ''                    // T: Handler
+      index + 1,
+      row.patientName,
+      formatCurrency(row.treatments.regFee, method),
+      formatCurrency(row.treatments.copayment, method),
+      formatCurrency(row.treatments.prostho, method),
+      formatCurrency(row.treatments.implant, method),
+      formatCurrency(row.treatments.whitening, method),
+      formatCurrency(row.treatments.ortho, method),
+      formatCurrency(row.treatments.sov, method),
+      formatCurrency(row.treatments.inv, method),
+      formatCurrency(row.treatments.perio, method),
+      formatCurrency(row.treatments.otherSelfPay, method),
+      formatCurrency((row.retail.products||0) + (row.retail.diyWhitening||0), method),
+      '',
+      row.doctorName || '',
+      noteStr, // Column P: Merged NP Details
+      row.treatmentContent || '',
+      row.treatments.consultant || '',
+      row.retailItem || row.retail.productNote || '',
+      row.retail.staff || ''
     ];
 
     r.font = { name: 'Microsoft JhengHei', size: 10 };
     r.alignment = { vertical: 'middle', horizontal: 'center' }; 
-    
-    // Borders
     r.eachCell({ includeEmpty: true }, (cell) => {
       cell.border = { top: {style:'thin'}, left: {style:'thin'}, bottom: {style:'thin'}, right: {style:'thin'} };
     });
@@ -242,7 +236,7 @@ export const exportDailyReportToExcel = async (
     currentRowIdx++;
   });
 
-  // --- 5. Padding Rows ---
+  // Add some padding rows
   for (let i = 0; i < 3; i++) {
     const r = sheet.getRow(currentRowIdx);
     r.values = [sortedRows.length + i + 1];
@@ -252,7 +246,7 @@ export const exportDailyReportToExcel = async (
     currentRowIdx++;
   }
 
-  // --- 6. Footer Summary Row (Totals) ---
+  // Footer Totals Row
   const totalsRow = sheet.getRow(currentRowIdx);
   totalsRow.values = [
     '總計', '', 
@@ -262,34 +256,26 @@ export const exportDailyReportToExcel = async (
   ];
   totalsRow.font = { name: 'Microsoft JhengHei', size: 11, bold: true };
   totalsRow.alignment = { vertical: 'middle', horizontal: 'center' };
-  
-  // Apply borders to total numbers
   for(let c=3; c<=14; c++) {
       const cell = totalsRow.getCell(c);
       cell.border = { top: {style:'double'}, bottom: {style:'double'} };
   }
-  currentRowIdx++;
-  currentRowIdx++; 
+  currentRowIdx += 2;
 
-  // --- 7. Footer Layout (Expenditures & Financials) ---
+  // Expenditures & Summary Section
   const startFooterRow = currentRowIdx;
   const totalExpenditureAmount = expenditures.reduce((s, e) => s + e.amount, 0);
   const netTotal = totalCash - totalExpenditureAmount + totalCard + totalTransfer;
 
-  // -- Left Side: Expenditure List --
   sheet.mergeCells(`A${startFooterRow}:H${startFooterRow}`);
-  sheet.getCell(`A${startFooterRow}`).value = "支出明細 (Expenditure Details):";
-  sheet.getCell(`A${startFooterRow}`).font = { name: 'Microsoft JhengHei', size: 10, bold: true };
+  const expTitleCell = sheet.getCell(`A${startFooterRow}`);
+  expTitleCell.value = "支出明細 (Expenditure Details):";
+  expTitleCell.font = { name: 'Microsoft JhengHei', size: 10, bold: true };
 
-  // Build Expenditure String
-  let expString = "";
-  if (expenditures.length > 0) {
-      expString = expenditures.map((e, i) => `${i + 1}. ${e.item} $${e.amount.toLocaleString()}`).join('\n');
-  } else {
-      expString = "無支出";
-  }
+  let expString = expenditures.length > 0 
+    ? expenditures.map((e, i) => `${i + 1}. ${e.item} $${e.amount.toLocaleString()}`).join('\n')
+    : "無支出";
 
-  // Merge cell for the list
   sheet.mergeCells(`A${startFooterRow+1}:H${startFooterRow+6}`);
   const expListCell = sheet.getCell(`A${startFooterRow+1}`);
   expListCell.value = expString;
@@ -297,31 +283,23 @@ export const exportDailyReportToExcel = async (
   expListCell.font = { name: 'Microsoft JhengHei', size: 10 };
   expListCell.border = { top: {style:'thin'}, left: {style:'thin'}, bottom: {style:'thin'}, right: {style:'thin'} };
 
-  // -- Right Side: Financial Summary (5 specific lines) --
-  // We place this around column K to T
-  const labelCol = 'K'; // Labels
-  const valueCol = 'N'; // Values
+  const labelCol = 'K';
+  const valueCol = 'N';
   
   const addSummaryLine = (rowOffset: number, label: string, amount: number, isNegative = false, isTotal = false) => {
       const rIdx = startFooterRow + rowOffset;
-      
-      // Label
       sheet.mergeCells(`${labelCol}${rIdx}:M${rIdx}`);
       const lCell = sheet.getCell(`${labelCol}${rIdx}`);
       lCell.value = label;
       lCell.alignment = { horizontal: 'right' };
       lCell.font = { name: 'Microsoft JhengHei', size: 11, bold: true };
 
-      // Value
       sheet.mergeCells(`${valueCol}${rIdx}:P${rIdx}`);
       const vCell = sheet.getCell(`${valueCol}${rIdx}`);
       vCell.value = isNegative ? `-$${amount.toLocaleString()}` : `$${amount.toLocaleString()}`;
       vCell.alignment = { horizontal: 'right' };
       vCell.font = { name: 'Microsoft JhengHei', size: 11, bold: true, color: { argb: isTotal ? 'FF000000' : isNegative ? 'FFFF0000' : 'FF000000' } };
-      
-      if (isTotal) {
-          vCell.border = { top: {style:'double'} };
-      }
+      if (isTotal) vCell.border = { top: {style:'double'} };
   };
 
   addSummaryLine(0, "現金收入 (Cash):", totalCash);
@@ -338,7 +316,6 @@ export const exportDailyReportToExcel = async (
   signCell.alignment = { horizontal: 'right', vertical: 'bottom' };
   signCell.font = { name: 'Microsoft JhengHei', size: 10 };
 
-  // --- Finish & Download ---
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const url = window.URL.createObjectURL(blob);

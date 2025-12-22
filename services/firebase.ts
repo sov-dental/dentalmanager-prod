@@ -168,6 +168,7 @@ export const hydrateRow = (row: any): AccountingRow => {
         },
         actualCollected: Number(row.actualCollected) || 0,
         attendance: row.attendance !== undefined ? row.attendance : true,
+        sortOrder: row.sortOrder || 0,
     };
 };
 
@@ -886,7 +887,7 @@ export const checkPreviousUnlocked = async (currentDate: string, clinicId: strin
 export const getMonthlyClosingStatus = async (clinicId: string, yearMonth: string): Promise<MonthlyClosing | null> => {
     const docId = `${clinicId}_${yearMonth}`;
     const doc = await db.collection('monthly_closings').doc(docId).get();
-    return doc.exists ? doc.data() as MonthlyClosing : null;
+    return doc.exists ? doc.data() : null;
 };
 
 export const lockMonthlyReport = async (clinicId: string, yearMonth: string, user: { uid: string, name: string }) => {

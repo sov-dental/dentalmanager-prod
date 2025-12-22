@@ -230,6 +230,9 @@ export interface AccountingRow {
     // CRM Fields (Hidden)
     chartId?: string;
     patientStatus?: string;
+    sortOrder?: number;
+    isNP?: boolean;
+    note?: string;
 }
 
 export interface Expenditure {

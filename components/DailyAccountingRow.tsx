@@ -79,6 +79,13 @@ interface RowProps {
 const DailyAccountingRow: React.FC<RowProps> = ({
     row, index, isLocked, clinicDocs, clinicLabs, consultantOptions, staffOptions, npRec, onUpdate, onDelete, onOpenNPModal
 }) => {
+    // Add local state for sortOrder to allow typing
+    const [localSortOrder, setLocalSortOrder] = useState(row.sortOrder || 0);
+
+    useEffect(() => {
+        setLocalSortOrder(row.sortOrder || 0);
+    }, [row.sortOrder]);
+
     const totalAmount = (row.treatments.regFee||0) + (row.treatments.copayment||0) + 
                     (row.treatments.prostho||0) + (row.treatments.implant||0) + (row.treatments.ortho||0) + 
                     (row.treatments.sov||0) + (row.treatments.inv||0) + (row.treatments.perio||0) + 
@@ -126,16 +133,32 @@ const DailyAccountingRow: React.FC<RowProps> = ({
                     <button onClick={() => onUpdate(row.id, { attendance: !row.attendance })} className="transition-colors" disabled={isLocked}>
                         {row.attendance ? <CheckCircle size={14} className="text-emerald-500" /> : <Circle size={14} className="text-slate-300" />}
                     </button>
-                    <span className="text-[9px] text-slate-400">{index+1}</span>
+                    <div className="mt-1 flex justify-center">
+                        {row.isManual ? (
+                            <input
+                                type="number"
+                                className="w-8 text-center text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded outline-none focus:ring-1 focus:ring-blue-400 p-0"
+                                value={localSortOrder}
+                                onChange={(e) => setLocalSortOrder(Number(e.target.value))}
+                                onBlur={() => onUpdate(row.id, { sortOrder: localSortOrder })}
+                                onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
+                                disabled={isLocked}
+                            />
+                        ) : (
+                            <span className="text-[10px] text-slate-400 font-mono">
+                                {row.sortOrder || 0}
+                            </span>
+                        )}
+                    </div>
                 </div>
             </td>
-            <td className="px-1 py-1 border-r border-gray-200 sticky left-[32px] bg-white group-hover:bg-blue-50/30 z-30 align-middle w-20 min-w-[80px]">
+            <td className="px-1 py-1 border-r border-gray-200 sticky left-[32px] bg-white group-hover:bg-blue-50/30 z-30 align-middle min-w-[80px]">
                 <InputCell initialValue={row.chartId} onCommit={(v) => onUpdate(row.id, { chartId: v })} className={`text-slate-700 font-mono text-[11px] ${isChartIdLocked ? 'bg-slate-50' : ''}`} placeholder="病歷號" disabled={isChartIdLocked} />
             </td>
-            <td className="px-1 py-1 border-r border-gray-200 sticky left-[112px] bg-white group-hover:bg-blue-50/30 z-30 align-middle w-32 min-w-[128px]">
+            <td className="px-1 py-1 border-r border-gray-200 sticky left-[114px] bg-white group-hover:bg-blue-50/30 z-30 align-middle min-w-[112px]">
                 <InputCell initialValue={row.patientName} onCommit={(v) => onUpdate(row.id, { patientName: v })} className={getPatientNameClass(row)} disabled={isLocked} />
             </td>
-            <td className="px-1 py-1 border-r-2 border-gray-300 sticky left-[240px] bg-white group-hover:bg-blue-50/30 z-30 text-center align-middle w-28 min-w-[112px]">
+            <td className="px-1 py-1 border-r-2 border-gray-300 sticky left-[226px] bg-white group-hover:bg-blue-50/30 z-30 text-center align-middle min-w-[112px]">
                 {row.isManual || (row as any).isPublicCalendar ? (
                     <select className="w-full bg-transparent text-xs outline-none text-slate-700 font-medium text-right" dir="rtl" value={row.doctorId} onChange={(e) => { const val = e.target.value; const name = val === 'clinic_public' ? PUBLIC_DOCTOR.name : (clinicDocs.find(d=>d.id===val)?.name||''); onUpdate(row.id, { doctorId: val, doctorName: name }); }} disabled={isLocked}>
                         <option value="">選醫師</option><option value="clinic_public">診所 (Public)</option>{clinicDocs.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}

@@ -250,7 +250,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               setDailyRecord(data);
               
               const loadedRows = (data.rows || []).map(r => hydrateRow(r));
-              setRows(loadedRows);
+              // PRIMARY SORT BY sortOrder
+              setRows(loadedRows.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)));
               setExpenditures(data.expenditures || []);
           } else {
               setDailyRecord(null);
@@ -275,33 +276,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           filtered = rows.filter(r => r.doctorId === filterDoctorId);
       }
       
-      return [...filtered].sort((a, b) => {
-          // 1. Primary Sort: Manual Rows vs Calendar Events
-          if (a.isManual !== b.isManual) {
-              return a.isManual ? 1 : -1;
-          }
-
-          // Both are same type (Manual or Auto)
-          // 2. Secondary Sort: Group by Doctor Order (For non-manual entries)
-          if (!a.isManual) {
-              const getDocIndex = (id: string) => {
-                  if (id === 'clinic_public') return 9999;
-                  const idx = clinicDocs.findIndex(d => d.id === id);
-                  return idx === -1 ? 9998 : idx; // Unknown docs come before public but after established
-              };
-
-              const idxA = getDocIndex(a.doctorId);
-              const idxB = getDocIndex(b.doctorId);
-
-              if (idxA !== idxB) {
-                  return idxA - idxB;
-              }
-          }
-
-          // 3. Tertiary Sort: Time (startTime)
-          return (a.startTime || '').localeCompare(b.startTime || '');
-      });
-  }, [rows, filterDoctorId, clinicDocs]);
+      // Strict sorting by sortOrder to respect user manual inputs and incremental sync
+      return [...filtered].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+  }, [rows, filterDoctorId]);
 
   const totals = useMemo(() => {
       let cashRevenue = 0;
@@ -361,7 +338,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   }, [rows]);
 
   const prepareDataForSave = (currentRows: AccountingRow[]) => {
-      return currentRows.map(row => {
+      return currentRows.map((row, index) => {
           const t = row.treatments;
           const r = row.retail;
           const safeT = {
@@ -400,7 +377,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               actualCollected: total,
               paymentBreakdown: pb,
               attendance: row.attendance ?? true,
-              chartId: row.chartId || ''
+              chartId: row.chartId || '',
+              sortOrder: row.sortOrder || (index + 1) * 10
           };
       });
   };
@@ -452,9 +430,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           const end = new Date(currentDate); end.setHours(23,59,59,999);
           const mapping = selectedClinic.googleCalendarMapping;
           const currentRows = rowsRef.current;
+          
+          const existingManualRows = currentRows.filter(r => r.isManual);
           const existingIds = new Set(currentRows.map(r => r.id));
-          const newRows: AccountingRow[] = [];
-
           const allEvents: any[] = [];
 
           for (const doc of clinicDocs) {
@@ -462,7 +440,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               if (calendarId) {
                   const events = await listEvents(calendarId, start, end);
                   events.forEach(ev => {
-                      if (!existingIds.has(ev.id) && !ev.allDay) {
+                      if (!ev.allDay) {
                           allEvents.push({ event: ev, doc });
                       }
                   });
@@ -473,13 +451,27 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           if (publicCalId) {
               const pEvents = await listEvents(publicCalId, start, end);
               pEvents.forEach(ev => {
-                  if (!existingIds.has(ev.id) && !ev.allDay) {
+                  if (!ev.allDay) {
                       allEvents.push({ event: ev, isPublic: true });
                   }
               });
           }
 
-          const processedRows = await Promise.all(allEvents.map(async (item) => {
+          // 1. Sort Events in Memory: Doctor Order > Time
+          const sortedEvents = allEvents.sort((a, b) => {
+              const getDocIndex = (item: any) => {
+                  if (item.isPublic) return 9999;
+                  const idx = clinicDocs.findIndex(d => d.id === item.doc.id);
+                  return idx === -1 ? 9998 : idx;
+              };
+              const idxA = getDocIndex(a);
+              const idxB = getDocIndex(b);
+              if (idxA !== idxB) return idxA - idxB;
+              return (a.event.start.dateTime || '').localeCompare(b.event.start.dateTime || '');
+          });
+
+          // 2. Process into Rows and Assign sortOrder in gaps of 10
+          const processedCalendarRows = await Promise.all(sortedEvents.map(async (item, index) => {
               const { event, doc, isPublic } = item;
               const parsed = parseCalendarEvent(event.summary);
               if (!parsed) return null;
@@ -487,52 +479,48 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               let lastConsultant = '';
               let finalChartId = parsed.chartId;
 
-              try {
-                  const profile = await findPatientProfile(selectedClinicId, parsed.name, parsed.chartId);
-                  if (profile) {
-                      if (profile.lastConsultant) lastConsultant = profile.lastConsultant;
-                      if (profile.chartId) finalChartId = profile.chartId;
+              // Preserve content if row already exists
+              const existingRow = currentRows.find(r => r.id === event.id);
+
+              if (!existingRow) {
+                  try {
+                      const profile = await findPatientProfile(selectedClinicId, parsed.name, parsed.chartId);
+                      if (profile) {
+                          if (profile.lastConsultant) lastConsultant = profile.lastConsultant;
+                          if (profile.chartId) finalChartId = profile.chartId;
+                      }
+                  } catch (e) {
+                      console.warn("CRM lookup failed", e);
                   }
-              } catch (e) {
-                  console.warn("CRM lookup failed", e);
               }
 
               return {
-                  ...hydrateRow({}),
+                  ...hydrateRow(existingRow || {}),
                   id: event.id,
                   patientName: parsed.name,
                   doctorId: isPublic ? PUBLIC_DOCTOR.id : doc.id,
                   doctorName: isPublic ? PUBLIC_DOCTOR.name : doc.name,
-                  treatmentContent: "", 
+                  treatmentContent: existingRow?.treatmentContent || "", 
                   calendarTreatment: parsed.treatment, 
-                  npStatus: parsed.isNP ? 'NP' : '',
-                  paymentMethod: 'cash',
-                  paymentBreakdown: { cash: 0, card: 0, transfer: 0 },
+                  npStatus: existingRow?.npStatus || (parsed.isNP ? 'NP' : ''),
+                  paymentMethod: existingRow?.paymentMethod || 'cash',
                   isManual: false,
                   isPublicCalendar: isPublic || false,
-                  attendance: true,
+                  attendance: existingRow?.attendance ?? true,
                   startTime: event.start.dateTime || new Date().toISOString(),
-                  chartId: finalChartId || undefined,
-                  patientStatus: parsed.status,
-                  isNP: parsed.isNP,
-                  treatments: {
-                      ...hydrateRow({}).treatments,
-                      consultant: lastConsultant
-                  }
+                  chartId: finalChartId || existingRow?.chartId || undefined,
+                  sortOrder: (index + 1) * 10 // Assignment with gaps
               } as AccountingRow;
           }));
 
-          processedRows.forEach(row => {
-              if (row) newRows.push(row);
-          });
+          const validCalendarRows = processedCalendarRows.filter(Boolean) as AccountingRow[];
+          
+          // 3. Combine with manual rows (preserving their sortOrders)
+          const finalCombined = [...validCalendarRows, ...existingManualRows];
 
-          if (newRows.length > 0) {
-              const updated = [...currentRows, ...newRows];
-              setRows(updated);
-              await persistData(updated, expendituresRef.current);
-          } else {
-              alert("已同步，無新增項目");
-          }
+          setRows(finalCombined);
+          await persistData(finalCombined, expendituresRef.current);
+          
       } catch (e) {
           console.error(e);
           alert("同步失敗");
@@ -543,6 +531,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const handleAddRow = useCallback(() => {
       if (isLocked) return;
+      const currentRows = rowsRef.current;
+      const maxSortOrder = Math.max(...currentRows.map(r => r.sortOrder || 0), 0);
+
       const newRow: AccountingRow = {
           ...hydrateRow({}),
           id: crypto.randomUUID(),
@@ -552,9 +543,10 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           chartId: null,
           patientStatus: '',
           paymentMethod: 'cash',
-          paymentBreakdown: { cash: 0, card: 0, transfer: 0 }
+          paymentBreakdown: { cash: 0, card: 0, transfer: 0 },
+          sortOrder: maxSortOrder + 10
       };
-      const updated = [...rowsRef.current, newRow];
+      const updated = [...currentRows, newRow];
       setRows(updated);
       setHasUnsavedChanges(true);
 
@@ -646,13 +638,11 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                   }
               }
 
-              // --- AUTO NP DETECTION & RESTORATION LOGIC ---
               if (newRow.patientName && newRow.patientName.trim()) {
                   const searchStr = `${newRow.npStatus || ''} ${(newRow as any).note || ''} ${newRow.treatmentContent || ''}`.toUpperCase();
                   const isNPDetected = searchStr.includes('NP') || searchStr.includes('新患') || searchStr.includes('初診');
                   
                   if (isNPDetected) {
-                      // Trigger restoration in local UI immediately
                       (newRow as any).isNP = true;
                       
                       saveNPRecord(newRow.id, {
@@ -666,7 +656,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                           marketingTag: '一般健保',
                           calendarTreatment: newRow.calendarTreatment,
                           updatedAt: new Date().toISOString(),
-                          isHidden: false // Critical Fix: Explicitly restore the record
+                          isHidden: false 
                       }).catch(e => console.error("[AutoNP] Restoration failed:", e));
                   }
               }
@@ -690,12 +680,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       if (isLocked) return;
       if (!confirm("確定刪除此列？")) return;
 
-      // Soft-delete NP if it exists
       try {
           await deleteNPRecord(id);
-      } catch (e) {
-          console.warn("NP soft-delete failed or record didn't exist", e);
-      }
+      } catch (e) {}
 
       const updated = rowsRef.current.filter(r => r.id !== id);
       setRows(updated);
@@ -738,36 +725,18 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       
       const canUnlock = ['admin', 'manager', 'team_leader', 'staff'].includes(userRole || '');
       if (!canUnlock) {
-          alert("權限不足：您沒有權限執行此操作");
+          alert("權限不足");
           return;
       }
       if (isMonthLocked) {
-          alert("⚠️ 本月已結帳鎖定，請先前往「月營收報表」解除月結鎖定。");
+          alert("⚠️ 本月已結帳鎖定");
           return;
       }
 
-      if (!confirm("確定要解鎖嗎？系統將自動嘗試填入遺漏的病歷號，所有變更將被記錄。")) return;
+      if (!confirm("確定要解鎖嗎？")) return;
       
       setIsSyncing(true);
       try {
-          let hasUpdates = false;
-          const updatedRows = [...rowsRef.current];
-          
-          await Promise.all(updatedRows.map(async (row, idx) => {
-              if (!row.chartId && row.patientName) {
-                  const patient = await findPatientProfile(selectedClinicId, row.patientName);
-                  if (patient && patient.chartId) {
-                      updatedRows[idx] = { ...row, chartId: patient.chartId };
-                      hasUpdates = true;
-                  }
-              }
-          }));
-
-          if (hasUpdates) {
-              setRows(updatedRows);
-              await persistData(updatedRows, expendituresRef.current);
-          }
-
           await unlockDailyReport(currentDate, selectedClinicId, { uid: currentUser.uid, name: currentUser.email || 'User' });
       } catch (e) {
           console.error(e);
@@ -779,48 +748,16 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const handleSafeDateChange = async (targetDate: string) => {
       const todayStr = getTodayStr();
-      const isCurrentPagePast = currentDate < todayStr;
-      const hasData = rowsRef.current.length > 0;
-      const isLockedStatus = dailyRecord?.isLocked === true;
-      const isUnlocked = !isLockedStatus;
-
-      if (isCurrentPagePast && hasData && isUnlocked) {
-          const confirmLock = window.confirm(
-              `[日期: ${currentDate}] 尚未結帳鎖定。\n是否立即鎖定並繼續？\n(按確定: 鎖定並跳轉 | 按取消: 不鎖定直接跳轉)`
-          );
-
+      if (currentDate < todayStr && rowsRef.current.length > 0 && !dailyRecord?.isLocked) {
+          const confirmLock = window.confirm(`[日期: ${currentDate}] 尚未結帳。是否立即鎖定並繼續？`);
           if (confirmLock) {
-              try {
-                  await handleLockDay(); 
-              } catch(e) {
-                  return;
-              }
+              try { await handleLockDay(); } catch(e) { return; }
           }
       }
-      
       setCurrentDate(targetDate);
   };
 
-  const handlePrevDay = () => handleSafeDateChange(getNextDate(currentDate, -1));
-  const handleNextDay = () => handleSafeDateChange(getNextDate(currentDate, 1));
-
-  useEffect(() => {
-      const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-          const todayStr = getTodayStr();
-          const isCurrentPagePast = currentDate < todayStr;
-          const hasData = rowsRef.current.length > 0;
-          const isLockedStatus = dailyRecord?.isLocked === true;
-          const isUnlocked = !isLockedStatus;
-          
-          if (isCurrentPagePast && hasData && isUnlocked) {
-              e.preventDefault();
-              e.returnValue = ''; 
-          }
-      };
-      
-      window.addEventListener('beforeunload', handleBeforeUnload);
-      return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [dailyRecord, currentDate]);
+  const headerCellStyle = "px-2 py-1 border-r border-slate-200 text-slate-700 text-center font-bold";
 
   return (
     <div className="space-y-6 pb-20">
@@ -828,209 +765,84 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
             <div className="flex items-center gap-3">
                 <ClinicSelector className="border p-2 rounded-lg bg-slate-50 min-w-[150px]" />
                 <div className="flex items-center bg-slate-100 rounded-lg p-1">
-                    <button onClick={handlePrevDay} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500"><ChevronLeft size={20}/></button>
-                    <input 
-                        type="date" 
-                        className="bg-transparent border-none text-center font-bold text-slate-700 outline-none w-32 cursor-pointer" 
-                        value={currentDate} 
-                        onChange={e => handleSafeDateChange(e.target.value)} 
-                    />
-                    <button onClick={handleNextDay} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500"><ChevronRight size={20}/></button>
+                    <button onClick={() => handleSafeDateChange(getNextDate(currentDate, -1))} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500"><ChevronLeft size={20}/></button>
+                    <input type="date" className="bg-transparent border-none text-center font-bold text-slate-700 outline-none w-32 cursor-pointer" value={currentDate} onChange={e => handleSafeDateChange(e.target.value)} />
+                    <button onClick={() => handleSafeDateChange(getNextDate(currentDate, 1))} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500"><ChevronRight size={20}/></button>
                 </div>
-                
                 {isLocked ? (
                     <div className={`flex items-center gap-2 px-3 py-1.5 border rounded-lg text-sm font-bold ${isMonthLocked ? 'bg-rose-100 border-rose-300 text-rose-800' : 'bg-rose-50 border-rose-200 text-rose-700'}`}>
                         <Lock size={14} /> {isMonthLocked ? '月結鎖定中' : '已結帳'}
                     </div>
                 ) : (
-                    <button 
-                        onClick={() => setIsClosingModalOpen(true)}
-                        className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-sm font-bold hover:bg-emerald-100 transition-colors"
-                    >
+                    <button onClick={() => setIsClosingModalOpen(true)} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-sm font-bold hover:bg-emerald-100 transition-colors">
                         <Unlock size={14} /> 結帳鎖定
                     </button>
                 )}
             </div>
 
             <div className="flex gap-2 items-center">
-                {saveStatus === 'saving' && <span className="text-xs text-blue-500 flex items-center gap-1 font-bold animate-pulse"><Loader2 size={12} className="animate-spin"/> 儲存中...</span>}
-                {hasUnsavedChanges && saveStatus !== 'saving' && <span className="text-xs text-amber-600 flex items-center gap-1 font-bold"><AlertCircle size={12}/> 變更未儲存 (等待中...)</span>}
-                {!hasUnsavedChanges && saveStatus === 'saved' && <span className="text-xs text-emerald-600 flex items-center gap-1 font-bold"><CheckCircle size={12}/> 資料已儲存</span>}
-                {saveStatus === 'error' && <span className="text-xs text-rose-500 flex items-center gap-1 font-bold"><WifiOff size={12}/> 連線中斷</span>}
+                {saveStatus === 'saving' && <span className="text-xs text-blue-500 font-bold animate-pulse">儲存中...</span>}
+                {hasUnsavedChanges && saveStatus !== 'saving' && <span className="text-xs text-amber-600 font-bold">變更未儲存</span>}
+                {!hasUnsavedChanges && saveStatus === 'saved' && <span className="text-xs text-emerald-600 font-bold">資料已儲存</span>}
                 
                 {isLocked && (['admin', 'manager', 'team_leader', 'staff'].includes(userRole || '')) && (
-                    <div className="relative group">
-                        <button 
-                            onClick={handleUnlockDay} 
-                            disabled={isSyncing || isMonthLocked} 
-                            className={`px-3 py-2 rounded-lg font-bold text-sm border flex items-center gap-2 transition-all ${isMonthLocked ? 'text-slate-400 border-slate-200 bg-slate-50 cursor-not-allowed' : 'text-rose-500 hover:bg-rose-50 border-rose-200'}`}
-                        >
-                            {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <Unlock size={16} />} 
-                            解鎖
-                        </button>
-                        {isMonthLocked && (
-                            <div className="absolute bottom-full mb-2 right-0 hidden group-hover:block bg-slate-800 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap z-50 shadow-xl">
-                                <AlertCircle size={10} className="inline mr-1" /> 本月已結帳，請先解除月結鎖定
-                            </div>
-                        )}
-                    </div>
+                    <button onClick={handleUnlockDay} disabled={isSyncing || isMonthLocked} className={`px-3 py-2 rounded-lg font-bold text-sm border flex items-center gap-2 transition-all ${isMonthLocked ? 'text-slate-400 cursor-not-allowed' : 'text-rose-500 hover:bg-rose-50'}`}>
+                        {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <Unlock size={16} />} 
+                        解鎖
+                    </button>
                 )}
 
-                <button onClick={() => setIsAuditModalOpen(true)} className="text-slate-400 hover:text-slate-600 p-2 rounded-full hover:bg-slate-100" title="異動紀錄">
-                    <History size={18} />
-                </button>
-
-                <button 
-                    onClick={handleManualSave} 
-                    disabled={isManualSaving || isLocked} 
-                    className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50"
-                >
-                    {isManualSaving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} 
-                    儲存
-                </button>
-
-                <button onClick={handleSyncCalendar} disabled={isSyncing || isLocked} className="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-blue-100 transition-colors disabled:opacity-50">
-                    {isSyncing ? <Loader2 className="animate-spin" size={16}/> : <RefreshCw size={16}/>} 同步預約
-                </button>
-                
-                <button 
-                    onClick={() => selectedClinic && exportDailyReportToExcel(selectedClinic.id, selectedClinic.name, currentDate, rows, expenditures, fullStaffList)} 
-                    className="bg-slate-100 text-slate-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-slate-200 transition-colors"
-                >
-                    <FileSpreadsheet size={16} /> 匯出
-                </button>
-            </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-fade-in">
-            <div className="bg-emerald-600 rounded-xl shadow-lg p-5 text-white flex flex-col justify-between relative overflow-hidden">
-                <div className="relative z-10">
-                    <h4 className="text-xs font-bold text-emerald-100 uppercase tracking-wider mb-2 flex items-center gap-2">
-                        <Wallet size={16} /> 現金結餘 (收入-支出)
-                    </h4>
-                    <div className="text-3xl font-black tabular-nums">${totals.cashBalance.toLocaleString()}</div>
-                </div>
-                <div className="mt-4 pt-3 border-t border-emerald-500/50 text-[10px] text-emerald-100 font-medium flex justify-between relative z-10">
-                    <span>現金收: ${totals.cashRevenue.toLocaleString()}</span>
-                    <span>總支: -${totals.totalExpenditure.toLocaleString()}</span>
-                </div>
-                <Wallet className="absolute -right-4 -bottom-4 text-emerald-500 opacity-20 rotate-12" size={100} />
-            </div>
-
-            <div className="bg-white border border-slate-200 shadow-sm rounded-xl p-5 flex flex-col justify-between">
-                <div>
-                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-2">
-                        <CreditCard size={16} className="text-slate-400" /> 非現金收入 (NON-CASH)
-                    </h4>
-                    <div className="text-3xl font-black text-slate-800 tabular-nums">${totals.nonCash.toLocaleString()}</div>
-                </div>
-                <div className="mt-4 pt-3 border-t border-slate-100 text-[10px] text-slate-400 font-medium flex justify-between">
-                    <span>💳刷卡 ${totals.cardRevenue.toLocaleString()}</span>
-                    <span>🏦匯款 ${totals.transferRevenue.toLocaleString()}</span>
-                </div>
-            </div>
-
-            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 shadow-lg rounded-xl p-5 text-white flex flex-col justify-between relative overflow-hidden">
-                <div className="relative z-10">
-                    <h4 className="text-xs font-bold text-blue-100 uppercase tracking-wider mb-2 flex items-center gap-2">
-                        <TrendingUp size={16} /> 本日總結 (總收-支出)
-                    </h4>
-                    <div className="text-3xl font-black tabular-nums">${totals.netTotal.toLocaleString()}</div>
-                </div>
-                <div className="mt-4 pt-3 border-t border-white/10 text-[10px] text-blue-100 font-medium">
-                    公式: (現金 + 刷卡 + 匯款) - 總支出
-                </div>
-                <TrendingUp className="absolute -right-4 -bottom-4 text-white opacity-10 rotate-12" size={100} />
+                <button onClick={() => setIsAuditModalOpen(true)} className="text-slate-400 hover:text-slate-600 p-2 rounded-full hover:bg-slate-100"><History size={18} /></button>
+                <button onClick={handleManualSave} disabled={isManualSaving || isLocked} className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50">{isManualSaving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} 儲存</button>
+                <button onClick={handleSyncCalendar} disabled={isSyncing || isLocked} className="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-blue-100 transition-colors disabled:opacity-50">{isSyncing ? <Loader2 className="animate-spin" size={16}/> : <RefreshCw size={16}/>} 同步預約</button>
+                <button onClick={() => selectedClinic && exportDailyReportToExcel(selectedClinic.id, selectedClinic.name, currentDate, rows, expenditures, fullStaffList)} className="bg-slate-100 text-slate-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-slate-200 transition-colors"><FileSpreadsheet size={16} /> 匯出</button>
             </div>
         </div>
 
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
-            {!isLoading && rows.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-24 bg-slate-50/50 m-4 border-2 border-dashed border-slate-200 rounded-xl gap-6 animate-fade-in">
-                    <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center text-indigo-500 shadow-sm border border-indigo-100">
-                        <RefreshCw size={36} />
-                    </div>
-                    <div className="text-center space-y-1">
-                        <h3 className="text-xl font-bold text-slate-800">尚無今日資料</h3>
-                        <p className="text-slate-500 font-medium">No data for this date</p>
-                    </div>
-                    {!isLocked && (
-                        <div className="flex flex-col gap-3 w-full max-w-xs">
-                            <button 
-                                onClick={handleSyncCalendar} 
-                                disabled={isSyncing}
-                                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3.5 px-6 rounded-xl font-bold text-lg flex items-center justify-center gap-3 shadow-lg shadow-indigo-200 hover:shadow-indigo-300 transition-all active:scale-95 disabled:opacity-70 disabled:scale-100"
-                            >
-                                {isSyncing ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={20} />}
-                                同步 Google 日曆
-                            </button>
-                            <div className="relative flex py-2 items-center">
-                                <div className="flex-grow border-t border-slate-200"></div>
-                                <span className="flex-shrink-0 mx-4 text-slate-300 text-xs font-bold uppercase">OR</span>
-                                <div className="flex-grow border-t border-slate-200"></div>
-                            </div>
-                            <button 
-                                onClick={handleAddRow}
-                                className="w-full bg-white border-2 border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-800 py-3 px-6 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors"
-                            >
-                                <Plus size={18} />
-                                手動新增一列
-                            </button>
-                        </div>
-                    )}
+            {rows.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-24 bg-slate-50/50 m-4 border-2 border-dashed border-slate-200 rounded-xl gap-6">
+                    <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center text-indigo-500 shadow-sm border border-indigo-100"><RefreshCw size={36} /></div>
+                    <div className="text-center space-y-1"><h3 className="text-xl font-bold text-slate-800">尚無今日資料</h3></div>
+                    {!isLocked && (<button onClick={handleSyncCalendar} disabled={isSyncing} className="bg-indigo-600 hover:bg-indigo-700 text-white py-3.5 px-6 rounded-xl font-bold text-lg flex items-center justify-center gap-3 shadow-lg">{isSyncing ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={20} />} 同步 Google 日曆</button>)}
                 </div>
             ) : (
                 <>
                     <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-300px)] custom-scrollbar flex-1 min-h-[400px] border-b border-slate-200">
-                        <table className="w-full border-collapse text-xs">
+                        <table className="min-w-[2000px] border-collapse text-xs">
                             <thead className="bg-gray-50 z-40 shadow-sm font-bold tracking-tight">
                                 <tr className="sticky top-[2px] z-[60]">
-                                    <th className="px-2 py-2 border-r border-gray-200 text-center sticky left-0 bg-gray-50 z-[70] w-8 min-w-[32px] text-slate-600" rowSpan={2}>#</th>
-                                    <th className="px-2 py-2 border-r border-gray-200 sticky left-[32px] bg-gray-50 z-[70] w-20 min-w-[80px] text-left text-slate-600" rowSpan={2}>病歷號</th>
-                                    <th className="px-2 py-2 border-r border-gray-200 sticky left-[112px] bg-gray-50 z-[70] w-32 min-w-[128px] text-left text-slate-600" rowSpan={2}>病患姓名</th>
-                                    <th className="px-2 py-2 border-r-2 border-gray-300 sticky left-[240px] bg-gray-50 z-[70] w-28 min-w-[112px] text-right" rowSpan={2}>
-                                        <div className="flex items-center gap-1 justify-end">
-                                            <span className="text-slate-600">醫師</span>
-                                            <div className="relative group">
-                                                <Filter size={12} className="text-slate-400 cursor-pointer" />
-                                                <select 
-                                                    className="absolute top-0 right-0 w-full h-full opacity-0 cursor-pointer"
-                                                    value={filterDoctorId}
-                                                    onChange={e => setFilterDoctorId(e.target.value)}
-                                                >
-                                                    <option value="">全部</option>
-                                                    {activeDoctorsInTable.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-                                                </select>
-                                            </div>
-                                        </div>
-                                    </th>
+                                    <th className="px-2 py-2 border-r border-gray-200 text-center sticky left-0 bg-gray-50 z-[70] min-w-[30px] text-slate-600" rowSpan={2}>#</th>
+                                    <th className="px-2 py-2 border-r border-gray-200 sticky left-[32px] bg-gray-50 z-[70] min-w-[80px] text-left text-slate-600" rowSpan={2}>病歷號</th>
+                                    <th className="px-2 py-2 border-r border-gray-200 sticky left-[114px] bg-gray-50 z-[70] min-w-[110px] text-left text-slate-600" rowSpan={2}>病患姓名</th>
+                                    <th className="px-2 py-2 border-r-2 border-gray-300 sticky left-[226px] bg-gray-50 z-[70] min-w-[110px] text-right" rowSpan={2}>醫師</th>
                                     <th colSpan={2} className="px-2 py-1 border-r border-gray-200 border-t-4 border-blue-400 bg-blue-50 text-center text-slate-700">基本費用 (FEES)</th>
                                     <th colSpan={9} className="px-2 py-1 border-r border-gray-200 border-t-4 border-purple-400 bg-purple-50 text-center text-slate-700">自費療程 (TREATMENT)</th>
                                     <th colSpan={4} className="px-2 py-1 border-r border-gray-200 border-t-4 border-orange-400 bg-orange-50 text-center text-slate-700">小金庫 (RETAIL)</th>
                                     <th colSpan={2} className="px-2 py-1 border-r border-gray-200 border-t-4 border-emerald-500 bg-emerald-50 text-center text-slate-700">結帳 (PAYMENT)</th>
                                     <th colSpan={4} className="px-2 py-1 border-t-4 border-slate-300 bg-slate-50 text-center text-slate-600">備註與操作</th>
                                 </tr>
-                                <tr className="sticky top-[25px] z-30 shadow-sm">
-                                    <th className="px-2 py-1 border-r border-blue-100 bg-blue-50 text-slate-700 text-center min-w-[60px]">掛號</th>
-                                    <th className="px-2 py-1 border-r border-gray-200 bg-blue-50 text-slate-700 text-center min-w-[60px]">部分</th>
-                                    <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">假牙</th>
-                                    <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">植牙</th>
-                                    <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">矯正</th>
-                                    <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">SOV</th>
-                                    <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">INV</th>
-                                    <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">牙周</th>
-                                    <th className="px-2 py-1 border-r border-purple-100 bg-purple-50 text-slate-700 text-center min-w-[70px]">美白</th>
-                                    <th className="px-2 py-1 border-r border-gray-200 bg-purple-50 text-slate-700 text-center min-w-[70px]">其他</th>
-                                    <th className="px-2 py-1 border-r border-gray-200 bg-purple-50 text-slate-700 text-center min-w-[80px]">諮詢師</th>
-                                    <th className="px-2 py-1 border-r border-orange-100 bg-orange-50 text-slate-700 text-center min-w-[70px]">小金庫</th>
-                                    <th className="px-2 py-1 border-r border-orange-100 bg-orange-50 text-slate-700 text-center min-w-[70px]">物販</th>
-                                    <th className="px-2 py-1 border-r border-orange-100 bg-orange-50 text-slate-700 text-center min-w-[100px]">品項</th>
-                                    <th className="px-2 py-1 border-r border-gray-200 bg-orange-50 text-slate-700 text-center min-w-[80px]">經手人</th>
-                                    <th className="px-2 py-1 border-r border-emerald-100 bg-emerald-50 text-slate-700 text-center min-w-[80px]">實收總計</th>
-                                    <th className="px-2 py-1 border-r border-gray-200 bg-emerald-50 text-slate-700 text-center min-w-[70px]">方式</th>
-                                    <th className="px-2 py-1 border-r border-gray-200 bg-slate-50 text-slate-500 min-w-[50px]">NP</th>
-                                    <th className="px-2 py-1 border-r border-gray-200 bg-slate-50 text-slate-500 min-w-[120px]">療程內容</th>
-                                    <th className="px-2 py-1 border-r border-gray-200 bg-slate-50 text-slate-500 min-w-[100px]">技工所</th>
+                                <tr className="sticky top-[25px] z-30 shadow-sm text-center">
+                                    <th className={`${headerCellStyle} border-r-blue-100 bg-blue-50 min-w-[60px]`}>掛號</th>
+                                    <th className={`${headerCellStyle} bg-blue-50 min-w-[60px]`}>部分</th>
+                                    <th className={`${headerCellStyle} border-r-purple-100 bg-purple-50 min-w-[70px]`}>假牙</th>
+                                    <th className={`${headerCellStyle} border-r-purple-100 bg-purple-50 min-w-[70px]`}>植牙</th>
+                                    <th className={`${headerCellStyle} border-r-purple-100 bg-purple-50 min-w-[70px]`}>矯正</th>
+                                    <th className={`${headerCellStyle} border-r-purple-100 bg-purple-50 min-w-[70px]`}>SOV</th>
+                                    <th className={`${headerCellStyle} border-r-purple-100 bg-purple-50 min-w-[70px]`}>INV</th>
+                                    <th className={`${headerCellStyle} border-r-purple-100 bg-purple-50 min-w-[70px]`}>牙周</th>
+                                    <th className={`${headerCellStyle} border-r-purple-100 bg-purple-50 min-w-[70px]`}>美白</th>
+                                    <th className={`${headerCellStyle} bg-purple-50 min-w-[70px]`}>其他</th>
+                                    <th className={`${headerCellStyle} bg-purple-50 min-w-[80px]`}>諮詢師</th>
+                                    <th className={`${headerCellStyle} border-r-orange-100 bg-orange-50 min-w-[70px]`}>小金庫</th>
+                                    <th className={`${headerCellStyle} border-r-orange-100 bg-orange-50 min-w-[70px]`}>物販</th>
+                                    <th className={`${headerCellStyle} border-r-orange-100 bg-orange-50 min-w-[100px]`}>品項</th>
+                                    <th className={`${headerCellStyle} bg-orange-50 min-w-[80px]`}>經手人</th>
+                                    <th className={`${headerCellStyle} border-r-emerald-100 bg-emerald-50 min-w-[80px]`}>實收</th>
+                                    <th className={`${headerCellStyle} bg-emerald-50 min-w-[70px]`}>方式</th>
+                                    <th className={`${headerCellStyle} bg-slate-50 min-w-[50px]`}>NP</th>
+                                    <th className={`${headerCellStyle} bg-slate-50 min-w-[120px]`}>內容</th>
+                                    <th className={`${headerCellStyle} bg-slate-50 min-w-[100px]`}>技工所</th>
                                     <th className="px-2 py-1 bg-slate-50 w-8"></th>
                                 </tr>
                             </thead>
@@ -1054,7 +866,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                             </tbody>
                         </table>
                     </div>
-                    {!isLocked && (<button onClick={handleAddRow} className="w-full py-2 bg-slate-50 border-t border-slate-200 text-blue-600 font-bold text-sm hover:bg-blue-50 transition-colors flex items-center justify-center gap-1"><Plus size={16} /> 新增一列 (Add Row)</button>)}
+                    {!isLocked && (<button onClick={handleAddRow} className="w-full py-2 bg-slate-50 border-t border-slate-200 text-blue-600 font-bold text-sm hover:bg-blue-50 transition-colors flex items-center justify-center gap-1"><Plus size={16} /> 新增一列</button>)}
                 </>
             )}
         </div>

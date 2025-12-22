@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight, RefreshCw, X, ChevronDown, Download, HelpCir
 import { PublishModal } from './PublishModal';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from './ClinicSelector';
-import { db } from '../services/firebase';
+import { db, saveClinicSchedule, deepSanitize } from '../services/firebase';
 
 interface Props {
   clinics: Clinic[]; // Compatibility
@@ -209,9 +209,9 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
 
   const generateDefaultSchedule = async () => {
     try {
-        if (!selectedClinicId) return;
-        if (!selectedClinic) {
-            alert("找不到選取的診所資料");
+        if (!selectedClinicId || selectedClinicId === 'demo-clinic') {
+            console.error("[MonthlyScheduler] Invalid Clinic ID for generateDefault:", selectedClinicId);
+            alert("找不到有效的診所資料，請嘗試重新整理頁面。");
             return;
         }
 
@@ -219,20 +219,16 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
         if (!isConfirmed) return;
 
         setIsSaving(true);
+        console.log("[MonthlyScheduler] generateDefaultSchedule - Clinic ID:", selectedClinicId);
 
         const daysCount = getDaysInMonth(year, month);
-        const newSchedules: DailySchedule[] = [];
+        const newClinicSchedules: DailySchedule[] = [];
 
-        // Safer filtering: parse string to numbers to avoid timezone issues causing wrong month checks
-        const otherSchedules = schedules.filter(s => {
-            if (s.clinicId !== selectedClinicId) return true;
-            
-            const [sYear, sMonth, sDay] = s.date.split('-').map(Number);
-            // JS Month is 0-indexed, but split date string is 1-indexed.
-            // sMonth (1-12) vs month (0-11)
-            const scheduleMonthIndex = sMonth - 1; 
-            
-            return !(scheduleMonthIndex === month && sYear === year);
+        // Logic: Since we are using saveClinicSchedule (single clinic update), 
+        // we only care about the existing schedules for THIS clinic.
+        const otherMonthsSchedules = schedules.filter(s => {
+            const [sYear, sMonth] = s.date.split('-').map(Number);
+            return !(sMonth - 1 === month && sYear === year);
         });
 
         const clinicDoctors = doctors.filter(d => d.clinicId === selectedClinicId);
@@ -242,32 +238,23 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
             const dayOfWeek = dateObj.getDay() as DayOfWeek; // 0=Sunday
             const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
             
-            // Check for weeklyHours validity
-            const hours = selectedClinic.weeklyHours?.[dayOfWeek];
-            if (!hours) {
-                console.warn(`Missing hours configuration for day ${dayOfWeek} of clinic ${selectedClinic.name}`);
-                continue;
-            }
+            const hours = selectedClinic?.weeklyHours?.[dayOfWeek];
+            if (!hours) continue;
             
-            // Determine if the *entire* day is closed (all shifts closed)
             const isClosed = !hours.Morning && !hours.Afternoon && !hours.Evening;
-            
             const shifts = { Morning: [], Afternoon: [], Evening: [] } as any;
 
             if (!isClosed) {
                 clinicDoctors.forEach(doc => {
                     doc.recurringShifts.forEach(recurring => {
-                        if (recurring.day === dayOfWeek) {
-                            // Only add doctor if the specific shift is open in clinic hours
-                            if (hours[recurring.shift]) {
-                                shifts[recurring.shift].push(doc.id);
-                            }
+                        if (recurring.day === dayOfWeek && hours[recurring.shift]) {
+                            shifts[recurring.shift].push(doc.id);
                         }
                     });
                 });
             }
 
-            newSchedules.push({
+            newClinicSchedules.push({
                 date: dateStr,
                 clinicId: selectedClinicId,
                 isClosed,
@@ -275,7 +262,11 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
             });
         }
 
-        await onSave([...otherSchedules, ...newSchedules]);
+        const finalSchedulesToSave = [...otherMonthsSchedules, ...newClinicSchedules];
+        await saveClinicSchedule(selectedClinicId, finalSchedulesToSave);
+        
+        // Also call global onSave for internal App.tsx sync if needed (optional based on architecture)
+        // But the primary source of truth is now updated directly.
         alert("排班表產生成功！");
     } catch (e) {
         console.error("Schedule generation error:", e);
@@ -391,12 +382,25 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
     if (!editingSchedule) return;
     
     setIsSaving(true);
+    console.log("[MonthlyScheduler] saveDayEditor - Clinic ID:", selectedClinicId);
+
+    if (!selectedClinicId || selectedClinicId === 'demo-clinic') {
+        console.error("[MonthlyScheduler] Invalid Clinic ID for saveDayEditor:", selectedClinicId);
+        alert("錯誤：無效的診所 ID。請重新整理頁面。");
+        setIsSaving(false);
+        return;
+    }
+
     try {
-        const filtered = schedules.filter(s => !(s.date === editingSchedule.date && s.clinicId === selectedClinicId));
-        await onSave([...filtered, editingSchedule]);
+        const filtered = schedules.filter(s => s.date !== editingSchedule.date);
+        const finalSchedulesToSave = [...filtered, editingSchedule];
+        
+        await saveClinicSchedule(selectedClinicId, finalSchedulesToSave);
+        
         setEditingSchedule(null);
         setSelectedDay(null);
     } catch (e) {
+        console.error("[MonthlyScheduler] saveDayEditor failed:", e);
         alert("儲存失敗: " + (e as Error).message);
     } finally {
         setIsSaving(false);

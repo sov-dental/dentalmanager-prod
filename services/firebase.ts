@@ -322,6 +322,29 @@ export const saveSchedules = async (clinicId: string, schedules: DailySchedule[]
     }
 };
 
+// NEW: Strict Single-Clinic Schedule Update (Emergency Fix)
+export const saveClinicSchedule = async (clinicId: string, schedules: DailySchedule[]) => {
+  console.log("[saveClinicSchedule] Attempting to save schedule for Clinic ID:", clinicId);
+  
+  if (!clinicId) {
+    throw new Error("Clinic ID is missing!");
+  }
+
+  try {
+    // CRITICAL: Use .update() to modify ONLY the schedules field.
+    // If this fails, it means the document doesn't exist.
+    await db.collection('clinics').doc(clinicId).update({
+      schedules: deepSanitize(schedules),
+      lastUpdated: new Date().toISOString()
+    });
+    
+    console.log("[saveClinicSchedule] Schedule updated successfully for:", clinicId);
+  } catch (error) {
+    console.error("[saveClinicSchedule] Failed to update schedule for clinic:", clinicId, error);
+    throw error;
+  }
+};
+
 export const saveSOVReferrals = async (clinicId: string, referrals: SOVReferral[]) => {
     await db.collection('clinics').doc(clinicId).update({ sovReferrals: deepSanitize(referrals) });
 };
@@ -846,7 +869,7 @@ export const checkPreviousUnlocked = async (currentDate: string, clinicId: strin
     const pastDate = new Date(currentDate); pastDate.setDate(pastDate.getDate() - 30);
     const minDateStr = pastDate.toISOString().split('T')[0];
     const snap = await db.collection('daily_accounting')
-        .where(firebase.firestore.FieldPath.documentId(), '>=', `${clinicId}_${minDateStr}`)
+        .where(firebase.firestore.FieldPath.documentId(), '>=', `${clinicId}_minDateStr`)
         .where(firebase.firestore.FieldPath.documentId(), '<', `${clinicId}_${currentDate}`)
         .get();
 

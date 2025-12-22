@@ -1,15 +1,15 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Doctor, DailySchedule, ShiftType, DayOfWeek } from '../types';
 import { ChevronLeft, ChevronRight, RefreshCw, X, ChevronDown, Download, HelpCircle, Loader2, Image as ImageIcon } from 'lucide-react';
 import { PublishModal } from './PublishModal';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from './ClinicSelector';
+import { db } from '../services/firebase';
 
 interface Props {
   clinics: Clinic[]; // Compatibility
   doctors: Doctor[];
-  schedules: DailySchedule[];
+  schedules: DailySchedule[]; // Prop shadowed by local state for reliability
   onSave: (s: DailySchedule[]) => Promise<void>;
 }
 
@@ -132,11 +132,39 @@ const ShiftEditorSection: React.FC<ShiftEditorSectionProps> = ({
     );
 };
 
-export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }) => {
+export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSchedules, onSave }) => {
   const { selectedClinicId, selectedClinic, clinics } = useClinic();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   
+  // Real-time local state for the specific clinic's schedules
+  const [schedules, setSchedules] = useState<DailySchedule[]>([]);
+  const [isDataSyncing, setIsDataSyncing] = useState(false);
+
+  // --- Real-time Listener (onSnapshot) ---
+  useEffect(() => {
+    if (!selectedClinicId) {
+        setSchedules([]);
+        return;
+    }
+
+    setIsDataSyncing(true);
+    const unsubscribe = db.collection('clinics').doc(selectedClinicId)
+      .onSnapshot((doc) => {
+        if (doc.exists) {
+          const data = doc.data();
+          // Update local state with the latest schedules from DB
+          setSchedules(data?.schedules || []);
+        }
+        setIsDataSyncing(false);
+      }, (error) => {
+        console.error("[MonthlyScheduler] Schedule listener error:", error);
+        setIsDataSyncing(false);
+      });
+
+    return () => unsubscribe();
+  }, [selectedClinicId]);
+
   // Export State
   const [exportDoctorId, setExportDoctorId] = useState<string>('all');
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
@@ -169,7 +197,8 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
         if (s.isClosed) return;
         
         SHIFTS.forEach(shift => {
-            s.shifts[shift].forEach(id => docIds.add(id));
+            const shiftList = s.shifts[shift] || [];
+            shiftList.forEach(id => docIds.add(id));
         });
     });
 
@@ -376,7 +405,7 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
 
   const toggleDoctorInShift = (shift: ShiftType, docId: string) => {
     if (!editingSchedule) return;
-    const currentList = editingSchedule.shifts[shift];
+    const currentList = editingSchedule.shifts[shift] || [];
     const newList = currentList.includes(docId) 
         ? currentList.filter(id => id !== docId)
         : [...currentList, docId];
@@ -423,7 +452,7 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
 
             <button 
                 onClick={generateDefaultSchedule}
-                disabled={isSaving}
+                disabled={isSaving || isDataSyncing}
                 className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg shadow-md transition-colors w-full sm:w-auto justify-center whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
             >
                 {isSaving ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
@@ -434,6 +463,8 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
          
          {/* RIGHT GROUP: Export Toolbar */}
          <div className="flex flex-wrap justify-center items-center gap-2 w-full lg:w-auto">
+            {isDataSyncing && <div className="flex items-center gap-1 text-xs text-teal-600 font-bold bg-teal-50 px-2 py-1 rounded"><Loader2 size={12} className="animate-spin"/> 同步中</div>}
+            
             <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-lg border border-slate-200 w-full sm:w-auto justify-between sm:justify-start">
                 <select 
                     className="bg-transparent text-sm font-medium text-slate-700 outline-none px-2 py-1 flex-1 sm:flex-none sm:w-32"
@@ -463,7 +494,7 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
                 </div>
             </div>
 
-            {/* NEW: Preview & Publish Button */}
+            {/* Preview & Publish Button */}
             <button
                 onClick={() => setShowPublishModal(true)}
                 className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg shadow-md transition-all active:scale-95 w-full sm:w-auto justify-center"
@@ -479,7 +510,6 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
        <div className="bg-transparent md:bg-white md:rounded-xl md:shadow-lg md:border md:border-slate-200 overflow-hidden">
           {/* Responsive Scroll Container for Desktop */}
           <div className="md:overflow-x-auto">
-              {/* Minimum width to force scrollbar on tablets/smaller desktops */}
               <div className="md:min-w-[1100px]">
                   {/* Header (Desktop Only) */}
                   <div className="hidden md:grid grid-cols-7 bg-slate-50 border-b border-slate-200">
@@ -504,7 +534,8 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
                          const doctorMap = new Map<string, Set<ShiftType>>();
                          if (schedule && !isClosed) {
                              SHIFTS.forEach(shift => {
-                                 schedule.shifts[shift].forEach(docId => {
+                                 const shiftList = schedule.shifts[shift] || [];
+                                 shiftList.forEach(docId => {
                                      if (!doctorMap.has(docId)) doctorMap.set(docId, new Set());
                                      doctorMap.get(docId)?.add(shift);
                                  });
@@ -517,9 +548,7 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
                                 onClick={() => openDayEditor(day)}
                                 className={`
                                     relative cursor-pointer transition-all group
-                                    /* Mobile Card Styles */
                                     w-full h-auto p-4 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col gap-2
-                                    /* Desktop Grid Cell Styles */
                                     md:w-auto md:min-h-[140px] md:h-auto md:p-2 md:rounded-none md:shadow-none md:border-0 md:border-b md:border-r md:border-slate-100 md:block md:gap-0
                                     
                                     ${isClosed ? 'bg-slate-50 md:bg-slate-50' : 'hover:border-blue-400 md:hover:bg-blue-50/50'}
@@ -550,12 +579,10 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
                                             const doc = doctors.find(d => d.id === docId);
                                             if (!doc) return null;
                                             
-                                            // Filter and sort shifts to ensure Morning -> Afternoon -> Evening order
                                             const activeShifts = SHIFTS.filter(s => shifts.has(s));
 
                                             return (
                                                 <div key={docId} className="flex items-center gap-1.5 w-full p-0.5 rounded hover:bg-slate-100/50 transition-colors">
-                                                    {/* Shift Badges (Fixed Width, Right Aligned) */}
                                                     <div className="w-12 shrink-0 flex justify-end gap-0.5">
                                                         {activeShifts.map(shift => (
                                                             <span 
@@ -567,13 +594,9 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
                                                             </span>
                                                         ))}
                                                     </div>
-
-                                                    {/* Avatar (Fixed Size) */}
                                                     <div className="shrink-0">
                                                         <DoctorAvatar doctor={doc} size="sm" />
                                                     </div>
-                                                    
-                                                    {/* Name (Left Aligned, Truncate) */}
                                                     <span className="flex-1 text-sm font-bold text-slate-700 truncate text-left">
                                                         {doc.name}
                                                     </span>
@@ -583,7 +606,6 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
                                     </div>
                                 )}
                                 
-                                {/* Mobile Empty State */}
                                 {schedule && !isClosed && doctorMap.size === 0 && (
                                     <div className="md:hidden text-slate-400 italic text-sm">暫無排班</div>
                                 )}
@@ -613,7 +635,7 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
                            <span className="font-bold text-slate-700">當日狀態</span>
                            <button 
                                 onClick={() => setEditingSchedule({...editingSchedule, isClosed: !editingSchedule.isClosed})}
-                                className={`px-4 py-1.5 rounded-lg font-bold transition-colors text-sm shadow-sm ${editingSchedule.isClosed ? 'bg-rose-500 text-white hover:bg-rose-600' : 'bg-emerald-500 text-white hover:bg-emerald-600'}`}
+                                className={`px-4 py-1.5 rounded-lg font-bold transition-colors text-sm shadow-sm ${editingSchedule.isClosed ? 'bg-rose-50 text-white hover:bg-rose-600' : 'bg-emerald-50 text-white hover:bg-emerald-600'}`}
                                 disabled={isSaving}
                            >
                                {editingSchedule.isClosed ? '休診' : '營業'}
@@ -628,7 +650,7 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
                                        label={dynamicShiftLabels[shift]}
                                        color={shiftColors[shift]}
                                        doctors={doctors.filter(d => d.clinicId === selectedClinicId)}
-                                       selectedDocIds={editingSchedule.shifts[shift]}
+                                       selectedDocIds={editingSchedule.shifts[shift] || []}
                                        onToggle={(docId) => toggleDoctorInShift(shift, docId)}
                                    />
                                ))}
@@ -675,15 +697,6 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules, onSave }
                             src="https://firebasestorage.googleapis.com/v0/b/sunlight-schedule-data.firebasestorage.app/o/image%2Fics-guide.jpg?alt=media" 
                             alt="匯入說明" 
                             className="w-full h-auto rounded-lg shadow-sm border border-slate-200"
-                            onError={(e) => {
-                                e.currentTarget.style.display = 'none';
-                                e.currentTarget.parentElement!.innerHTML += `
-                                    <div class="p-12 text-center bg-white rounded-lg border border-dashed border-slate-300">
-                                        <p class="text-slate-500 font-medium mb-2">教學圖片載入失敗</p>
-                                        <p class="text-xs text-slate-400">請確認網路連線或圖片路徑</p>
-                                    </div>
-                                `;
-                            }}
                         />
                    </div>
                    

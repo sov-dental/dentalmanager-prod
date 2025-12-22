@@ -653,7 +653,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                           isVisited: true,
                           isClosed: false,
                           source: '過路客',
-                          marketingTag: '一般健保',
+                          marketingTag: '',
                           calendarTreatment: newRow.calendarTreatment,
                           updatedAt: new Date().toISOString(),
                           isHidden: false 
@@ -708,8 +708,12 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const handleLockDay = async () => {
       if (!currentUser || !selectedClinicId) return;
       if (validationErrors.length > 0) {
-          throw new Error("Validation failed: Incomplete rows detected.");
+         // Join the error messages with newlines for a readable alert
+          const errorMessage = "無法結帳，請檢查以下資料：\n\n" + validationErrors.join("\n");
+          alert(errorMessage);
+          return; // Stop execution gracefully (don't throw exception)
       }
+
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       try {
           await lockDailyReport(currentDate, selectedClinicId, rowsRef.current, { uid: currentUser.uid, name: currentUser.email || 'User' });
@@ -792,19 +796,89 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                     </button>
                 )}
 
-                <button onClick={() => setIsAuditModalOpen(true)} className="text-slate-400 hover:text-slate-600 p-2 rounded-full hover:bg-slate-100"><History size={18} /></button>
+                <button onClick={() => setIsAuditModalOpen(true)} className="text-slate-400 hover:text-slate-600 p-2 rounded-full hover:bg-slate-100" title="異動紀錄"><History size={18} /></button>
                 <button onClick={handleManualSave} disabled={isManualSaving || isLocked} className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50">{isManualSaving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} 儲存</button>
                 <button onClick={handleSyncCalendar} disabled={isSyncing || isLocked} className="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-blue-100 transition-colors disabled:opacity-50">{isSyncing ? <Loader2 className="animate-spin" size={16}/> : <RefreshCw size={16}/>} 同步預約</button>
                 <button onClick={() => selectedClinic && exportDailyReportToExcel(selectedClinic.id, selectedClinic.name, currentDate, rows, expenditures, fullStaffList)} className="bg-slate-100 text-slate-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-slate-200 transition-colors"><FileSpreadsheet size={16} /> 匯出</button>
             </div>
         </div>
 
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-fade-in">
+            <div className="bg-emerald-600 rounded-xl shadow-lg p-5 text-white flex flex-col justify-between relative overflow-hidden">
+                <div className="relative z-10">
+                    <h4 className="text-xs font-bold text-emerald-100 uppercase tracking-wider mb-2 flex items-center gap-2">
+                        <Wallet size={16} /> 現金結餘 (收入-支出)
+                    </h4>
+                    <div className="text-3xl font-black tabular-nums">${totals.cashBalance.toLocaleString()}</div>
+                </div>
+                <div className="mt-4 pt-3 border-t border-emerald-500/50 text-[10px] text-emerald-100 font-medium flex justify-between relative z-10">
+                    <span>現金收: ${totals.cashRevenue.toLocaleString()}</span>
+                    <span>總支: -${totals.totalExpenditure.toLocaleString()}</span>
+                </div>
+                <Wallet className="absolute -right-4 -bottom-4 text-emerald-500 opacity-20 rotate-12" size={100} />
+            </div>
+
+            <div className="bg-white border border-slate-200 shadow-sm rounded-xl p-5 flex flex-col justify-between">
+                <div>
+                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-2">
+                        <CreditCard size={16} className="text-slate-400" /> 非現金收入 (NON-CASH)
+                    </h4>
+                    <div className="text-3xl font-black text-slate-800 tabular-nums">${totals.nonCash.toLocaleString()}</div>
+                </div>
+                <div className="mt-4 pt-3 border-t border-slate-100 text-[10px] text-slate-400 font-medium flex justify-between">
+                    <span>💳刷卡 ${totals.cardRevenue.toLocaleString()}</span>
+                    <span>🏦匯款 ${totals.transferRevenue.toLocaleString()}</span>
+                </div>
+            </div>
+
+            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 shadow-lg rounded-xl p-5 text-white flex flex-col justify-between relative overflow-hidden">
+                <div className="relative z-10">
+                    <h4 className="text-xs font-bold text-blue-100 uppercase tracking-wider mb-2 flex items-center gap-2">
+                        <TrendingUp size={16} /> 本日總結 (總收-支出)
+                    </h4>
+                    <div className="text-3xl font-black tabular-nums">${totals.netTotal.toLocaleString()}</div>
+                </div>
+                <div className="mt-4 pt-3 border-t border-white/10 text-[10px] text-blue-100 font-medium">
+                    公式: (現金 + 刷卡 + 匯款) - 總支出
+                </div>
+                <TrendingUp className="absolute -right-4 -bottom-4 text-white opacity-10 rotate-12" size={100} />
+            </div>
+        </div>
+
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
-            {rows.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-24 bg-slate-50/50 m-4 border-2 border-dashed border-slate-200 rounded-xl gap-6">
-                    <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center text-indigo-500 shadow-sm border border-indigo-100"><RefreshCw size={36} /></div>
-                    <div className="text-center space-y-1"><h3 className="text-xl font-bold text-slate-800">尚無今日資料</h3></div>
-                    {!isLocked && (<button onClick={handleSyncCalendar} disabled={isSyncing} className="bg-indigo-600 hover:bg-indigo-700 text-white py-3.5 px-6 rounded-xl font-bold text-lg flex items-center justify-center gap-3 shadow-lg">{isSyncing ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={20} />} 同步 Google 日曆</button>)}
+            {!isLoading && rows.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-24 bg-slate-50/50 m-4 border-2 border-dashed border-slate-200 rounded-xl gap-6 animate-fade-in">
+                    <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center text-indigo-500 shadow-sm border border-indigo-100">
+                        <RefreshCw size={36} />
+                    </div>
+                    <div className="text-center space-y-1">
+                        <h3 className="text-xl font-bold text-slate-800">尚無今日資料</h3>
+                        <p className="text-slate-500 font-medium">No data for this date</p>
+                    </div>
+                    {!isLocked && (
+                        <div className="flex flex-col gap-3 w-full max-w-xs">
+                            <button 
+                                onClick={handleSyncCalendar} 
+                                disabled={isSyncing}
+                                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3.5 px-6 rounded-xl font-bold text-lg flex items-center justify-center gap-3 shadow-lg shadow-indigo-200 hover:shadow-indigo-300 transition-all active:scale-95 disabled:opacity-70 disabled:scale-100"
+                            >
+                                {isSyncing ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={20} />}
+                                同步 Google 日曆
+                            </button>
+                            <div className="relative flex py-2 items-center">
+                                <div className="flex-grow border-t border-slate-200"></div>
+                                <span className="flex-shrink-0 mx-4 text-slate-300 text-xs font-bold uppercase">OR</span>
+                                <div className="flex-grow border-t border-slate-200"></div>
+                            </div>
+                            <button 
+                                onClick={handleAddRow}
+                                className="w-full bg-white border-2 border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-800 py-3 px-6 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors"
+                            >
+                                <Plus size={18} />
+                                手動新增一列
+                            </button>
+                        </div>
+                    )}
                 </div>
             ) : (
                 <>

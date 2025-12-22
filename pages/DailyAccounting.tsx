@@ -653,7 +653,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                           isVisited: true,
                           isClosed: false,
                           source: '過路客',
-                          marketingTag: '',
+                          marketingTag: '矯正諮詢',
                           calendarTreatment: newRow.calendarTreatment,
                           updatedAt: new Date().toISOString(),
                           isHidden: false 

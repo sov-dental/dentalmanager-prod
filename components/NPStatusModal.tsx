@@ -79,13 +79,13 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, recordId, pati
                     calendarNote: existing.calendarNote || '',
                     note: existing.note || '',
                     consultant: existing.consultant || '',
-                    dealAmount: existing.dealAmount || 0
+                    dealAmount: existing.dealAmount || 0,
+                    marketingTag: existing.marketingTag || '矯正諮詢'
                 });
             } else {
-                const defaultTag = tags.includes('矯正諮詢') ? '矯正諮詢' : (tags[0] || '其他');
                 setFormData({
                     source: 'Line',
-                    marketingTag: defaultTag,
+                    marketingTag: '矯正諮詢',
                     isVisited: false,
                     isClosed: false,
                     dealAmount: 0,
@@ -119,7 +119,7 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, recordId, pati
                 clinicId,
                 patientName: patientName,
                 treatment: formData.treatment || '', // Actual Treatment
-                marketingTag: formData.marketingTag || '其他',
+                marketingTag: formData.marketingTag || '矯正諮詢',
                 source: formData.source || '其他',
                 isVisited,
                 isClosed,
@@ -167,7 +167,7 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, recordId, pati
         setMarketingTags(newTags);
         await saveMarketingTags(newTags);
         if (formData.marketingTag === tagToDelete) {
-            setFormData(prev => ({ ...prev, marketingTag: newTags[0] || '' }));
+            setFormData(prev => ({ ...prev, marketingTag: '矯正諮詢' }));
         }
     };
 

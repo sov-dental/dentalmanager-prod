@@ -45,20 +45,32 @@ export const exportDailyReportToExcel = async (
   });
 
   // B. Fetch NP Details from Firestore for this specific clinic and date
-  const npMap = new Map<string, NPRecord>();
+  // Double Map Strategy for robust matching
+  const npMapById = new Map<string, NPRecord>();
+  const npMapByName = new Map<string, NPRecord>();
+
   try {
       const npSnap = await db.collection('np_records')
         .where('clinicId', '==', clinicId)
         .where('date', '==', dateStr)
         .get();
       
+      console.log(`Export: Fetched NP Records for ${dateStr}:`, npSnap.size);
+      
       npSnap.docs.forEach(doc => {
           const data = doc.data() as NPRecord;
           if (!data.isHidden) {
-              // CRITICAL FIX: Match by Document ID (which corresponds to row.id)
-              npMap.set(doc.id, data);
+              // Primary key: Document ID (corresponds to row.id from calendar)
+              npMapById.set(doc.id, data);
+              
+              // Secondary key: Patient Name (trimmed) for fallback matching
+              if (data.patientName) {
+                  npMapByName.set(data.patientName.trim(), data);
+              }
           }
       });
+      
+      console.log("Export: Built Maps. IDs:", npMapById.size, "Names:", npMapByName.size);
   } catch (e) {
       console.error("Error fetching NP records for export:", e);
   }
@@ -182,9 +194,19 @@ export const exportDailyReportToExcel = async (
     colTotals.other += (row.treatments.otherSelfPay || 0);
     colTotals.merch += (row.retail.products || 0) + (row.retail.diyWhitening || 0);
 
-    // CRITICAL FIX: Merge NP details from fetched map using unique ID
+    // --- CRITICAL FIX: Dual Lookup Strategy for NP Matching ---
     let noteStr = "";
-    const npData = npMap.get(row.id);
+    let npData = npMapById.get(row.id);
+    
+    // Fallback to name-based lookup if ID match fails
+    if (!npData && row.patientName) {
+        npData = npMapByName.get(row.patientName.trim());
+    }
+    
+    // Diagnostic logging for the first 5 rows
+    if (index < 5) {
+        console.log(`Export Row ${index + 1}: [${row.patientName}] (ID:${row.id}) Found NP Data:`, !!npData);
+    }
     
     if (npData) {
         // Resolve Consultant Name from ID
@@ -192,11 +214,12 @@ export const exportDailyReportToExcel = async (
         const consultantName = staffMap.get(consultantId) || consultantId || '';
         
         // Detailed string format: NP / [Tag] / [Source] / [Consultant]
+        // CLEANUP: Legacy '一般健保' is no longer a default.
         const npParts = [
             npData.marketingTag,
             npData.source,
             consultantName
-        ].filter(p => p && p !== '-');
+        ].filter(p => p && p !== '-' && p !== '' && p !== '一般健保'); 
         
         noteStr = "NP" + (npParts.length > 0 ? " / " + npParts.join(" / ") : "");
     } else {

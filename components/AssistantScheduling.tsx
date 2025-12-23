@@ -1,13 +1,27 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Clinic, Consultant, DailySchedule, StaffScheduleConfig } from '../types';
+import { Clinic, Consultant, DailySchedule, StaffScheduleConfig, Doctor, ShiftType } from '../types';
 import { StaffScheduleModal } from './StaffScheduleModal';
-import { ChevronLeft, ChevronRight, RefreshCw, Users, Briefcase, Clock, CalendarDays, Loader2, AlertTriangle, Download } from 'lucide-react';
+import { 
+  ChevronLeft, 
+  ChevronRight, 
+  RefreshCw, 
+  Users, 
+  Briefcase, 
+  Clock, 
+  CalendarDays, 
+  Loader2, 
+  Download, 
+  Stethoscope,
+  Coffee,
+  CalendarOff
+} from 'lucide-react';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from './ClinicSelector';
 import { db } from '../services/firebase';
 
 interface Props {
   clinics: Clinic[];
+  doctors: Doctor[];
   consultants: Consultant[];
   schedules: DailySchedule[]; // Prop schedules contains data for ALL clinics
   onSave: (schedules: DailySchedule[]) => Promise<void>;
@@ -28,8 +42,19 @@ const normalizeDate = (d: Date | string): string => {
     return `${year}-${month}-${day}`;
 };
 
-export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: propsSchedules, onSave }) => {
+export const AssistantScheduling: React.FC<Props> = ({ consultants, doctors, schedules: propsSchedules, onSave }) => {
   const { selectedClinicId, selectedClinic } = useClinic();
+  
+  // Safety First: Fix Data Source for Doctors
+  const safeDoctors = useMemo(() => {
+      const list = (doctors && doctors.length > 0) ? doctors : (selectedClinic?.doctors || []);
+      console.log("[AssistantScheduling] Active Doctors Count:", list.length);
+      return list;
+  }, [doctors, selectedClinic]);
+
+  const safeConsultants = consultants || [];
+  const safePropsSchedules = propsSchedules || [];
+
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isImporting, setIsImporting] = useState(false);
   const [modalDateStr, setModalDateStr] = useState<string | null>(null);
@@ -37,6 +62,9 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
   // Real-time local state for the specific clinic's schedules
   const [schedules, setSchedules] = useState<DailySchedule[]>([]);
   const [isDataSyncing, setIsDataSyncing] = useState(false);
+
+  // Safe reference for local schedules state
+  const safeSchedules = schedules || [];
 
   // --- Real-time Listener ---
   useEffect(() => {
@@ -79,11 +107,11 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
 
   // 1. Filter Consultants by Clinic
   const activeConsultants = useMemo(() => {
-      return consultants.filter(c => c.clinicId === selectedClinicId);
-  }, [consultants, selectedClinicId]);
+      return safeConsultants.filter(c => c.clinicId === selectedClinicId);
+  }, [safeConsultants, selectedClinicId]);
 
   // 2. Lookup Helper (Safe Name Resolution)
-  const getStaffObj = (id: string) => consultants.find(c => c.id === id);
+  const getStaffObj = (id: string) => safeConsultants.find(c => c.id === id);
   const getStaffName = (id: string) => getStaffObj(id)?.name || id;
   const getStaffShortName = (id: string) => {
       const s = getStaffObj(id);
@@ -96,7 +124,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
 
   // 4. Helper to extract config from the local schedules state
   const getStaffConfig = (targetDateStr: string): StaffScheduleConfig => {
-      const schedule = schedules.find(s => 
+      const schedule = safeSchedules.find(s => 
           normalizeDate(s.date) === targetDateStr
       );
 
@@ -178,7 +206,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
     }
 
     return { fullTimeStats, partTimeStats };
-  }, [schedules, year, month, selectedClinicId, groupFullTime, groupPartTime, daysCount]);
+  }, [safeSchedules, year, month, selectedClinicId, groupFullTime, groupPartTime, daysCount]);
 
   const handleImportDefaults = async () => {
       if (!selectedClinic || !selectedClinic.weeklyHours) {
@@ -200,7 +228,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
               return;
           }
 
-          let updatedLocalSchedules = [...schedules];
+          let updatedLocalSchedules = [...safeSchedules];
           const fullTimeIds = groupFullTime.map(c => c.id);
 
           for (let d = 1; d <= daysCount; d++) {
@@ -232,7 +260,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
               }
           }
 
-          const otherClinicsSchedules = propsSchedules.filter(s => s.clinicId !== selectedClinicId);
+          const otherClinicsSchedules = safePropsSchedules.filter(s => s.clinicId !== selectedClinicId);
           await onSave([...otherClinicsSchedules, ...updatedLocalSchedules]);
           alert("已成功代入預設休診設定！");
 
@@ -334,6 +362,23 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
       );
   };
 
+  // Helper to get active doctors for the whole month summary
+  const monthlyActiveDoctors = useMemo(() => {
+    const docIdsOrNames = new Set<string>();
+    safeSchedules.forEach(s => {
+        if (!s.isClosed && s.shifts) {
+            (s.shifts.Morning || []).forEach(id => docIdsOrNames.add(id));
+            (s.shifts.Afternoon || []).forEach(id => docIdsOrNames.add(id));
+            (s.shifts.Evening || []).forEach(id => docIdsOrNames.add(id));
+            (s.shifts.Full || []).forEach(id => docIdsOrNames.add(id));
+        }
+    });
+    // Critical Fix: Match against BOTH ID and Name for Firestore flexibility
+    return safeDoctors.filter(doc => 
+        docIdsOrNames.has(doc.id) || docIdsOrNames.has(doc.name)
+    );
+  }, [safeSchedules, safeDoctors]);
+
   return (
     <div className="space-y-6">
       {/* Header & Filters */}
@@ -396,19 +441,34 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
              {['週日', '週一', '週二', '週三', '週四', '週五', '週六'].map(d => <div key={d}>{d}</div>)}
          </div>
          <div className="grid grid-cols-7 auto-rows-fr bg-slate-100 gap-px border-b border-slate-200">
-             {blanks.map(i => <div key={`blank-${i}`} className="bg-white min-h-[120px] opacity-50"></div>)}
+             {blanks.map(i => <div key={`blank-${i}`} className="bg-white min-h-[160px] opacity-50"></div>)}
              
              {days.map(d => {
                  const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                  const config = getStaffConfig(dateStr);
+                 const daySchedule = safeSchedules.find(s => normalizeDate(s.date) === dateStr);
                  
+                 // Critical Fix: Identifing doctors using nested shifts structure
+                 const activeDayDoctors = safeDoctors.filter(doc => {
+                    if (!daySchedule || daySchedule.isClosed || !daySchedule.shifts) return false;
+                    return (
+                        (daySchedule.shifts.Morning || []).includes(doc.id) ||
+                        (daySchedule.shifts.Afternoon || []).includes(doc.id) ||
+                        (daySchedule.shifts.Evening || []).includes(doc.id) ||
+                        // Backup check for Name if ID match fails (for legacy/manual sync)
+                        (daySchedule.shifts.Morning || []).includes(doc.name) ||
+                        (daySchedule.shifts.Afternoon || []).includes(doc.name) ||
+                        (daySchedule.shifts.Evening || []).includes(doc.name)
+                    );
+                 });
+
                  const hasData = config.off.length > 0 || config.leave.length > 0 || config.work.length > 0 || (config.late && config.late.length > 0);
 
                  return (
                      <div 
                         key={d} 
                         onClick={() => setModalDateStr(dateStr)}
-                        className="bg-white min-h-[120px] p-2 hover:bg-blue-50 cursor-pointer transition-colors relative group"
+                        className="bg-white min-h-[160px] p-2 hover:bg-blue-50 cursor-pointer transition-colors relative group"
                      >
                          <div className="text-sm font-bold text-slate-700 mb-2 flex justify-between">
                              {d}
@@ -416,35 +476,77 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
                          </div>
                          
                          <div className="space-y-2">
+                             {/* READ-ONLY DOCTOR ROW IN CALENDAR CELL */}
+                             {activeDayDoctors.length > 0 && (
+                                 <div 
+                                    className="flex flex-wrap items-center gap-1 pb-1 mb-1 border-b border-slate-50"
+                                    onClick={(e) => e.stopPropagation()} // Strictly Read-Only
+                                 >
+                                     <div className="p-1 bg-indigo-50 text-indigo-400 rounded shrink-0" title="今日看診醫師">
+                                         <Stethoscope size={10} />
+                                     </div>
+                                     {activeDayDoctors.map(doc => {
+                                         const docShifts = [];
+                                         if (daySchedule?.shifts?.Morning?.includes(doc.id) || daySchedule?.shifts?.Morning?.includes(doc.name)) docShifts.push('早');
+                                         if (daySchedule?.shifts?.Afternoon?.includes(doc.id) || daySchedule?.shifts?.Afternoon?.includes(doc.name)) docShifts.push('午');
+                                         if (daySchedule?.shifts?.Evening?.includes(doc.id) || daySchedule?.shifts?.Evening?.includes(doc.name)) docShifts.push('晚');
+                                         if (daySchedule?.shifts?.Full?.includes(doc.id)) docShifts.push('全');
+
+                                         return (
+                                            <div 
+                                                key={doc.id}
+                                                style={{ backgroundColor: doc.avatarBgColor || doc.color || '#3b82f6' }}
+                                                className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black text-white shadow-sm border border-white/50 shrink-0"
+                                                title={`${doc.name} (${docShifts.join('/')})`}
+                                            >
+                                                {doc.avatarText || doc.name.substring(0, 2)}
+                                            </div>
+                                         );
+                                     })}
+                                 </div>
+                             )}
+
                              {/* Group 1: Off (休) */}
                              {config.off.length > 0 && (
-                                 <div className="flex flex-wrap gap-1">
-                                     休-{config.off.map(id => renderStaffAvatar(id, '休假', 'off'))}
+                                 <div className="flex items-center gap-1 text-slate-400 text-[10px]">
+                                     <Coffee size={10} className="shrink-0" />
+                                     <div className="flex flex-wrap gap-1">
+                                         {config.off.map(id => renderStaffAvatar(id, '休假', 'off'))}
+                                     </div>
                                  </div>
                              )}
 
                              {/* Group 2: Leave (假) */}
                              {config.leave.length > 0 && (
-                                 <div className="flex flex-wrap gap-1">
-                                     假-{config.leave.map(l => renderStaffAvatar(l.id, l.type, 'leave'))}
+                                 <div className="flex items-center gap-1 text-rose-500 text-[10px] font-bold">
+                                     <CalendarOff size={10} className="shrink-0" />
+                                     <div className="flex flex-wrap gap-1">
+                                         {config.leave.map(l => renderStaffAvatar(l.id, l.type, 'leave'))}
+                                     </div>
                                  </div>
                              )}
 
                              {/* Group 3: Late (遲) */}
                              {config.late && config.late.length > 0 && (
-                                 <div className="flex flex-wrap gap-1 bg-amber-50 p-0.5 rounded border border-amber-100">
-                                     遲-{config.late.map(id => renderStaffAvatar(id, '遲到', 'late'))}
+                                 <div className="flex items-center gap-1 text-amber-500 text-[10px] font-bold">
+                                     <Clock size={10} className="shrink-0" />
+                                     <div className="flex flex-wrap gap-1">
+                                         {config.late.map(id => renderStaffAvatar(id, '遲到', 'late'))}
+                                     </div>
                                  </div>
                              )}
 
                              {/* Group 4: Part-time Work (工) */}
                              {config.work.length > 0 && (
-                                 <div className="flex flex-wrap gap-1">
-                                     打工-{config.work.map(id => renderStaffAvatar(id, '打工', 'work'))}
+                                 <div className="flex items-center gap-1 text-blue-500 text-[10px] font-bold">
+                                     <Briefcase size={10} className="shrink-0" />
+                                     <div className="flex flex-wrap gap-1">
+                                         {config.work.map(id => renderStaffAvatar(id, '打工', 'work'))}
+                                     </div>
                                  </div>
                              )}
 
-                             {!hasData && (
+                             {!hasData && activeDayDoctors.length === 0 && (
                                  <div className="text-[10px] text-slate-300 italic py-1">全員上班</div>
                              )}
                          </div>
@@ -475,6 +577,30 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
                               </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
+                              {/* READ-ONLY DOCTOR SUMMARY ROW */}
+                              {monthlyActiveDoctors.length > 0 && (
+                                  <tr className="bg-indigo-50/40">
+                                      <td className="px-3 py-3 font-bold text-indigo-700 flex items-center gap-2">
+                                          <Stethoscope size={14} />
+                                          醫師 (Dr.)
+                                      </td>
+                                      <td colSpan={5} className="px-3 py-3">
+                                          <div className="flex flex-wrap gap-1.5">
+                                              {monthlyActiveDoctors.map(doc => (
+                                                  <div 
+                                                    key={doc.id}
+                                                    style={{ backgroundColor: doc.avatarBgColor || doc.color || '#3b82f6' }}
+                                                    className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-black text-white shadow-sm border border-white"
+                                                    title={doc.name}
+                                                  >
+                                                      {doc.avatarText || doc.name.substring(0, 2)}
+                                                  </div>
+                                              ))}
+                                          </div>
+                                      </td>
+                                  </tr>
+                              )}
+
                               {groupFullTime.map(c => {
                                   const s = stats.fullTimeStats[c.id];
                                   if (!s) return null;
@@ -558,10 +684,10 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
           onClose={() => setModalDateStr(null)}
           dateStr={modalDateStr || ''}
           clinicId={selectedClinicId}
-          schedules={schedules}
-          consultants={consultants}
+          schedules={safeSchedules}
+          consultants={safeConsultants}
           onSave={async (updatedClinicSchedules) => {
-              const otherClinicsSchedules = propsSchedules.filter(s => s.clinicId !== selectedClinicId);
+              const otherClinicsSchedules = safePropsSchedules.filter(s => s.clinicId !== selectedClinicId);
               await onSave([...otherClinicsSchedules, ...updatedClinicSchedules]);
           }}
       />

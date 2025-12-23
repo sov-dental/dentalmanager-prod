@@ -394,6 +394,7 @@ const App: React.FC = () => {
               <ProtectedRoute allowedRoles={['admin', 'manager', 'team_leader', 'staff']} isDataLoading={isDataLoading}>
                   <AssistantScheduling 
                       clinics={data.clinics} 
+                      doctors={data.doctors}
                       consultants={data.consultants || []}
                       schedules={data.schedules} 
                       onSave={handleSaveSchedules}

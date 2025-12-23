@@ -698,7 +698,7 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
                    
                    <div className="overflow-y-auto bg-slate-50 p-4">
                         <img 
-                            src="https://firebasestorage.googleapis.com/v0/b/sunlight-schedule-data.firebasestorage.app/o/image%2Fics-guide.jpg?alt=media" 
+                            src="https://firebasestorage.googleapis.com/v0/b/sunlight-schedule-data-prod.firebasestorage.app/o/image%2Fics-guide.jpg?alt=media&token=1fed6392-664d-4dae-a4b8-584f6545bbca" 
                             alt="匯入說明" 
                             className="w-full h-auto rounded-lg shadow-sm border border-slate-200"
                         />

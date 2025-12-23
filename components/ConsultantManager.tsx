@@ -1,7 +1,6 @@
-
 import React, { useState, useEffect } from 'react';
 import { Consultant, Clinic, ConsultantRole, InsuranceGrade } from '../types';
-import { Briefcase, UserPlus, Trash2, Edit2, X, Loader2, UserCog, UserCheck, Clock, GraduationCap, Calendar, DollarSign, Heart, Sun, Settings, Plus } from 'lucide-react';
+import { Briefcase, UserPlus, Trash2, Edit2, X, Loader2, UserCog, UserCheck, Clock, GraduationCap, Calendar, DollarSign, Heart, Sun, Settings, Plus, Palette } from 'lucide-react';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from './ClinicSelector';
 import { getStaffList, saveStaff, deleteStaff, getInsuranceTable, saveInsuranceTable } from '../services/firebase';
@@ -33,6 +32,8 @@ const ROLE_COLORS: Record<ConsultantRole, string> = {
     trainee: 'bg-slate-100 text-slate-700 border-slate-200'
 };
 
+const PRESET_COLORS = ['#3b82f6', '#10b981', '#ec4899', '#f59e0b', '#8b5cf6', '#94a3b8'];
+
 export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
   const { selectedClinicId } = useClinic();
   
@@ -53,6 +54,8 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
       name: '',
       role: 'consultant' as ConsultantRole,
       clinicId: '',
+      avatarText: '',
+      avatarColor: '#94a3b8',
       onboardDate: '',
       baseSalary: 0,
       allowance: 0,
@@ -95,6 +98,8 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
         name: '',
         role: 'consultant',
         clinicId: selectedClinicId, // Default to current clinic
+        avatarText: '',
+        avatarColor: '#94a3b8',
         onboardDate: '',
         baseSalary: 0,
         allowance: 0,
@@ -114,6 +119,8 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
         name: consultant.name,
         role: consultant.role || 'consultant',
         clinicId: consultant.clinicId,
+        avatarText: consultant.avatarText || '',
+        avatarColor: consultant.avatarColor || '#94a3b8',
         onboardDate: consultant.onboardDate || '',
         baseSalary: consultant.baseSalary || 0,
         allowance: consultant.allowance || 0,
@@ -138,7 +145,6 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
       const grade = insuranceTable.find(g => g.level === formData.insuranceGradeLevel);
       if (grade) {
           const labor = grade.laborFee;
-          // Fix: Ensure dependents is treated as a number to prevent string concatenation (e.g. 1 + "0" = "10")
           const dependents = Number(formData.dependents || 0);
           const health = grade.healthFee * (1 + dependents);
           const total = labor + health;
@@ -164,6 +170,8 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
             name: formData.name,
             clinicId: formData.clinicId,
             role: formData.role,
+            avatarText: formData.avatarText || formData.name.substring(0, 1),
+            avatarColor: formData.avatarColor,
             isActive: true,
             // HR Fields
             onboardDate: formData.onboardDate,
@@ -361,7 +369,12 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
                                 type="text"
                                 className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-teal-500 outline-none"
                                 value={formData.name}
-                                onChange={e => updateField('name', e.target.value)}
+                                onChange={e => {
+                                    updateField('name', e.target.value);
+                                    if (!formData.avatarText) {
+                                        updateField('avatarText', e.target.value.substring(0, 1));
+                                    }
+                                }}
                                 placeholder="例如：王小美"
                                 autoFocus
                             />
@@ -388,6 +401,60 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
                                 ))}
                             </div>
                         </div>
+
+                        {/* Avatar Settings Section */}
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                            <h4 className="text-xs font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
+                                <Palette size={14} /> 頭貼設定 (Avatar)
+                            </h4>
+                            <div className="flex items-start gap-4">
+                                <div className="flex flex-col items-center gap-2">
+                                    <div 
+                                        className="w-16 h-16 rounded-full flex items-center justify-center text-white font-bold text-2xl shadow-md border-2 border-white transition-all"
+                                        style={{ backgroundColor: formData.avatarColor }}
+                                    >
+                                        {formData.avatarText || (formData.name ? formData.name.substring(0,1) : '?')}
+                                    </div>
+                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">預覽</span>
+                                </div>
+                                <div className="flex-1 space-y-3">
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">頭貼簡稱 (建議2-3字)</label>
+                                        <input
+                                            type="text"
+                                            maxLength={3}
+                                            className="w-full border rounded px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-teal-500"
+                                            value={formData.avatarText}
+                                            onChange={e => updateField('avatarText', e.target.value)}
+                                            placeholder="例如: 娘"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">背景顏色</label>
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                type="color"
+                                                className="w-8 h-8 rounded-md cursor-pointer border-0 p-0 overflow-hidden shrink-0"
+                                                value={formData.avatarColor}
+                                                onChange={e => updateField('avatarColor', e.target.value)}
+                                            />
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {PRESET_COLORS.map(c => (
+                                                    <button 
+                                                        key={c}
+                                                        type="button"
+                                                        className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${formData.avatarColor === c ? 'border-teal-500 shadow-sm' : 'border-white'}`}
+                                                        style={{ backgroundColor: c }}
+                                                        onClick={() => updateField('avatarColor', c)}
+                                                    />
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">到職日期 (Onboard)</label>
                             <div className="relative">
@@ -531,8 +598,11 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
                             return (
                                 <div key={consultant.id} className="flex items-center justify-between p-4 hover:bg-slate-50 transition-colors group">
                                     <div className="flex items-center gap-4">
-                                        <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold text-sm">
-                                            {consultant.name.charAt(0)}
+                                        <div 
+                                            className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm shadow-sm border border-white"
+                                            style={{ backgroundColor: consultant.avatarColor || '#94a3b8' }}
+                                        >
+                                            {consultant.avatarText || consultant.name.charAt(0)}
                                         </div>
                                         <div>
                                             <div className="font-bold text-slate-800 flex items-center gap-2">

@@ -114,6 +114,8 @@ export interface Consultant {
   clinicId: string;
   role: ConsultantRole;
   isActive?: boolean;
+  avatarText?: string;   // NEW: Short name for scheduling display
+  avatarColor?: string;  // NEW: Background color for avatar
   // HR & Payroll Fields
   onboardDate?: string;   // 到職日 (YYYY-MM-DD)
   baseSalary?: number;    // 本薪

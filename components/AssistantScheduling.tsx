@@ -1,8 +1,7 @@
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { Clinic, Consultant, DailySchedule, StaffScheduleConfig } from '../types';
 import { StaffScheduleModal } from './StaffScheduleModal';
-import { ChevronLeft, ChevronRight, RefreshCw, Users, Briefcase, Clock, CalendarDays, Loader2, AlertTriangle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw, Users, Briefcase, Clock, CalendarDays, Loader2, AlertTriangle, Download } from 'lucide-react';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from './ClinicSelector';
 import { db } from '../services/firebase';
@@ -84,9 +83,11 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
   }, [consultants, selectedClinicId]);
 
   // 2. Lookup Helper (Safe Name Resolution)
-  const getStaffName = (id: string) => {
-      const staff = consultants.find(c => c.id === id); 
-      return staff ? staff.name : id; 
+  const getStaffObj = (id: string) => consultants.find(c => c.id === id);
+  const getStaffName = (id: string) => getStaffObj(id)?.name || id;
+  const getStaffShortName = (id: string) => {
+      const s = getStaffObj(id);
+      return s?.avatarText || s?.name.charAt(0) || '?';
   };
 
   // 3. Group by Role
@@ -231,7 +232,6 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
               }
           }
 
-          // Merge with global prop state to ensure other clinics are not wiped
           const otherClinicsSchedules = propsSchedules.filter(s => s.clinicId !== selectedClinicId);
           await onSave([...otherClinicsSchedules, ...updatedLocalSchedules]);
           alert("已成功代入預設休診設定！");
@@ -242,6 +242,96 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
       } finally {
           setIsImporting(false);
       }
+  };
+
+  const handleExportICS = () => {
+      if (!selectedClinic) return;
+      
+      const icsLines = [
+          'BEGIN:VCALENDAR',
+          'VERSION:2.0',
+          'PRODID:-//DentalManager//AssistantSchedule//TW',
+          'CALSCALE:GREGORIAN',
+          'METHOD:PUBLISH'
+      ];
+
+      for (let d = 1; d <= daysCount; d++) {
+          const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+          const config = getStaffConfig(dateStr);
+          
+          const groups: string[] = [];
+
+          // Group 1: [休]
+          if (config.off.length > 0) {
+              const names = config.off.map(id => getStaffShortName(id)).join('.');
+              groups.push(`[休-${names}]`);
+          }
+
+          // Group 2: [假]
+          if (config.leave.length > 0) {
+              const names = config.leave.map(l => getStaffShortName(l.id)).join('.');
+              groups.push(`[假-${names}]`);
+          }
+
+          // Group 3: [遲]
+          if (config.late && config.late.length > 0) {
+              const names = config.late.map(id => getStaffShortName(id)).join('.');
+              groups.push(`[遲-${names}]`);
+          }
+
+          // Group 4: [打工]
+          if (config.work.length > 0) {
+              const names = config.work.map(id => getStaffShortName(id)).join('.');
+              groups.push(`[打工-${names}]`);
+          }
+
+          if (groups.length > 0) {
+              const summary = groups.join(' ');
+              const dateVal = dateStr.replace(/-/g, '');
+              const nextDateObj = new Date(year, month, d + 1);
+              const nextDateVal = normalizeDate(nextDateObj).replace(/-/g, '');
+              
+              icsLines.push('BEGIN:VEVENT');
+              icsLines.push(`UID:${dateStr}-${selectedClinicId}-assistant@dentalmanager`);
+              icsLines.push(`DTSTAMP:${new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15)}Z`);
+              icsLines.push(`DTSTART;VALUE=DATE:${dateVal}`);
+              icsLines.push(`DTEND;VALUE=DATE:${nextDateVal}`);
+              icsLines.push(`SUMMARY:${summary}`);
+              icsLines.push('TRANSP:TRANSPARENT');
+              icsLines.push('END:VEVENT');
+          }
+      }
+
+      icsLines.push('END:VCALENDAR');
+      
+      const blob = new Blob([icsLines.join('\r\n')], { type: 'text/calendar;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `Assistant_Schedule_${selectedClinic.name}_${year}${String(month + 1).padStart(2, '0')}.ics`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+  };
+
+  const renderStaffAvatar = (id: string, label: string, statusType: string) => {
+      const s = getStaffObj(id);
+      if (!s) return null;
+      
+      const bgColor = s.avatarColor || '#94a3b8';
+      const shortName = s.avatarText || s.name.charAt(0);
+
+      return (
+          <div 
+              key={id}
+              style={{ backgroundColor: bgColor }}
+              title={`${s.name} (${label})`}
+              className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black text-white shadow-sm border border-white/50 shrink-0 transition-transform hover:scale-110"
+          >
+              {shortName}
+          </div>
+      );
   };
 
   return (
@@ -264,14 +354,23 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
                 <button onClick={() => handleMonthChange(1)} className="p-1.5 hover:bg-white rounded-md shadow-sm transition"><ChevronRight size={20}/></button>
             </div>
 
-            <button 
-                onClick={handleImportDefaults}
-                disabled={isImporting || isDataSyncing}
-                className="flex items-center gap-2 bg-orange-50 text-orange-600 hover:bg-orange-100 px-3 py-2 rounded-lg text-sm font-bold border border-orange-200 transition-colors disabled:opacity-50"
-            >
-                {isImporting ? <Loader2 size={16} className="animate-spin"/> : <CalendarDays size={16} />}
-                代入預設休診
-            </button>
+            <div className="flex gap-2">
+                <button 
+                    onClick={handleExportICS}
+                    className="flex items-center gap-2 bg-white text-slate-600 border border-slate-300 hover:bg-slate-50 px-3 py-2 rounded-lg text-sm font-bold shadow-sm transition-colors"
+                >
+                    <Download size={16} />
+                    匯出 ICS
+                </button>
+                <button 
+                    onClick={handleImportDefaults}
+                    disabled={isImporting || isDataSyncing}
+                    className="flex items-center gap-2 bg-orange-50 text-orange-600 hover:bg-orange-100 px-3 py-2 rounded-lg text-sm font-bold border border-orange-200 transition-colors disabled:opacity-50"
+                >
+                    {isImporting ? <Loader2 size={16} className="animate-spin"/> : <CalendarDays size={16} />}
+                    代入預設休診
+                </button>
+            </div>
 
             <button 
                 onClick={() => window.location.reload()}
@@ -291,17 +390,6 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
           </div>
       )}
 
-      {/* Missing Data Warning */}
-      {consultants.length === 0 && (
-          <div className="bg-amber-50 border border-amber-200 text-amber-800 p-4 rounded-xl flex items-center gap-3">
-              <AlertTriangle size={24} />
-              <div>
-                  <h3 className="font-bold">警告：未偵測到人員資料</h3>
-                  <p className="text-sm">請前往「人員管理 (HR)」新增資料，或檢查網路連線。</p>
-              </div>
-          </div>
-      )}
-
       {/* Calendar Grid */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
          <div className="grid grid-cols-7 bg-slate-50 border-b border-slate-200 text-center py-2 text-sm font-bold text-slate-500">
@@ -314,11 +402,7 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
                  const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                  const config = getStaffConfig(dateStr);
                  
-                 const offNames = config.off.map(id => getStaffName(id));
-                 const leaveItems = config.leave.map(l => ({ name: getStaffName(l.id), type: l.type }));
-                 const workNames = config.work.map(id => getStaffName(id));
-                 const overtimeItems = (config.overtime || []).map(o => ({ name: getStaffName(o.id), type: o.type }));
-                 const lateNames = (config.late || []).map(id => getStaffName(id));
+                 const hasData = config.off.length > 0 || config.leave.length > 0 || config.work.length > 0 || (config.late && config.late.length > 0);
 
                  return (
                      <div 
@@ -328,54 +412,40 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
                      >
                          <div className="text-sm font-bold text-slate-700 mb-2 flex justify-between">
                              {d}
-                             <span className="text-xs text-slate-300 group-hover:text-blue-400 font-normal">編輯</span>
+                             <span className="text-[10px] text-slate-300 group-hover:text-blue-400 font-normal">編輯</span>
                          </div>
                          
-                         <div className="space-y-1">
-                             {offNames.length > 0 && (
+                         <div className="space-y-2">
+                             {/* Group 1: Off (休) */}
+                             {config.off.length > 0 && (
                                  <div className="flex flex-wrap gap-1">
-                                     {offNames.map((name, i) => (
-                                         <span key={i} className="text-[10px] bg-rose-50 text-rose-600 px-1.5 py-0.5 rounded border border-rose-100 font-bold truncate">
-                                             休 {name}
-                                         </span>
-                                     ))}
+                                     休-{config.off.map(id => renderStaffAvatar(id, '休假', 'off'))}
                                  </div>
                              )}
-                             {leaveItems.length > 0 && (
+
+                             {/* Group 2: Leave (假) */}
+                             {config.leave.length > 0 && (
                                  <div className="flex flex-wrap gap-1">
-                                     {leaveItems.map((item, idx) => (
-                                         <span key={idx} className="text-[10px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100 font-bold truncate">
-                                             {item.type} {item.name}
-                                         </span>
-                                     ))}
+                                     假-{config.leave.map(l => renderStaffAvatar(l.id, l.type, 'leave'))}
                                  </div>
                              )}
-                             {overtimeItems.length > 0 && (
-                                 <div className="flex flex-wrap gap-1">
-                                     {overtimeItems.map((item, idx) => (
-                                         <span key={idx} className="text-[10px] bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded border border-amber-200 font-bold truncate">
-                                             {item.type} {item.name}
-                                         </span>
-                                     ))}
+
+                             {/* Group 3: Late (遲) */}
+                             {config.late && config.late.length > 0 && (
+                                 <div className="flex flex-wrap gap-1 bg-amber-50 p-0.5 rounded border border-amber-100">
+                                     遲-{config.late.map(id => renderStaffAvatar(id, '遲到', 'late'))}
                                  </div>
                              )}
-                             {lateNames.length > 0 && (
+
+                             {/* Group 4: Part-time Work (工) */}
+                             {config.work.length > 0 && (
                                  <div className="flex flex-wrap gap-1">
-                                     {lateNames.map((name, i) => (
-                                         <span key={i} className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded border border-amber-200 font-black truncate">
-                                             遲 {name}
-                                         </span>
-                                     ))}
+                                     打工-{config.work.map(id => renderStaffAvatar(id, '打工', 'work'))}
                                  </div>
                              )}
-                             {workNames.length > 0 && (
-                                 <div className="flex flex-wrap gap-1">
-                                     {workNames.map((name, i) => (
-                                         <span key={i} className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-100 font-bold truncate">
-                                             工 {name}
-                                         </span>
-                                     ))}
-                                 </div>
+
+                             {!hasData && (
+                                 <div className="text-[10px] text-slate-300 italic py-1">全員上班</div>
                              )}
                          </div>
                      </div>
@@ -410,7 +480,12 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
                                   if (!s) return null;
                                   return (
                                       <tr key={c.id} className="hover:bg-slate-50">
-                                          <td className="px-3 py-3 font-bold text-slate-700">{c.name}</td>
+                                          <td className="px-3 py-3 font-bold text-slate-700">
+                                              <div className="flex items-center gap-2">
+                                                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] text-white font-bold" style={{ backgroundColor: c.avatarColor || '#94a3b8' }}>{c.avatarText || c.name[0]}</div>
+                                                  {c.name}
+                                              </div>
+                                          </td>
                                           <td className={`px-3 py-3 text-right font-bold ${s.sundayOT > 0 ? 'text-amber-600' : 'text-slate-400'}`}>
                                               {s.sundayOT}
                                           </td>
@@ -429,7 +504,6 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
                                       </tr>
                                   );
                               })}
-                              {groupFullTime.length === 0 && <tr><td colSpan={6} className="p-4 text-center text-slate-400">無正職人員</td></tr>}
                           </tbody>
                       </table>
                   </div>
@@ -458,7 +532,12 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
                                   if (!s) return null;
                                   return (
                                       <tr key={c.id} className="hover:bg-slate-50">
-                                          <td className="px-3 py-3 font-bold text-slate-700">{c.name}</td>
+                                          <td className="px-3 py-3 font-bold text-slate-700">
+                                              <div className="flex items-center gap-2">
+                                                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] text-white font-bold" style={{ backgroundColor: c.avatarColor || '#94a3b8' }}>{c.avatarText || c.name[0]}</div>
+                                                  {c.name}
+                                              </div>
+                                          </td>
                                           <td className="px-3 py-3 text-right font-black text-amber-600">{s.lateCount}</td>
                                           <td className="px-3 py-3 text-right font-bold text-indigo-600">{s.work.length} 天</td>
                                           <td className="px-3 py-3 text-xs text-slate-500 break-words max-w-[200px]">
@@ -467,7 +546,6 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
                                       </tr>
                                   );
                               })}
-                              {groupPartTime.length === 0 && <tr><td colSpan={4} className="p-4 text-center text-slate-400">無打工人員</td></tr>}
                           </tbody>
                       </table>
                   </div>
@@ -475,7 +553,6 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, schedules: p
           </div>
       </div>
 
-      {/* Reusable Modal with wrapped onSave to prevent clinic overwriting */}
       <StaffScheduleModal 
           isOpen={!!modalDateStr}
           onClose={() => setModalDateStr(null)}

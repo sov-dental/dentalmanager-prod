@@ -494,6 +494,27 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                   }
               }
 
+              // Auto-sync NP Record during calendar sync
+              if (parsed.isNP) {
+                  const existingNP = todaysNPRecords[event.id];
+                  const note = event.description || '';
+                  const parsedSource = parseSourceFromNote(note);
+
+                  saveNPRecord(event.id, {
+                      date: currentDate,
+                      clinicId: selectedClinicId,
+                      patientName: parsed.name,
+                      treatment: existingRow?.treatmentContent || "",
+                      isVisited: existingNP?.isVisited || false,
+                      isClosed: existingNP?.isClosed || false,
+                      source: existingNP?.source || parsedSource || 'Line',
+                      marketingTag: existingNP?.marketingTag || '矯正諮詢',
+                      calendarTreatment: parsed.treatment,
+                      updatedAt: new Date().toISOString(),
+                      isHidden: false 
+                  }).catch(e => console.error("[SyncNP] Error:", e));
+              }
+
               return {
                   ...hydrateRow(existingRow || {}),
                   id: event.id,
@@ -645,15 +666,18 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                   if (isNPDetected) {
                       (newRow as any).isNP = true;
                       
+                      const existingNP = todaysNPRecords[newRow.id];
+                      const parsedSource = parseSourceFromNote((newRow as any).note || '');
+
                       saveNPRecord(newRow.id, {
                           date: currentDate,
                           clinicId: selectedClinicId,
                           patientName: newRow.patientName.trim(),
                           treatment: newRow.treatmentContent || '',
-                          isVisited: false,
-                          isClosed: false,
-                          source: 'Line',
-                          marketingTag: '矯正諮詢',
+                          isVisited: existingNP?.isVisited || false,
+                          isClosed: existingNP?.isClosed || false,
+                          source: existingNP?.source || parsedSource || 'Line',
+                          marketingTag: existingNP?.marketingTag || '矯正諮詢',
                           calendarTreatment: newRow.calendarTreatment,
                           updatedAt: new Date().toISOString(),
                           isHidden: false 
@@ -674,7 +698,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       saveTimeoutRef.current = setTimeout(() => {
           persistData(rowsRef.current, expendituresRef.current, diffString || undefined);
       }, 2000);
-  }, [isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, persistData]);
+  }, [isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, persistData, todaysNPRecords]);
 
   const handleDeleteRow = useCallback(async (id: string) => {
       if (isLocked) return;

@@ -118,10 +118,13 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   // Performance Optimization: Debounce State
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  // NEW: Critical Ref to block snapshot overwrites during active editing
+  const hasUnsavedChangesRef = useRef(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [filterDoctorId, setFilterDoctorId] = useState<string>('');
   const [isClosingModalOpen, setIsClosingModalOpen] = useState(false);
+  const [closingError, setClosingError] = useState<string | null>(null);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [npModalData, setNpModalData] = useState<{row: AccountingRow} | null>(null);
 
@@ -245,6 +248,10 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       const unsubscribe = db.collection('daily_accounting').doc(docId).onSnapshot((doc: any) => {
           setIsLoading(false);
           
+          // CRITICAL FIX: If user has unsaved local changes, ignore the snapshot update 
+          // to prevent overwriting local state while the user is typing/editing.
+          if (hasUnsavedChangesRef.current) return;
+
           if (doc.exists) {
               const data = doc.data() as DailyAccountingRecord;
               setDailyRecord(data);
@@ -412,7 +419,10 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           await saveDailyAccounting(payload, auditEntry);
           
           setSaveStatus('saved');
+          // Reset Unsaved Markers
           setHasUnsavedChanges(false);
+          hasUnsavedChangesRef.current = false;
+          
           setTimeout(() => setSaveStatus('idle'), 2000);
       } catch (e) {
           console.error(e);
@@ -494,27 +504,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                   }
               }
 
-              // Auto-sync NP Record during calendar sync
-              if (parsed.isNP) {
-                  const existingNP = todaysNPRecords[event.id];
-                  const note = event.description || '';
-                  const parsedSource = parseSourceFromNote(note);
-
-                  saveNPRecord(event.id, {
-                      date: currentDate,
-                      clinicId: selectedClinicId,
-                      patientName: parsed.name,
-                      treatment: existingRow?.treatmentContent || "",
-                      isVisited: existingNP?.isVisited || false,
-                      isClosed: existingNP?.isClosed || false,
-                      source: existingNP?.source || parsedSource || 'Line',
-                      marketingTag: existingNP?.marketingTag || '矯正諮詢',
-                      calendarTreatment: parsed.treatment,
-                      updatedAt: new Date().toISOString(),
-                      isHidden: false 
-                  }).catch(e => console.error("[SyncNP] Error:", e));
-              }
-
               return {
                   ...hydrateRow(existingRow || {}),
                   id: event.id,
@@ -552,24 +541,25 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const handleAddRow = useCallback(() => {
       if (isLocked) return;
-      const currentRows = rowsRef.current;
-      const maxSortOrder = Math.max(...currentRows.map(r => r.sortOrder || 0), 0);
-
-      const newRow: AccountingRow = {
-          ...hydrateRow({}),
-          id: crypto.randomUUID(),
-          isManual: true,
-          attendance: true,
-          startTime: new Date().toISOString(),
-          chartId: null,
-          patientStatus: '',
-          paymentMethod: 'cash',
-          paymentBreakdown: { cash: 0, card: 0, transfer: 0 },
-          sortOrder: maxSortOrder + 10
-      };
-      const updated = [...currentRows, newRow];
-      setRows(updated);
+      hasUnsavedChangesRef.current = true;
       setHasUnsavedChanges(true);
+
+      setRows(prevRows => {
+          const maxSortOrder = Math.max(...prevRows.map(r => r.sortOrder || 0), 0);
+          const newRow: AccountingRow = {
+              ...hydrateRow({}),
+              id: crypto.randomUUID(),
+              isManual: true,
+              attendance: true,
+              startTime: new Date().toISOString(),
+              chartId: null,
+              patientStatus: '',
+              paymentMethod: 'cash',
+              paymentBreakdown: { cash: 0, card: 0, transfer: 0 },
+              sortOrder: maxSortOrder + 10
+          };
+          return [...prevRows, newRow];
+      });
 
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
@@ -593,16 +583,15 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   };
 
   const handleRevokeNP = useCallback((rowId: string) => {
-    const currentRows = rowsRef.current;
-    const updatedRows = currentRows.map(r => {
+    hasUnsavedChangesRef.current = true;
+    setHasUnsavedChanges(true);
+    
+    setRows(prevRows => prevRows.map(r => {
         if (r.id === rowId) {
-            // Revert NP status indicators
             return { ...r, npStatus: "", isNP: false };
         }
         return r;
-    });
-    setRows(updatedRows);
-    setHasUnsavedChanges(true);
+    }));
     
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
@@ -611,7 +600,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   }, [persistData]);
 
   const updateRow = useCallback((id: string, updates: Partial<AccountingRow> | any) => {
-      const currentRows = rowsRef.current;
+      const currentBaseline = rowsRef.current;
       const isRestrictedField = Object.keys(updates).some(key => 
           ['treatments', 'retail', 'patientName', 'paymentMethod', 'doctorId', 'chartId'].includes(key)
       );
@@ -620,97 +609,99 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           return;
       }
 
-      let diffString: string | null = null;
-
-      const updatedRows = currentRows.map(r => {
-          if (r.id === id) {
-              const newRow = { ...r };
-              Object.keys(updates).forEach(key => {
-                  if (typeof updates[key] === 'object' && updates[key] !== null && !Array.isArray(updates[key])) {
-                      (newRow as any)[key] = { ...((newRow as any)[key] as any), ...updates[key] };
-                  } else {
-                      (newRow as any)[key] = updates[key];
-                  }
-              });
-              
-              if (updates.doctorId) {
-                  const val = updates.doctorId;
-                  if (val === 'clinic_public') {
-                      newRow.doctorName = PUBLIC_DOCTOR.name;
-                  } else {
-                      const doc = clinicDocs.find(d => d.id === val);
-                      if (doc) newRow.doctorName = doc.name;
-                  }
-              }
-
-              if (updates.labName === 'SOV轉介' && newRow.patientName) {
-                  addSOVReferral(selectedClinicId, newRow.patientName).catch(e => console.error(e));
-              }
-
-              if (updates.treatments && typeof updates.treatments.sov === 'number') {
-                  const sovAmount = updates.treatments.sov;
-                  if (sovAmount > 0) {
-                      const pName = (newRow.patientName || '').trim();
-                      const isReferral = realtimeSovReferrals.some(ref => 
-                          ref.name.trim() === pName && 
-                          ref.clinicId === selectedClinicId
-                      );
-                      newRow.labName = isReferral ? "SOV轉介" : "SOV自約";
-                  }
-              }
-
-              if (newRow.patientName && newRow.patientName.trim()) {
-                  const searchStr = `${newRow.npStatus || ''} ${(newRow as any).note || ''} ${newRow.treatmentContent || ''}`.toUpperCase();
-                  const isNPDetected = searchStr.includes('NP') || searchStr.includes('新患') || searchStr.includes('初診');
-                  
-                  if (isNPDetected) {
-                      (newRow as any).isNP = true;
-                      
-                      const existingNP = todaysNPRecords[newRow.id];
-                      const parsedSource = parseSourceFromNote((newRow as any).note || '');
-
-                      saveNPRecord(newRow.id, {
-                          date: currentDate,
-                          clinicId: selectedClinicId,
-                          patientName: newRow.patientName.trim(),
-                          treatment: newRow.treatmentContent || '',
-                          isVisited: existingNP?.isVisited || false,
-                          isClosed: existingNP?.isClosed || false,
-                          source: existingNP?.source || parsedSource || 'Line',
-                          marketingTag: existingNP?.marketingTag || '矯正諮詢',
-                          calendarTreatment: newRow.calendarTreatment,
-                          updatedAt: new Date().toISOString(),
-                          isHidden: false 
-                      }).catch(e => console.error("[AutoNP] Restoration failed:", e));
-                  }
-              }
-
-              diffString = calculateDiff(r, newRow);
-              return newRow;
-          }
-          return r;
-      });
-
-      setRows(updatedRows);
+      // Mark local dirty state to prevent snapshot overwrite
+      hasUnsavedChangesRef.current = true;
       setHasUnsavedChanges(true);
+
+      let diffStringForEffect: string | null = null;
+
+      setRows(prevRows => {
+          return prevRows.map(r => {
+              if (r.id === id) {
+                  const newRow = { ...r };
+                  Object.keys(updates).forEach(key => {
+                      if (typeof updates[key] === 'object' && updates[key] !== null && !Array.isArray(updates[key])) {
+                          (newRow as any)[key] = { ...((newRow as any)[key] as any), ...updates[key] };
+                      } else {
+                          (newRow as any)[key] = updates[key];
+                      }
+                  });
+                  
+                  if (updates.doctorId) {
+                      const val = updates.doctorId;
+                      if (val === 'clinic_public') {
+                          newRow.doctorName = PUBLIC_DOCTOR.name;
+                      } else {
+                          const doc = clinicDocs.find(d => d.id === val);
+                          if (doc) newRow.doctorName = doc.name;
+                      }
+                  }
+
+                  if (updates.labName === 'SOV轉介' && newRow.patientName) {
+                      addSOVReferral(selectedClinicId, newRow.patientName).catch(e => console.error(e));
+                  }
+
+                  if (updates.treatments && typeof updates.treatments.sov === 'number') {
+                      const sovAmount = updates.treatments.sov;
+                      if (sovAmount > 0) {
+                          const pName = (newRow.patientName || '').trim();
+                          const isReferral = realtimeSovReferrals.some(ref => 
+                              ref.name.trim() === pName && 
+                              ref.clinicId === selectedClinicId
+                          );
+                          newRow.labName = isReferral ? "SOV轉介" : "SOV自約";
+                      }
+                  }
+
+                  if (newRow.patientName && newRow.patientName.trim()) {
+                      const searchStr = `${newRow.npStatus || ''} ${(newRow as any).note || ''} ${newRow.treatmentContent || ''}`.toUpperCase();
+                      const isNPDetected = searchStr.includes('NP') || searchStr.includes('新患') || searchStr.includes('初診');
+                      
+                      if (isNPDetected) {
+                          (newRow as any).isNP = true;
+                          
+                          saveNPRecord(newRow.id, {
+                              date: currentDate,
+                              clinicId: selectedClinicId,
+                              patientName: newRow.patientName.trim(),
+                              treatment: newRow.treatmentContent || '',
+                              isVisited: false,
+                              isClosed: false,
+                              source: 'Line',
+                              marketingTag: '矯正諮詢',
+                              calendarTreatment: newRow.calendarTreatment,
+                              updatedAt: new Date().toISOString(),
+                              isHidden: false 
+                          }).catch(e => console.error("[AutoNP] Restoration failed:", e));
+                      }
+                  }
+
+                  diffStringForEffect = calculateDiff(r, newRow);
+                  return newRow;
+              }
+              return r;
+          });
+      });
 
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
-          persistData(rowsRef.current, expendituresRef.current, diffString || undefined);
+          // Note: rowsRef.current is updated via useEffect [rows]
+          persistData(rowsRef.current, expendituresRef.current, diffStringForEffect || undefined);
       }, 2000);
-  }, [isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, persistData, todaysNPRecords]);
+  }, [isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, persistData]);
 
   const handleDeleteRow = useCallback(async (id: string) => {
       if (isLocked) return;
       if (!confirm("確定刪除此列？")) return;
 
+      hasUnsavedChangesRef.current = true;
+      setHasUnsavedChanges(true);
+
       try {
           await deleteNPRecord(id);
       } catch (e) {}
 
-      const updated = rowsRef.current.filter(r => r.id !== id);
-      setRows(updated);
-      setHasUnsavedChanges(true);
+      setRows(prevRows => prevRows.filter(r => r.id !== id));
       
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
@@ -720,8 +711,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const handleExpenditureChange = (newExp: Expenditure[]) => {
       if (isLocked) return;
-      setExpenditures(newExp);
+      hasUnsavedChangesRef.current = true;
       setHasUnsavedChanges(true);
+      setExpenditures(newExp);
 
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
@@ -731,20 +723,27 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const handleLockDay = async () => {
       if (!currentUser || !selectedClinicId) return;
+      
+      // 1. Check Validation
       if (validationErrors.length > 0) {
-         // Join the error messages with newlines for a readable alert
-          const errorMessage = "無法結帳，請檢查以下資料：\n\n" + validationErrors.join("\n");
-          alert(errorMessage);
-          return; // Stop execution gracefully (don't throw exception)
+          return; 
       }
 
+      // 2. Clear Timeout
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      
+      // 3. Reset Backend Error
+      setClosingError(null); 
+
       try {
           await lockDailyReport(currentDate, selectedClinicId, rowsRef.current, { uid: currentUser.uid, name: currentUser.email || 'User' });
           setHasUnsavedChanges(false);
-      } catch (e) {
-          alert("結帳失敗，請重試");
-          throw e; 
+          hasUnsavedChangesRef.current = false;
+          setIsClosingModalOpen(false); // Close modal on success
+      } catch (e: any) {
+          // 4. Handle Backend Errors (Network/Permission)
+          console.error(e);
+          setClosingError(e.message || "結帳發生未知錯誤");
       }
   };
 
@@ -802,7 +801,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                         <Lock size={14} /> {isMonthLocked ? '月結鎖定中' : '已結帳'}
                     </div>
                 ) : (
-                    <button onClick={() => setIsClosingModalOpen(true)} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-sm font-bold hover:bg-emerald-100 transition-colors">
+                    <button onClick={() => { setClosingError(null); setIsClosingModalOpen(true); }} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-sm font-bold hover:bg-emerald-100 transition-colors">
                         <Unlock size={14} /> 結帳鎖定
                     </button>
                 )}
@@ -972,7 +971,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
             <div className="p-4 bg-rose-50 border-b border-rose-100 flex justify-between items-center"><h4 className="font-bold text-rose-700 text-sm">診所支出</h4><div className="flex items-center gap-4"><span className="text-xs font-bold text-rose-600">總計: ${totals.totalExpenditure.toLocaleString()}</span>{!isLocked && (<button onClick={() => handleExpenditureChange([...expenditures, { id: crypto.randomUUID(), item: '', amount: 0 }])} className="text-xs bg-white text-rose-600 px-2 py-1 rounded border border-rose-200 font-bold hover:bg-rose-100">+ 新增</button>)}</div></div>
             <div className="p-2 space-y-2 max-h-[200px] overflow-y-auto">{expenditures.map((ex, idx) => (<div key={ex.id} className="flex gap-2 items-center bg-slate-50 p-1.5 rounded border border-slate-100"><input className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none" value={ex.item} disabled={isLocked} onChange={e => { const newEx = [...expenditures]; newEx[idx].item = e.target.value; handleExpenditureChange(newEx); }} placeholder="項目名稱" /><input type="number" className="w-24 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none text-right font-bold text-rose-600" value={ex.amount} disabled={isLocked} onChange={e => { const newEx = [...expenditures]; newEx[idx].amount = Number(e.target.value); handleExpenditureChange(newEx); }} placeholder="0" />{!isLocked && (<button onClick={() => handleExpenditureChange(expenditures.filter((_, i) => i !== idx))} className="text-slate-400 hover:text-rose-500"><Trash2 size={14} /></button>)}</div>))}</div>
         </div>
-        <ClosingSummaryModal isOpen={isClosingModalOpen} onClose={() => setIsClosingModalOpen(false)} onConfirm={handleLockDay} date={currentDate} clinicId={selectedClinicId} rows={rows} totals={{ cash: totals.cashBalance, card: totals.cardRevenue, transfer: totals.transferRevenue, total: totals.netTotal }} validationErrors={validationErrors} />
+        <ClosingSummaryModal isOpen={isClosingModalOpen} onClose={() => setIsClosingModalOpen(false)} onConfirm={handleLockDay} date={currentDate} clinicId={selectedClinicId} rows={rows} totals={{ cash: totals.cashBalance, card: totals.cardRevenue, transfer: totals.transferRevenue, total: totals.netTotal }} validationErrors={validationErrors} backendError={closingError} />
         <AuditLogModal isOpen={isAuditModalOpen} onClose={() => setIsAuditModalOpen(false)} logs={dailyRecord?.auditLog || []} />
         {npModalData && (
             <NPStatusModal 

@@ -140,6 +140,21 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
     expendituresRef.current = expenditures;
   }, [expenditures]);
 
+  // Safety Guard: Warn user before leaving if unsaved changes exist or past date is unlocked
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+        const isLockedStatus = dailyRecord?.isLocked === true;
+        const isUnlocked = !isLockedStatus;
+        
+        if ((currentDate < getTodayStr() && rows.length > 0 && isUnlocked) || hasUnsavedChanges) {
+            e.preventDefault();
+            e.returnValue = ''; // Standard browser warning
+        }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [dailyRecord, currentDate, rows.length, hasUnsavedChanges]);
+
   // Cleanup timeout on unmount
   useEffect(() => {
     return () => {
@@ -564,7 +579,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
           persistData(rowsRef.current, expendituresRef.current);
-      }, 2000);
+      }, 10000);
   }, [isLocked, persistData]);
 
   const handleManualSave = async () => {
@@ -596,11 +611,10 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
         persistData(rowsRef.current, expendituresRef.current);
-    }, 1000);
+    }, 10000);
   }, [persistData]);
 
   const updateRow = useCallback((id: string, updates: Partial<AccountingRow> | any) => {
-      const currentBaseline = rowsRef.current;
       const isRestrictedField = Object.keys(updates).some(key => 
           ['treatments', 'retail', 'patientName', 'paymentMethod', 'doctorId', 'chartId'].includes(key)
       );
@@ -687,7 +701,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       saveTimeoutRef.current = setTimeout(() => {
           // Note: rowsRef.current is updated via useEffect [rows]
           persistData(rowsRef.current, expendituresRef.current, diffStringForEffect || undefined);
-      }, 2000);
+      }, 10000);
   }, [isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, persistData]);
 
   const handleDeleteRow = useCallback(async (id: string) => {
@@ -706,7 +720,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
           persistData(rowsRef.current, expendituresRef.current);
-      }, 2000);
+      }, 10000);
   }, [isLocked, persistData]);
 
   const handleExpenditureChange = (newExp: Expenditure[]) => {
@@ -718,7 +732,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
           persistData(rowsRef.current, expendituresRef.current);
-      }, 2000);
+      }, 10000);
   };
 
   const handleLockDay = async () => {

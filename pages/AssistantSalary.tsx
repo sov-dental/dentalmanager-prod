@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Consultant, DailySchedule, AccountingRow } from '../types';
 import { 
@@ -37,7 +36,7 @@ interface SalaryRow {
     
     // Attendance Bonus
     fullAttendanceBonus: number;
-    bonusDisqualifiedReason: string; // "遲到" or empty
+    bonusDisqualifiedReason: string; 
     
     // Overtime
     sundayOTDays: number;
@@ -159,7 +158,6 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
             const staffList = await getStaffList(selectedClinicId);
             const targetStaff = staffList.filter(c => c.role !== 'part_time');
 
-            // --- CRITICAL FIX: Fetch Fresh Monthly Stats ---
             const monthStats = await getMonthlyScheduleStats(selectedClinicId, currentMonth);
             const bonusMap = await fetchPerformanceBonus(targetStaff);
             const [y, m] = currentMonth.split('-').map(Number);
@@ -170,7 +168,6 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                 const totalBase = baseSalary + allowance;
                 const dailyRate = Math.round(totalBase / 30);
 
-                // Extract aggregated stats for this specific staff member
                 const s = monthStats[staff.id] || { personalLeave: 0, sickLeave: 0, sundayOT: 0, lateCount: 0, specialLeave: 0 };
                 
                 const personalDays = s.personalLeave;
@@ -179,23 +176,21 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                 const lateCount = s.lateCount;
                 const sundayOTDays = s.sundayOT;
 
-                // Fetch YTD Sick Leave (excluding this month)
                 const ytdSickDays = await getYearlySickLeaveCount(selectedClinicId, staff.id, y, m);
 
-                // --- Bonus Logic (Phase 2 Upgrade) ---
+                // --- Full Attendance Bonus Logic (Strict Rule Update) ---
                 let bonus = attendanceBonusBase;
                 let disqualifiedReason = '';
 
-                if (lateCount > 0) {
+                // NEW: Strict Rule - Disqualify if any Late OR any Personal Leave
+                if (lateCount > 0 || personalDays > 0) {
                     bonus = 0;
-                    disqualifiedReason = '遲到';
-                } else if (personalDays > 0 || sickDays > 0) {
-                    // Full Attendance Bonus Rules:
-                    // 1. Late -> 0
-                    // 2. Personal -> Proportional deduction ($100 per day if bonus is 3000)
-                    bonus -= (attendanceBonusBase / 30) * personalDays;
-
-                    // 3. Sick -> Proportional deduction only after 10-day buffer
+                    const reasons = [];
+                    if (lateCount > 0) reasons.push('遲到');
+                    if (personalDays > 0) reasons.push('事假');
+                    disqualifiedReason = reasons.join('/');
+                } else if (sickDays > 0) {
+                    // Sick Leave: Proportional deduction only after 10-day buffer
                     const remainingBuffer = Math.max(0, 10 - ytdSickDays);
                     const deductibleSickDays = Math.max(0, sickDays - remainingBuffer);
                     bonus -= (attendanceBonusBase / 30) * deductibleSickDays;
@@ -204,13 +199,8 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                 const finalFullAttendanceBonus = Math.max(0, Math.round(bonus));
 
                 // --- Standard Salary Logic ---
-                // Personal Leave = Deduct full daily rate
-                // Sick Leave = Deduct half daily rate (Labor law standard)
                 const leaveDeduction = Math.round((personalDays * dailyRate) + (sickDays * dailyRate * 0.5));
-                
-                // Sunday Overtime = Extra daily rate per shift
                 const sundayOTPay = Math.round(dailyRate * sundayOTDays);
-                
                 const regularOTMins = regularOTInputs[staff.id] || 0;
                 const regularOTPay = Math.round(regularOTMins * otRate);
                 
@@ -421,8 +411,8 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                 <div className="text-xs text-slate-600 space-y-1">
                     <p className="font-bold">薪資計算規則說明 (2026 Edition):</p>
                     <ul className="list-disc ml-4 space-y-0.5">
-                        <li><strong>全勤獎金:</strong> 若該月有「遲到」紀錄，全勤獎金立即歸零。</li>
-                        <li><strong>事假扣款:</strong> 薪資基數依 30 天比例扣薪；全勤獎金亦按天數比例扣除 ($100/天)。</li>
+                        <li><strong>全勤獎金:</strong> 若該月有「遲到」或「事假」紀錄，全勤獎金立即歸零。</li>
+                        <li><strong>事假扣款:</strong> 薪資基數依 30 天比例扣薪。</li>
                         <li><strong>病假扣款:</strong> 薪資基數扣除半薪；全勤獎金每年享有 10 天緩衝，超過 10 天後開始按天數扣除。</li>
                         <li><strong>週日加班:</strong> 依「薪資基數/30」計算每日加班費，半日班則減半計算。</li>
                     </ul>

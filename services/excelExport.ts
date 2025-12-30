@@ -37,6 +37,9 @@ export const exportDailyReportToExcel = async (
   consultants: Consultant[] = []
 ) => {
   // --- 0. Data Preparation ---
+
+  // Filter: Exclude non-attended patients
+  const activeRows = rows.filter(r => r.attendance);
   
   // A. Build Staff Lookup Map (ID -> Name) for resolving Consultant names in NP records
   const staffMap = new Map<string, string>();
@@ -75,8 +78,8 @@ export const exportDailyReportToExcel = async (
       console.error("Error fetching NP records for export:", e);
   }
 
-  // C. Group/Sort by Doctor Name
-  const sortedRows = [...rows].sort((a, b) => 
+  // C. Group/Sort by Doctor Name (Using filtered activeRows)
+  const sortedRows = [...activeRows].sort((a, b) => 
       (a.doctorName || '').localeCompare(b.doctorName || '', 'zh-TW')
   );
 

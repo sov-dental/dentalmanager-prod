@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Clinic, Laboratory, AccountingRow, TechnicianRecord, Doctor, LabOrderDetail } from '../types';
@@ -7,7 +6,7 @@ import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from './ClinicSelector';
 import { 
     Microscope, Save, Plus, Loader2, 
-    Search, X, FileEdit, Trash2, List
+    Search, X, FileEdit, Trash2, List, DollarSign
 } from 'lucide-react';
 
 interface Props {
@@ -22,6 +21,9 @@ interface LinkedRow extends AccountingRow {
     currentFee: number; // Current displayed fee (Net)
     recordId?: string; // ID of the linked technician_record
     
+    // Revenue Basis for calculations
+    selfPayTotal: number;
+
     // Category Attribution Logic
     availableCategories: { key: string; label: string }[];
     selectedCategory: string; // The currently selected attribution
@@ -56,6 +58,17 @@ const MANUAL_CATEGORY_OPTIONS = [
     { value: 'otherSelfPay', label: '其他' },
     { value: 'vault', label: '小金庫/物販' },
 ];
+
+/**
+ * Helper: Strictly sum only self-pay treatment items.
+ * Excludes: regFee, copayment, and all retail items.
+ */
+const getSelfPayTotal = (row: AccountingRow): number => {
+    const t = row.treatments;
+    return (t.prostho || 0) + (t.implant || 0) + (t.ortho || 0) + 
+           (t.sov || 0) + (t.inv || 0) + (t.whitening || 0) + 
+           (t.perio || 0) + (t.otherSelfPay || 0);
+};
 
 // Helper: Inline Input for Table Editing
 const InlineInput = ({ 
@@ -184,21 +197,29 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
                     
                     const availableCats: { key: string; label: string }[] = [];
                     const t = row.treatments as any;
+                    
+                    // Step A: Iterate through treatments
                     Object.keys(CATEGORY_MAP).forEach(key => {
                         if (key !== 'vault' && t[key] > 0) {
                             availableCats.push({ key, label: CATEGORY_MAP[key] });
                         }
                     });
 
+                    // Step B: Check retail
                     const r = row.retail;
                     const isVault = (r.products || 0) + (r.diyWhitening || 0) > 0;
+                    if (isVault) {
+                        availableCats.push({ key: 'vault', label: CATEGORY_MAP['vault'] });
+                    }
                     
                     let selectedCat = 'otherSelfPay'; 
 
                     if (savedRecord && savedRecord.category) {
                         selectedCat = savedRecord.category;
-                    } else if (isVault) {
-                        selectedCat = 'vault';
+                        // Safety: ensure it's in availableCats even if it's a legacy or manual override
+                        if (!availableCats.find(c => c.key === selectedCat)) {
+                            availableCats.push({ key: selectedCat, label: CATEGORY_MAP[selectedCat] || selectedCat });
+                        }
                     } else if (availableCats.length > 0) {
                         selectedCat = availableCats[0].key;
                     }
@@ -209,6 +230,7 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
                         savedFee: savedRecord ? savedRecord.amount : undefined,
                         currentFee: fee,
                         recordId: savedRecord?.id,
+                        selfPayTotal: getSelfPayTotal(row), // Strictly calculated basis
                         availableCategories: availableCats,
                         selectedCategory: selectedCat,
                         details: savedRecord?.details || [],
@@ -341,7 +363,8 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
             const row = item as LinkedRow;
             setSelectedOrderRowId(row.id);
             setSelectedOrderRecordId(null);
-            setOrderRowRevenue(row.actualCollected || 0);
+            // Use selfPayTotal as the revenue basis (excludes reg fees and retail)
+            setOrderRowRevenue(row.selfPayTotal || 0);
             setActiveOrderLab(laboratories.find(l => l.name === row.labName && l.clinicId === selectedClinicId));
         } else {
             const rec = item as TechnicianRecord;
@@ -414,21 +437,23 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
     const grandTotal = totalLinkedFee + totalManualFee;
 
     const renderAttribution = (row: LinkedRow) => {
-        const isVault = (row.retail.products || 0) + (row.retail.diyWhitening || 0) > 0;
-        if (isVault) {
-             return <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded border border-slate-200 whitespace-nowrap">Vault (小金庫/物販)</span>;
+        // If there's only one option, just show text to keep UI clean
+        if (row.availableCategories.length <= 1) {
+            const label = row.availableCategories.length === 1 
+                ? row.availableCategories[0].label 
+                : CATEGORY_MAP[row.selectedCategory] || row.selectedCategory;
+            return <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded border border-slate-200 whitespace-nowrap">{label}</span>;
         }
+
         return (
             <select
                 className={`w-full text-xs border rounded px-1 py-1 outline-none bg-white focus:ring-1 focus:ring-purple-500 text-indigo-700 font-bold`}
                 value={row.selectedCategory}
                 onChange={e => handleCategoryChange(row.id, e.target.value)}
             >
-                {row.availableCategories.length > 0 ? (
-                    row.availableCategories.map(c => <option key={c.key} value={c.key}>{c.label}</option>)
-                ) : (
-                    Object.keys(CATEGORY_MAP).filter(k => k !== 'vault').map(key => <option key={key} value={key}>{CATEGORY_MAP[key]}</option>)
-                )}
+                {row.availableCategories.map(c => (
+                    <option key={c.key} value={c.key}>{c.label}</option>
+                ))}
             </select>
         );
     };
@@ -509,12 +534,13 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
                         <table className="w-full text-sm text-left">
                             <thead className="bg-white text-slate-500 font-bold uppercase text-xs border-b border-slate-100">
                                 <tr>
-                                    <th className="px-4 py-3 w-28">日期</th>
+                                    <th className="px-4 py-3 w-24">日期</th>
                                     {selectedLabId === 'all' && <th className="px-4 py-3 w-32">技工所</th>}
                                     <th className="px-4 py-3 w-28">病患</th>
                                     <th className="px-4 py-3 w-24">醫師</th>
+                                    <th className="px-4 py-3 w-24 text-right">自費收費</th>
                                     <th className="px-4 py-3 w-32">歸屬</th>
-                                    <th className="px-4 py-3">療程內容</th>
+                                    <th className="px-4 py-3">內容</th>
                                     <th className="px-4 py-3 text-right w-32">技工費 (Net)</th>
                                 </tr>
                             </thead>
@@ -522,18 +548,21 @@ export const LabReconciliation: React.FC<Props> = ({ laboratories }) => {
                                 {linkedRows.map(row => (
                                     <tr key={row.id} className="hover:bg-slate-50 transition-colors">
                                         <td 
-                                            className="px-4 py-3 font-mono text-blue-600 font-bold cursor-pointer hover:underline"
+                                            className="px-4 py-3 font-mono text-blue-600 font-bold cursor-pointer hover:underline whitespace-nowrap"
                                             onClick={() => navigate(`/accounting?date=${row.originalDate}`)}
                                         >
                                             {row.originalDate.slice(5)}
                                         </td>
-                                        {selectedLabId === 'all' && <td className="px-4 py-3 text-slate-600 font-bold">{row.labName}</td>}
-                                        <td className="px-4 py-3 font-bold text-slate-700">{row.patientName}</td>
-                                        <td className="px-4 py-3 text-slate-600">{row.doctorName}</td>
+                                        {selectedLabId === 'all' && <td className="px-4 py-3 text-slate-600 font-bold whitespace-nowrap">{row.labName}</td>}
+                                        <td className="px-4 py-3 font-bold text-slate-700 whitespace-nowrap">{row.patientName}</td>
+                                        <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{row.doctorName}</td>
+                                        <td className="px-4 py-3 text-right font-mono text-slate-500 font-medium">
+                                            {row.selfPayTotal > 0 ? `$${row.selfPayTotal.toLocaleString()}` : '-'}
+                                        </td>
                                         <td className="px-4 py-3">
                                             {renderAttribution(row)}
                                         </td>
-                                        <td className="px-4 py-3 text-slate-500 text-xs truncate max-w-[200px]" title={row.treatmentContent}>{row.treatmentContent}</td>
+                                        <td className="px-4 py-3 text-slate-500 text-xs truncate max-w-[180px]" title={row.treatmentContent}>{row.treatmentContent}</td>
                                         <td className="px-4 py-3 text-right">
                                             <button
                                                 onClick={() => handleOpenOrderModal('linked', row)}
@@ -781,7 +810,7 @@ const LabOrderModal = ({
                         </h3>
                         {revenue > 0 && (
                             <p className="text-xs text-indigo-200 mt-1">
-                                當日實收 (Revenue): ${revenue.toLocaleString()}
+                                計算基數 (Self-Pay Revenue): ${revenue.toLocaleString()}
                             </p>
                         )}
                     </div>
@@ -846,7 +875,7 @@ const LabOrderModal = ({
                         {/* Percentage Helper Text */}
                         {isPercentageApplied && (
                             <p className="text-xs text-indigo-600 font-bold">
-                                * 自動計算: 總實收 ${revenue.toLocaleString()} 的 {percentageValue}%
+                                * 自動計算: 自費基數 ${revenue.toLocaleString()} 的 {percentageValue}%
                             </p>
                         )}
                         {pricingList.length === 0 && <p className="text-xs text-rose-500">* 此技工所尚未設定價目表</p>}

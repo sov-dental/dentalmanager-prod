@@ -912,7 +912,7 @@ export const checkPreviousUnlocked = async (currentDate: string, clinicId: strin
 export const getMonthlyClosingStatus = async (clinicId: string, yearMonth: string): Promise<MonthlyClosing | null> => {
     const docId = `${clinicId}_${yearMonth}`;
     const doc = await db.collection('monthly_closings').doc(docId).get();
-    return doc.exists ? doc.data() : null;
+    return doc.exists ? (doc.data() as MonthlyClosing) : null;
 };
 
 export const lockMonthlyReport = async (clinicId: string, yearMonth: string, user: { uid: string, name: string }) => {

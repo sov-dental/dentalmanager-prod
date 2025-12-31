@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { 
@@ -165,7 +164,7 @@ export const Layout: React.FC<Props> = ({
   ];
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
+    <div className="flex h-screen w-screen bg-slate-50 overflow-hidden">
       {/* Mobile Menu Overlay */}
       {isMobileMenuOpen && (
         <div 
@@ -176,7 +175,7 @@ export const Layout: React.FC<Props> = ({
 
       {/* Sidebar */}
       <aside className={`
-        fixed lg:sticky top-0 left-0 z-50 h-screen w-72 bg-slate-900 text-white flex flex-col transition-transform duration-300 shadow-xl
+        fixed lg:static top-0 left-0 z-50 h-full w-72 bg-slate-900 text-white flex flex-col transition-transform duration-300 shadow-xl shrink-0
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       `}>
         {/* Header */}
@@ -289,9 +288,9 @@ export const Layout: React.FC<Props> = ({
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 min-w-0 flex flex-col min-h-screen">
+      <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
         {/* Mobile Header */}
-        <header className="lg:hidden bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-30 shadow-md">
+        <header className="lg:hidden bg-slate-900 text-white p-4 flex justify-between items-center shrink-0 shadow-md z-30">
           <div className="flex items-center gap-3">
             <button onClick={() => setIsMobileMenuOpen(true)} className="text-slate-300">
               <Menu />
@@ -306,7 +305,7 @@ export const Layout: React.FC<Props> = ({
         </header>
 
         {/* Desktop Status Bar */}
-        <div className="hidden lg:flex justify-end items-center px-8 py-2 bg-white border-b border-slate-200 gap-4 h-12">
+        <div className="hidden lg:flex justify-end items-center px-8 py-2 bg-white border-b border-slate-200 gap-4 h-12 shrink-0">
             <div className="flex items-center gap-2 text-xs font-medium">
                 {saveStatus === 'saving' && (
                     <span className="text-teal-600 flex items-center gap-1 bg-teal-50 px-2 py-1 rounded-full"><Loader2 size={12} className="animate-spin"/> 自動儲存中...</span>
@@ -323,7 +322,8 @@ export const Layout: React.FC<Props> = ({
             </div>
         </div>
 
-        <div className="flex-1 p-4 lg:p-8 overflow-x-hidden">
+        {/* Scrollable Page Content */}
+        <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 lg:p-8 custom-scrollbar">
           {children}
         </div>
       </main>

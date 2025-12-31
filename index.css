@@ -1,5 +1,14 @@
 /* Tailwind is loaded via CDN in index.html */
 
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden; /* Prevent window scrolling */
+  overscroll-behavior: none; /* Prevent bounce effect */
+}
+
 body {
   font-family: 'Inter', sans-serif;
   background-color: #f8fafc;

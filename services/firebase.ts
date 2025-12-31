@@ -816,7 +816,10 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
 
     const groups: Record<string, AccountingRow[]> = {};
     rows.forEach(r => {
-        const key = `${r.chartId || 'NP'}_${r.patientName || 'Unknown'}`;
+        // Skip invalid rows without name
+        if (!r.patientName || !r.patientName.trim()) return;
+
+        const key = `${r.chartId || 'NP'}_${r.patientName}`;
         if(!groups[key]) groups[key] = [];
         groups[key].push(r);
     });
@@ -824,13 +827,28 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
     for (const key in groups) {
         const groupRows = groups[key];
         const rep = groupRows[0]; 
+        
+        // Double safety check
+        if (!rep.patientName) continue;
+
         const chartId = rep.chartId || null; 
         const name = rep.patientName;
-        const patientDocId = `${clinicId}_${chartId || 'NP'}_${name.replace(/[\/\s]/g, '_')}`;
+        // Fix potential crash: Safe replace
+        const safeName = name.replace(/[\/\s]/g, '_');
+        const patientDocId = `${clinicId}_${chartId || 'NP'}_${safeName}`;
         const patientRef = db.collection('patients').doc(patientDocId);
 
         let totalSpend = 0;
         const items = new Set<string>();
+        
+        // Prepare visit history data with strict sanitization for arrayUnion
+        const visitHistoryData = groupRows.map(r => deepSanitize({
+            date, 
+            doctor: r.doctorName || '', 
+            treatment: r.treatmentContent || '', 
+            amount: r.actualCollected || 0
+        }));
+
         groupRows.forEach(r => {
             totalSpend += (r.actualCollected || 0);
             const t = r.treatments as any;
@@ -843,14 +861,15 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
             if (t.perio > 0) items.add('牙周');
         });
 
+        const purchasedItemsArray = Array.from(items);
+
         batch.set(patientRef, deepSanitize({
             clinicId, chartId, name, lastVisit: date,
             updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
             totalSpending: firebase.firestore.FieldValue.increment(totalSpend),
-            purchasedItems: firebase.firestore.FieldValue.arrayUnion(...Array.from(items)),
-            visitHistory: firebase.firestore.FieldValue.arrayUnion(...groupRows.map(r => ({
-                date, doctor: r.doctorName, treatment: r.treatmentContent || '', amount: r.actualCollected || 0
-            })))
+            // Use undefined check to avoid empty arrayUnion calls if necessary, but empty is safe with ...spread
+            purchasedItems: purchasedItemsArray.length > 0 ? firebase.firestore.FieldValue.arrayUnion(...purchasedItemsArray) : undefined,
+            visitHistory: visitHistoryData.length > 0 ? firebase.firestore.FieldValue.arrayUnion(...visitHistoryData) : undefined
         }), { merge: true });
     }
     await batch.commit();
@@ -867,17 +886,23 @@ export const unlockDailyReport = async (date: string, clinicId: string, user: {u
 };
 
 export const checkPreviousUnlocked = async (currentDate: string, clinicId: string): Promise<string[]> => {
-    const pastDate = new Date(currentDate); pastDate.setDate(pastDate.getDate() - 30);
+    // Look back 60 days
+    const pastDate = new Date(currentDate); 
+    pastDate.setDate(pastDate.getDate() - 60);
     const minDateStr = pastDate.toISOString().split('T')[0];
+    
+    // Correct range query interpolation
     const snap = await db.collection('daily_accounting')
-        .where(firebase.firestore.FieldPath.documentId(), '>=', `${clinicId}_minDateStr`)
+        .where(firebase.firestore.FieldPath.documentId(), '>=', `${clinicId}_${minDateStr}`)
         .where(firebase.firestore.FieldPath.documentId(), '<', `${clinicId}_${currentDate}`)
         .get();
 
     const unlocked: string[] = [];
     snap.forEach(doc => {
         const data = doc.data() as DailyAccountingRecord;
-        if (!data.isLocked) unlocked.push(data.date);
+        if (data.clinicId === clinicId && !data.isLocked) {
+            unlocked.push(data.date);
+        }
     });
     return unlocked.sort();
 };

@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Loader2, Lock, AlertTriangle, CheckCircle, Info, XCircle } from 'lucide-react';
 import { AccountingRow } from '../types';
-import { checkPreviousUnlocked } from '../services/firebase';
 
 interface Props {
     isOpen: boolean;
@@ -12,24 +11,13 @@ interface Props {
     rows: AccountingRow[];
     totals: { cash: number; card: number; transfer: number; total: number; };
     validationErrors?: string[];
+    unlockedDates?: string[]; // New prop
 }
 
 export const ClosingSummaryModal: React.FC<Props> = ({ 
-    isOpen, onClose, onConfirm, date, clinicId, rows, totals, validationErrors = [] 
+    isOpen, onClose, onConfirm, date, clinicId, rows, totals, validationErrors = [], unlockedDates = []
 }) => {
-    const [unlockedDates, setUnlockedDates] = useState<string[]>([]);
-    const [checking, setChecking] = useState(true);
     const [isProcessing, setIsProcessing] = useState(false);
-
-    useEffect(() => {
-        if (isOpen) {
-            setChecking(true);
-            checkPreviousUnlocked(date, clinicId).then(dates => {
-                setUnlockedDates(dates);
-                setChecking(false);
-            });
-        }
-    }, [isOpen, date, clinicId]);
 
     const handleConfirm = async () => {
         if (validationErrors.length > 0) return;
@@ -37,10 +25,9 @@ export const ClosingSummaryModal: React.FC<Props> = ({
         setIsProcessing(true);
         try {
             await onConfirm();
-            onClose();
+            // Parent handles close
         } catch (e) {
             console.error("Lock Day Error:", e);
-            // Alert handled by parent or generic mechanism
         } finally {
             setIsProcessing(false);
         }
@@ -61,7 +48,7 @@ export const ClosingSummaryModal: React.FC<Props> = ({
                 </div>
 
                 <div className="p-6 space-y-6 overflow-y-auto">
-                    {/* 1. Validation Errors (CRITICAL) */}
+                    {/* 1. Validation Errors */}
                     {hasErrors && (
                         <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 animate-fade-in">
                             <div className="font-bold text-rose-700 flex items-center gap-2 mb-2">
@@ -81,13 +68,9 @@ export const ClosingSummaryModal: React.FC<Props> = ({
                         </div>
                     )}
 
-                    {/* 2. Date Check */}
+                    {/* 2. Date Check (Using Props) */}
                     {!hasErrors && (
-                        checking ? (
-                            <div className="text-sm text-slate-500 flex items-center gap-2">
-                                <Loader2 size={14} className="animate-spin" /> 檢查前期帳務中...
-                            </div>
-                        ) : unlockedDates.length > 0 ? (
+                        unlockedDates.length > 0 ? (
                             <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 text-sm text-rose-700">
                                 <div className="font-bold flex items-center gap-2 mb-1">
                                     <AlertTriangle size={16} /> 注意：前期尚未結帳

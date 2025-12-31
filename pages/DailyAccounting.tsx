@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord, MonthlyClosing } from '../types';
-import { hydrateRow, getStaffList, db, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral, getMonthlyClosingStatus, saveNPRecord, deleteNPRecord } from '../services/firebase';
+import { hydrateRow, getStaffList, db, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral, getMonthlyClosingStatus, saveNPRecord, deleteNPRecord, checkPreviousUnlocked } from '../services/firebase';
 import { exportDailyReportToExcel } from '../services/excelExport';
 import { listEvents, initGoogleClient, authorizeCalendar } from '../services/googleCalendar';
 import { parseCalendarEvent, parseSourceFromNote } from '../utils/eventParser';
@@ -123,8 +123,12 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [filterDoctorId, setFilterDoctorId] = useState<string>('');
+  
+  // Closing Modal States
   const [isClosingModalOpen, setIsClosingModalOpen] = useState(false);
   const [closingError, setClosingError] = useState<string | null>(null);
+  const [unlockedDates, setUnlockedDates] = useState<string[]>([]); // New state for modal data
+
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [npModalData, setNpModalData] = useState<{row: AccountingRow} | null>(null);
 
@@ -263,8 +267,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       const unsubscribe = db.collection('daily_accounting').doc(docId).onSnapshot((doc: any) => {
           setIsLoading(false);
           
-          // CRITICAL FIX: If user has unsaved local changes, ignore the snapshot update 
-          // to prevent overwriting local state while the user is typing/editing.
           if (hasUnsavedChangesRef.current) return;
 
           if (doc.exists) {
@@ -272,7 +274,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               setDailyRecord(data);
               
               const loadedRows = (data.rows || []).map(r => hydrateRow(r));
-              // PRIMARY SORT BY sortOrder
               setRows(loadedRows.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)));
               setExpenditures(data.expenditures || []);
           } else {
@@ -297,8 +298,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       if (filterDoctorId) {
           filtered = rows.filter(r => r.doctorId === filterDoctorId);
       }
-      
-      // Strict sorting by sortOrder to respect user manual inputs and incremental sync
       return [...filtered].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
   }, [rows, filterDoctorId]);
 
@@ -434,7 +433,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           await saveDailyAccounting(payload, auditEntry);
           
           setSaveStatus('saved');
-          // Reset Unsaved Markers
           setHasUnsavedChanges(false);
           hasUnsavedChangesRef.current = false;
           
@@ -442,10 +440,13 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       } catch (e) {
           console.error(e);
           setSaveStatus('error');
+          // Re-throw to allow caller to catch (e.g. handleLockDay)
+          throw e; 
       }
   }, [selectedClinicId, currentDate, dailyRecord?.isLocked, currentUser]);
 
   const handleSyncCalendar = async () => {
+      // (Keep existing code)
       if (isLocked) { alert("今日已結帳，無法同步。"); return; }
       if (!selectedClinic?.googleCalendarMapping) { alert("此診所尚未設定 Google 日曆連結"); return; }
       
@@ -482,7 +483,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               });
           }
 
-          // 1. Sort Events in Memory: Doctor Order > Time
           const sortedEvents = allEvents.sort((a, b) => {
               const getDocIndex = (item: any) => {
                   if (item.isPublic) return 9999;
@@ -495,7 +495,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               return (a.event.start.dateTime || '').localeCompare(b.event.start.dateTime || '');
           });
 
-          // 2. Process into Rows and Assign sortOrder in gaps of 10
           const processedCalendarRows = await Promise.all(sortedEvents.map(async (item, index) => {
               const { event, doc, isPublic } = item;
               const parsed = parseCalendarEvent(event.summary);
@@ -504,7 +503,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               let lastConsultant = '';
               let finalChartId = parsed.chartId;
 
-              // Preserve content if row already exists
               const existingRow = currentRows.find(r => r.id === event.id);
 
               if (!existingRow) {
@@ -534,13 +532,11 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                   attendance: existingRow?.attendance ?? true,
                   startTime: event.start.dateTime || new Date().toISOString(),
                   chartId: finalChartId || existingRow?.chartId || undefined,
-                  sortOrder: (index + 1) * 10 // Assignment with gaps
+                  sortOrder: (index + 1) * 10
               } as AccountingRow;
           }));
 
           const validCalendarRows = processedCalendarRows.filter(Boolean) as AccountingRow[];
-          
-          // 3. Combine with manual rows (preserving their sortOrders)
           const finalCombined = [...validCalendarRows, ...existingManualRows];
 
           setRows(finalCombined);
@@ -600,14 +596,10 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const handleRevokeNP = useCallback((rowId: string) => {
     hasUnsavedChangesRef.current = true;
     setHasUnsavedChanges(true);
-    
     setRows(prevRows => prevRows.map(r => {
-        if (r.id === rowId) {
-            return { ...r, npStatus: "", isNP: false };
-        }
+        if (r.id === rowId) return { ...r, npStatus: "", isNP: false };
         return r;
     }));
-    
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
         persistData(rowsRef.current, expendituresRef.current);
@@ -619,11 +611,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           ['treatments', 'retail', 'patientName', 'paymentMethod', 'doctorId', 'chartId'].includes(key)
       );
 
-      if (isLocked && isRestrictedField) {
-          return;
-      }
+      if (isLocked && isRestrictedField) return;
 
-      // Mark local dirty state to prevent snapshot overwrite
       hasUnsavedChangesRef.current = true;
       setHasUnsavedChanges(true);
 
@@ -673,7 +662,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                       
                       if (isNPDetected) {
                           (newRow as any).isNP = true;
-                          
                           saveNPRecord(newRow.id, {
                               date: currentDate,
                               clinicId: selectedClinicId,
@@ -699,7 +687,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
-          // Note: rowsRef.current is updated via useEffect [rows]
           persistData(rowsRef.current, expendituresRef.current, diffStringForEffect || undefined);
       }, 10000);
   }, [isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, persistData]);
@@ -738,26 +725,56 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const handleLockDay = async () => {
       if (!currentUser || !selectedClinicId) return;
       
-      // 1. Check Validation
-      if (validationErrors.length > 0) {
-          return; 
+      // 1. Auto-Save First if needed
+      if (hasUnsavedChanges) {
+          try {
+              // Ensure we await the save operation to guarantee DB is up-to-date
+              await persistData(rowsRef.current, expendituresRef.current);
+          } catch (e) {
+              alert("自動存檔失敗，無法進行結帳。請稍後再試。");
+              return; // Stop here if save fails
+          }
       }
 
-      // 2. Clear Timeout
+      // 2. Validate Rows (Client-side)
+      // Note: We use validationErrors which is updated based on 'rows' state.
+      // Since persistData ensures backend is in sync with 'rows', this validation is valid.
+      if (validationErrors.length > 0) {
+          alert("無法結帳，請檢查以下資料：\n\n" + validationErrors.join("\n"));
+          return; // Stop here if validation fails
+      }
+
+      // Clear any pending save timeout
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       
-      // 3. Reset Backend Error
       setClosingError(null); 
 
+      // 3. Pre-fetch previous unlocked dates
+      setIsLoading(true);
+      try {
+          const previous = await checkPreviousUnlocked(currentDate, selectedClinicId);
+          setUnlockedDates(previous);
+      } catch (e) {
+          console.error("Failed to check previous dates", e);
+          // Non-fatal, just warn the user via empty list (or could alert)
+          setUnlockedDates([]);
+      } finally {
+          setIsLoading(false);
+          // 4. Open Modal to Confirm Lock
+          setIsClosingModalOpen(true);
+      }
+  };
+
+  const handleConfirmLock = async () => {
+      if (!currentUser || !selectedClinicId) return;
       try {
           await lockDailyReport(currentDate, selectedClinicId, rowsRef.current, { uid: currentUser.uid, name: currentUser.email || 'User' });
           setHasUnsavedChanges(false);
           hasUnsavedChangesRef.current = false;
-          setIsClosingModalOpen(false); // Close modal on success
+          setIsClosingModalOpen(false); 
       } catch (e: any) {
-          // 4. Handle Backend Errors (Network/Permission)
           console.error(e);
-          setClosingError(e.message || "結帳發生未知錯誤");
+          alert("結帳失敗：" + e.message);
       }
   };
 
@@ -792,7 +809,22 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       if (currentDate < todayStr && rowsRef.current.length > 0 && !dailyRecord?.isLocked) {
           const confirmLock = window.confirm(`[日期: ${currentDate}] 尚未結帳。是否立即鎖定並繼續？`);
           if (confirmLock) {
-              try { await handleLockDay(); } catch(e) { return; }
+              // Try lock workflow (auto-save -> validate -> etc)
+              // If user cancels or fails in handleLockDay, we abort date change?
+              // The original logic was loose. Let's just try calling handleLockDay.
+              // But handleLockDay opens a modal. Date change usually implies navigation.
+              // To avoid complexity, we just let them navigate if they decline lock, 
+              // or if they confirm lock, we show the modal. 
+              // UX choice: If they say "Yes lock", we trigger handleLockDay and STOP navigation until they finish? 
+              // Or perform a silent lock? Silent lock is dangerous with validations.
+              // Best approach: Just trigger handleLockDay and don't change date yet.
+              // User has to explicitly lock then change date.
+              
+              // However, the prompt says "Lock AND Continue".
+              // Let's just do silent save if possible, but lock requires modal.
+              // Let's stick to: Trigger handleLockDay, return (don't change date).
+              await handleLockDay(); 
+              return;
           }
       }
       setCurrentDate(targetDate);
@@ -815,7 +847,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                         <Lock size={14} /> {isMonthLocked ? '月結鎖定中' : '已結帳'}
                     </div>
                 ) : (
-                    <button onClick={() => { setClosingError(null); setIsClosingModalOpen(true); }} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-sm font-bold hover:bg-emerald-100 transition-colors">
+                    <button onClick={handleLockDay} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-sm font-bold hover:bg-emerald-100 transition-colors">
                         <Unlock size={14} /> 結帳鎖定
                     </button>
                 )}
@@ -840,6 +872,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
             </div>
         </div>
 
+        {/* ... (Charts/Cards sections remain unchanged) ... */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-fade-in">
             <div className="bg-emerald-600 rounded-xl shadow-lg p-5 text-white flex flex-col justify-between relative overflow-hidden">
                 <div className="relative z-10">
@@ -985,7 +1018,16 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
             <div className="p-4 bg-rose-50 border-b border-rose-100 flex justify-between items-center"><h4 className="font-bold text-rose-700 text-sm">診所支出</h4><div className="flex items-center gap-4"><span className="text-xs font-bold text-rose-600">總計: ${totals.totalExpenditure.toLocaleString()}</span>{!isLocked && (<button onClick={() => handleExpenditureChange([...expenditures, { id: crypto.randomUUID(), item: '', amount: 0 }])} className="text-xs bg-white text-rose-600 px-2 py-1 rounded border border-rose-200 font-bold hover:bg-rose-100">+ 新增</button>)}</div></div>
             <div className="p-2 space-y-2 max-h-[200px] overflow-y-auto">{expenditures.map((ex, idx) => (<div key={ex.id} className="flex gap-2 items-center bg-slate-50 p-1.5 rounded border border-slate-100"><input className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none" value={ex.item} disabled={isLocked} onChange={e => { const newEx = [...expenditures]; newEx[idx].item = e.target.value; handleExpenditureChange(newEx); }} placeholder="項目名稱" /><input type="number" className="w-24 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none text-right font-bold text-rose-600" value={ex.amount} disabled={isLocked} onChange={e => { const newEx = [...expenditures]; newEx[idx].amount = Number(e.target.value); handleExpenditureChange(newEx); }} placeholder="0" />{!isLocked && (<button onClick={() => handleExpenditureChange(expenditures.filter((_, i) => i !== idx))} className="text-slate-400 hover:text-rose-500"><Trash2 size={14} /></button>)}</div>))}</div>
         </div>
-        <ClosingSummaryModal isOpen={isClosingModalOpen} onClose={() => setIsClosingModalOpen(false)} onConfirm={handleLockDay} date={currentDate} clinicId={selectedClinicId} rows={rows} totals={{ cash: totals.cashBalance, card: totals.cardRevenue, transfer: totals.transferRevenue, total: totals.netTotal }} validationErrors={validationErrors} backendError={closingError} />
+        <ClosingSummaryModal 
+            isOpen={isClosingModalOpen} 
+            onClose={() => setIsClosingModalOpen(false)} 
+            onConfirm={handleConfirmLock} 
+            date={currentDate} 
+            clinicId={selectedClinicId} 
+            rows={rows} 
+            totals={{ cash: totals.cashBalance, card: totals.cardRevenue, transfer: totals.transferRevenue, total: totals.netTotal }} 
+            unlockedDates={unlockedDates}
+        />
         <AuditLogModal isOpen={isAuditModalOpen} onClose={() => setIsAuditModalOpen(false)} logs={dailyRecord?.auditLog || []} />
         {npModalData && (
             <NPStatusModal 

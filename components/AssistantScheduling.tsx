@@ -370,7 +370,6 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, doctors, sch
             (s.shifts.Morning || []).forEach(id => docIdsOrNames.add(id));
             (s.shifts.Afternoon || []).forEach(id => docIdsOrNames.add(id));
             (s.shifts.Evening || []).forEach(id => docIdsOrNames.add(id));
-            (s.shifts.Full || []).forEach(id => docIdsOrNames.add(id));
         }
     });
     // Critical Fix: Match against BOTH ID and Name for Firestore flexibility
@@ -490,7 +489,6 @@ export const AssistantScheduling: React.FC<Props> = ({ consultants, doctors, sch
                                          if (daySchedule?.shifts?.Morning?.includes(doc.id) || daySchedule?.shifts?.Morning?.includes(doc.name)) docShifts.push('早');
                                          if (daySchedule?.shifts?.Afternoon?.includes(doc.id) || daySchedule?.shifts?.Afternoon?.includes(doc.name)) docShifts.push('午');
                                          if (daySchedule?.shifts?.Evening?.includes(doc.id) || daySchedule?.shifts?.Evening?.includes(doc.name)) docShifts.push('晚');
-                                         if (daySchedule?.shifts?.Full?.includes(doc.id)) docShifts.push('全');
 
                                          return (
                                             <div 

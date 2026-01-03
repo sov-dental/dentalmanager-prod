@@ -710,33 +710,54 @@ export const upsertPatient = async (clinicId: string, data: { chartId: string | 
     }
 };
 
+/**
+ * CRM Migration: Enforce strict composite key (Clinic_ChartID_Name)
+ * Targets rename/merge logic when a Chart ID is assigned or changed.
+ */
 export const migratePatientId = async (oldDocId: string, newChartId: string, clinicId: string) => {
+    // 1. Fetch old document to get the Name
     const oldRef = db.collection('patients').doc(oldDocId);
     const oldSnap = await oldRef.get();
     if (!oldSnap.exists) throw new Error("Patient not found");
     const oldData = oldSnap.data() as Patient;
 
-    const safeName = oldData.name.replace(/[\/\s]/g, '_');
+    // 2. Construct Target ID using Name from the old document
+    const safeName = (oldData.name || '').replace(/[\/\s]/g, '_');
     const safeId = newChartId || 'NP';
     const newDocId = `${clinicId}_${safeId}_${safeName}`;
     const newRef = db.collection('patients').doc(newDocId);
 
+    // 3. Transaction for safe merge/delete
     await db.runTransaction(async (t) => {
         const newSnap = await t.get(newRef);
-        let newData = {};
+        let newData: any;
+        
         if (newSnap.exists) {
+            // Target exists - Merge logic
             const existing = newSnap.data() as Patient;
             newData = {
                 ...existing,
+                chartId: newChartId, // Ensure it's updated if target was somehow 'NP'
                 totalSpending: (existing.totalSpending || 0) + (oldData.totalSpending || 0),
+                // Merge arrays without duplicates
                 visitHistory: [...(existing.visitHistory || []), ...(oldData.visitHistory || [])],
                 purchasedItems: Array.from(new Set([...(existing.purchasedItems || []), ...(oldData.purchasedItems || [])])),
+                // Keep most recent visit
                 lastVisit: (existing.lastVisit > oldData.lastVisit) ? existing.lastVisit : oldData.lastVisit,
-                pastConsultants: Array.from(new Set([...(existing.pastConsultants || []), ...(oldData.pastConsultants || [])]))
+                // Merge consultants
+                pastConsultants: Array.from(new Set([...(existing.pastConsultants || []), ...(oldData.pastConsultants || [])])),
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
             };
         } else {
-            newData = { ...oldData, chartId: newChartId, docId: newDocId };
+            // Target doesn't exist - Just rename/move
+            newData = { 
+                ...oldData, 
+                chartId: newChartId, 
+                docId: newDocId,
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            };
         }
+        
         t.set(newRef, deepSanitize(newData), { merge: true });
         t.delete(oldRef);
     });
@@ -833,7 +854,7 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
 
         const chartId = rep.chartId || null; 
         const name = rep.patientName;
-        // Fix potential crash: Safe replace
+        // Construct composite document ID: ClinicID_ChartID_Name
         const safeName = name.replace(/[\/\s]/g, '_');
         const patientDocId = `${clinicId}_${chartId || 'NP'}_${safeName}`;
         const patientRef = db.collection('patients').doc(patientDocId);

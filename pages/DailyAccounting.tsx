@@ -493,31 +493,36 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               return (a.event.start.dateTime || '').localeCompare(b.event.start.dateTime || '');
           });
 
-          // Logic Refinement: Conditional CRM Lookup during Sync
+          // Sync Loop with Refined CRM Lookup Strategy
           const processedCalendarRows = await Promise.all(sortedEvents.map(async (item, index) => {
               const { event, doc, isPublic } = item;
               const parsed = parseCalendarEvent(event.summary);
               if (!parsed) return null;
 
               let lastConsultant = '';
-              // ONLY lookup if it is NOT an NP and has a valid Chart ID
+              let finalChartId = parsed.chartId; 
+
+              const existingRow = currentRows.find(r => r.id === event.id);
+
+              // REFINED LOGIC: Only lookup CRM for existing patients to avoid incorrect NP linking
               if (!parsed.isNP && parsed.chartId) {
                   try {
-                      // findPatientProfile is imported from ../services/firebase
+                      // Fetch profile strictly using Name and ID
                       const profile = await findPatientProfile(selectedClinicId, parsed.name, parsed.chartId);
-                      if (profile && profile.pastConsultants && profile.pastConsultants.length > 0) {
-                          lastConsultant = profile.pastConsultants[profile.pastConsultants.length - 1];
+                      
+                      // Match check: ensure the profile found actually matches the ID we have
+                      if (profile && profile.chartId === parsed.chartId) {
+                          if (profile.lastConsultant) lastConsultant = profile.lastConsultant;
                       }
                   } catch (e) {
-                      console.warn("CRM lookup failed for existing patient", e);
+                      console.warn("CRM lookup failed", e);
                   }
               }
 
-              const existingRow = currentRows.find(r => r.id === event.id);
-              const hydrated = hydrateRow(existingRow || {});
+              const baseRow = hydrateRow(existingRow || {});
 
               return {
-                  ...hydrated,
+                  ...baseRow,
                   id: event.id,
                   patientName: parsed.name,
                   doctorId: isPublic ? PUBLIC_DOCTOR.id : doc.id,
@@ -530,12 +535,12 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                   isPublicCalendar: isPublic || false,
                   attendance: existingRow?.attendance ?? true,
                   startTime: event.start.dateTime || new Date().toISOString(),
-                  chartId: parsed.chartId || undefined, 
-                  sortOrder: (index + 1) * 10,
+                  chartId: finalChartId || existingRow?.chartId || undefined, 
                   treatments: {
-                      ...hydrated.treatments,
-                      consultant: hydrated.treatments.consultant || lastConsultant
-                  }
+                      ...baseRow.treatments,
+                      consultant: lastConsultant || baseRow.treatments.consultant || ''
+                  },
+                  sortOrder: (index + 1) * 10
               } as AccountingRow;
           }));
 

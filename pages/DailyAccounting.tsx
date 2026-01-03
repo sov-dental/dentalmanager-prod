@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord, MonthlyClosing } from '../types';
-import { hydrateRow, getStaffList, db, lockDailyReport, unlockDailyReport, saveDailyAccounting, findPatientProfile, addSOVReferral, getMonthlyClosingStatus, saveNPRecord, deleteNPRecord, checkPreviousUnlocked } from '../services/firebase';
+import { hydrateRow, getStaffList, db, lockDailyReport, unlockDailyReport, saveDailyAccounting, addSOVReferral, getMonthlyClosingStatus, saveNPRecord, deleteNPRecord, checkPreviousUnlocked, findPatientProfile } from '../services/firebase';
 import { exportDailyReportToExcel } from '../services/excelExport';
 import { listEvents, initGoogleClient, authorizeCalendar } from '../services/googleCalendar';
 import { parseCalendarEvent, parseSourceFromNote } from '../utils/eventParser';
@@ -446,7 +446,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   }, [selectedClinicId, currentDate, dailyRecord?.isLocked, currentUser]);
 
   const handleSyncCalendar = async () => {
-      // (Keep existing code)
       if (isLocked) { alert("今日已結帳，無法同步。"); return; }
       if (!selectedClinic?.googleCalendarMapping) { alert("此診所尚未設定 Google 日曆連結"); return; }
       
@@ -458,7 +457,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           const currentRows = rowsRef.current;
           
           const existingManualRows = currentRows.filter(r => r.isManual);
-          const existingIds = new Set(currentRows.map(r => r.id));
           const allEvents: any[] = [];
 
           for (const doc of clinicDocs) {
@@ -495,30 +493,31 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               return (a.event.start.dateTime || '').localeCompare(b.event.start.dateTime || '');
           });
 
+          // Logic Refinement: Conditional CRM Lookup during Sync
           const processedCalendarRows = await Promise.all(sortedEvents.map(async (item, index) => {
               const { event, doc, isPublic } = item;
               const parsed = parseCalendarEvent(event.summary);
               if (!parsed) return null;
 
               let lastConsultant = '';
-              let finalChartId = parsed.chartId;
-
-              const existingRow = currentRows.find(r => r.id === event.id);
-
-              if (!existingRow) {
+              // ONLY lookup if it is NOT an NP and has a valid Chart ID
+              if (!parsed.isNP && parsed.chartId) {
                   try {
+                      // findPatientProfile is imported from ../services/firebase
                       const profile = await findPatientProfile(selectedClinicId, parsed.name, parsed.chartId);
-                      if (profile) {
-                          if (profile.lastConsultant) lastConsultant = profile.lastConsultant;
-                          if (profile.chartId) finalChartId = profile.chartId;
+                      if (profile && profile.pastConsultants && profile.pastConsultants.length > 0) {
+                          lastConsultant = profile.pastConsultants[profile.pastConsultants.length - 1];
                       }
                   } catch (e) {
-                      console.warn("CRM lookup failed", e);
+                      console.warn("CRM lookup failed for existing patient", e);
                   }
               }
 
+              const existingRow = currentRows.find(r => r.id === event.id);
+              const hydrated = hydrateRow(existingRow || {});
+
               return {
-                  ...hydrateRow(existingRow || {}),
+                  ...hydrated,
                   id: event.id,
                   patientName: parsed.name,
                   doctorId: isPublic ? PUBLIC_DOCTOR.id : doc.id,
@@ -531,8 +530,12 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                   isPublicCalendar: isPublic || false,
                   attendance: existingRow?.attendance ?? true,
                   startTime: event.start.dateTime || new Date().toISOString(),
-                  chartId: finalChartId || existingRow?.chartId || undefined,
-                  sortOrder: (index + 1) * 10
+                  chartId: parsed.chartId || undefined, 
+                  sortOrder: (index + 1) * 10,
+                  treatments: {
+                      ...hydrated.treatments,
+                      consultant: hydrated.treatments.consultant || lastConsultant
+                  }
               } as AccountingRow;
           }));
 
@@ -809,20 +812,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       if (currentDate < todayStr && rowsRef.current.length > 0 && !dailyRecord?.isLocked) {
           const confirmLock = window.confirm(`[日期: ${currentDate}] 尚未結帳。是否立即鎖定並繼續？`);
           if (confirmLock) {
-              // Try lock workflow (auto-save -> validate -> etc)
-              // If user cancels or fails in handleLockDay, we abort date change?
-              // The original logic was loose. Let's just try calling handleLockDay.
-              // But handleLockDay opens a modal. Date change usually implies navigation.
-              // To avoid complexity, we just let them navigate if they decline lock, 
-              // or if they confirm lock, we show the modal. 
-              // UX choice: If they say "Yes lock", we trigger handleLockDay and STOP navigation until they finish? 
-              // Or perform a silent lock? Silent lock is dangerous with validations.
-              // Best approach: Just trigger handleLockDay and don't change date yet.
-              // User has to explicitly lock then change date.
-              
-              // However, the prompt says "Lock AND Continue".
-              // Let's just do silent save if possible, but lock requires modal.
-              // Let's stick to: Trigger handleLockDay, return (don't change date).
               await handleLockDay(); 
               return;
           }
@@ -872,7 +861,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
             </div>
         </div>
 
-        {/* ... (Charts/Cards sections remain unchanged) ... */}
+        {/* Totals Section */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-fade-in">
             <div className="bg-emerald-600 rounded-xl shadow-lg p-5 text-white flex flex-col justify-between relative overflow-hidden">
                 <div className="relative z-10">

@@ -52,7 +52,7 @@ const InputCell = ({
         <input
             type={type}
             disabled={disabled}
-            className={`w-full bg-transparent outline-none px-1 py-1 focus:bg-white focus:ring-2 focus:ring-inset focus:ring-blue-500 rounded-sm transition-colors placeholder-slate-300 ${alignClass} ${className} ${disabled ? 'cursor-not-allowed text-slate-400' : ''}`}
+            className={`w-full bg-transparent outline-none px-1 py-1 focus:bg-white focus:ring-2 focus:ring-inset focus:ring-blue-500 rounded-sm transition-colors placeholder-slate-500 ${alignClass} ${className} ${disabled ? 'cursor-not-allowed text-slate-400' : ''}`}
             value={value === 0 && type === 'number' ? '' : value}
             onChange={(e) => setValue(e.target.value)}
             onBlur={handleBlur}
@@ -188,7 +188,7 @@ const DailyAccountingRow: React.FC<RowProps> = ({
             <td className="px-2 py-1 border-r border-gray-200 bg-emerald-50/10 text-right font-black text-emerald-600 text-lg font-bold">{totalAmount > 0 ? totalAmount.toLocaleString() : '-'}</td>
             <td className="px-1 py-1 border-r border-gray-200 bg-emerald-50/10"><select className={`w-full bg-transparent text-[10px] font-bold outline-none uppercase text-center ${row.paymentMethod === 'card' ? 'text-pink-600' : row.paymentMethod === 'transfer' ? 'text-amber-600' : 'text-emerald-600'} ${isLocked ? 'opacity-50' : ''}`} value={row.paymentMethod} onChange={(e) => onUpdate(row.id, { paymentMethod: e.target.value })} disabled={isLocked}><option value="cash">CASH</option><option value="card">CARD</option><option value="transfer">TRANS</option></select></td>
             <td className="px-1 py-1 border-r border-gray-200 text-center align-middle">{isNP ? (<button onClick={() => onOpenNPModal(row)} className={`w-full ${btnClass} border px-1 py-1 rounded text-xs font-bold flex items-center justify-center gap-1 transition-colors`}>{btnIcon} NP</button>) : (<InputCell initialValue={row.npStatus || (row as any).note || ""} onCommit={(v) => onUpdate(row.id, { npStatus: v })} />)}</td>
-            <td className="px-1 py-1 border-r border-gray-200"><InputCell initialValue={row.treatmentContent} onCommit={(v) => onUpdate(row.id, { treatmentContent: v })} placeholder={row.calendarTreatment} /></td>
+            <td className="px-1 py-1 border-r border-gray-200 "><InputCell initialValue={row.treatmentContent} onCommit={(v) => onUpdate(row.id, { treatmentContent: v })} placeholder={row.calendarTreatment} /></td>
             <td className="px-1 py-1 border-r border-gray-200"><select className="w-full bg-transparent text-xs outline-none text-slate-600" value={row.labName || ''} onChange={(e) => onUpdate(row.id, { labName: e.target.value })}><option value=""></option>{clinicLabs.map(l => <option key={l.id} value={l.name}>{l.name}</option>)}</select></td>
             <td className="px-1 py-1 text-center">{row.isManual && !isLocked && (<button onClick={() => onDelete(row.id)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={14} /></button>)}</td>
         </tr>

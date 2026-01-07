@@ -1,6 +1,7 @@
+
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord, MonthlyClosing } from '../types';
-import { hydrateRow, getStaffList, db, lockDailyReport, unlockDailyReport, saveDailyAccounting, addSOVReferral, getMonthlyClosingStatus, saveNPRecord, deleteNPRecord, checkPreviousUnlocked, findPatientProfile } from '../services/firebase';
+import { Clinic, Doctor, Consultant, Laboratory, SOVReferral, DailyAccountingRecord, AccountingRow, Expenditure, AuditLogEntry, NPRecord, MonthlyClosing, MealExpense, MealFund, MealType } from '../types';
+import { hydrateRow, getStaffList, db, lockDailyReport, unlockDailyReport, saveDailyAccounting, addSOVReferral, getMonthlyClosingStatus, saveNPRecord, deleteNPRecord, checkPreviousUnlocked, findPatientProfile, getPreviousDayMealBalance } from '../services/firebase';
 import { exportDailyReportToExcel } from '../services/excelExport';
 import { listEvents, initGoogleClient, authorizeCalendar } from '../services/googleCalendar';
 import { parseCalendarEvent, parseSourceFromNote } from '../utils/eventParser';
@@ -15,7 +16,8 @@ import {
   Save, Plus, Trash2, FileSpreadsheet, Loader2,
   ChevronLeft, ChevronRight, RefreshCw, 
   Wallet, CreditCard, TrendingUp, CheckCircle, 
-  WifiOff, Lock, Unlock, History, AlertCircle, Filter
+  WifiOff, Lock, Unlock, History, AlertCircle, Filter,
+  Utensils, Coffee, DollarSign
 } from 'lucide-react';
 
 interface Props {
@@ -26,18 +28,15 @@ interface Props {
   sovReferrals: SOVReferral[];
 }
 
-// Feature: "Clinic Public" Virtual Option
 const PUBLIC_DOCTOR = {
   id: 'clinic_public',
   name: '診所 (Public)',
   avatarText: '診',
-  avatarColor: '#94a3b8' // Slate-400 (Gray)
+  avatarColor: '#94a3b8' 
 };
 
-// Helper
 const safeNum = (val: any) => (isNaN(Number(val)) ? 0 : Number(val));
 
-// --- Date Helpers (Local Time) ---
 const getTodayStr = () => {
     const now = new Date();
     const y = now.getFullYear();
@@ -48,8 +47,8 @@ const getTodayStr = () => {
 
 const getNextDate = (dateStr: string, offset: number) => {
     const [y, m, d] = dateStr.split('-').map(Number);
-    const date = new Date(y, m - 1, d); // Construct Local Date
-    date.setDate(date.getDate() + offset); // Mutate safely
+    const date = new Date(y, m - 1, d); 
+    date.setDate(date.getDate() + offset); 
     
     const ny = date.getFullYear();
     const nm = String(date.getMonth() + 1).padStart(2, '0');
@@ -106,7 +105,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const [expenditures, setExpenditures] = useState<Expenditure[]>([]);
   const [fullStaffList, setFullStaffList] = useState<Consultant[]>([]);
   
-  // Real-time Data States
+  const [mealExpenses, setMealExpenses] = useState<MealExpense[]>([]);
+  const [mealFund, setMealFund] = useState<MealFund>({ initial: 0, added: 0 });
+
   const [monthlyStatus, setMonthlyStatus] = useState<MonthlyClosing | null>(null);
   const [todaysNPRecords, setTodaysNPRecords] = useState<Record<string, NPRecord>>({});
   const [realtimeSovReferrals, setRealtimeSovReferrals] = useState<SOVReferral[]>(sovReferrals);
@@ -116,35 +117,29 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const [isManualSaving, setIsManualSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
-  // Performance Optimization: Debounce State
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  // NEW: Critical Ref to block snapshot overwrites during active editing
   const hasUnsavedChangesRef = useRef(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [filterDoctorId, setFilterDoctorId] = useState<string>('');
   
-  // Closing Modal States
   const [isClosingModalOpen, setIsClosingModalOpen] = useState(false);
   const [closingError, setClosingError] = useState<string | null>(null);
-  const [unlockedDates, setUnlockedDates] = useState<string[]>([]); // New state for modal data
+  const [unlockedDates, setUnlockedDates] = useState<string[]>([]); 
 
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [npModalData, setNpModalData] = useState<{row: AccountingRow} | null>(null);
 
-  // Use Refs to prevent stale closures in useCallback
   const rowsRef = useRef(rows);
   const expendituresRef = useRef(expenditures);
+  const mealExpensesRef = useRef(mealExpenses);
+  const mealFundRef = useRef(mealFund);
 
-  useEffect(() => {
-    rowsRef.current = rows;
-  }, [rows]);
+  useEffect(() => { rowsRef.current = rows; }, [rows]);
+  useEffect(() => { expendituresRef.current = expenditures; }, [expenditures]);
+  useEffect(() => { mealExpensesRef.current = mealExpenses; }, [mealExpenses]);
+  useEffect(() => { mealFundRef.current = mealFund; }, [mealFund]);
 
-  useEffect(() => {
-    expendituresRef.current = expenditures;
-  }, [expenditures]);
-
-  // Safety Guard: Warn user before leaving if unsaved changes exist or past date is unlocked
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
         const isLockedStatus = dailyRecord?.isLocked === true;
@@ -152,14 +147,13 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
         
         if ((currentDate < getTodayStr() && rows.length > 0 && isUnlocked) || hasUnsavedChanges) {
             e.preventDefault();
-            e.returnValue = ''; // Standard browser warning
+            e.returnValue = ''; 
         }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [dailyRecord, currentDate, rows.length, hasUnsavedChanges]);
 
-  // Cleanup timeout on unmount
   useEffect(() => {
     return () => {
         if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
@@ -182,7 +176,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       fetchStaff();
   }, [selectedClinicId]);
 
-  // Sync Monthly Closing Status
   useEffect(() => {
       if (selectedClinicId && currentDate) {
           const yearMonth = currentDate.slice(0, 7);
@@ -190,7 +183,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       }
   }, [selectedClinicId, currentDate]);
 
-  // Real-time SOV Referrals Listener
   useEffect(() => {
       if (!selectedClinicId) {
           setRealtimeSovReferrals(sovReferrals);
@@ -244,6 +236,12 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const clinicDocs = useMemo(() => doctors.filter(d => d.clinicId === selectedClinicId), [doctors, selectedClinicId]);
   const clinicLabs = useMemo(() => laboratories.filter(l => l.clinicId === selectedClinicId), [laboratories, selectedClinicId]);
 
+  const allPersonOptions = useMemo(() => {
+      const docs = clinicDocs.map(d => ({ id: d.id, name: d.name, role: '醫師' }));
+      const staff = fullStaffList.map(s => ({ id: s.id, name: s.name, role: s.role === 'assistant' ? '助理' : '行政' }));
+      return [...docs, ...staff];
+  }, [clinicDocs, fullStaffList]);
+
   const activeDoctorsInTable = useMemo(() => {
       const docIds = new Set(rows.map(r => r.doctorId).filter(Boolean));
       const filtered = clinicDocs.filter(d => docIds.has(d.id));
@@ -258,6 +256,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           setDailyRecord(null);
           setRows([]);
           setExpenditures([]);
+          setMealExpenses([]);
+          setMealFund({ initial: 0, added: 0 });
           return;
       }
 
@@ -276,10 +276,14 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               const loadedRows = (data.rows || []).map(r => hydrateRow(r));
               setRows(loadedRows.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)));
               setExpenditures(data.expenditures || []);
+              setMealExpenses(data.mealExpenses || []);
+              setMealFund(data.mealFund || { initial: 0, added: 0 });
           } else {
               setDailyRecord(null);
               setRows([]);
               setExpenditures([]);
+              setMealExpenses([]);
+              setMealFund({ initial: 0, added: 0 });
           }
       }, (error: any) => {
           console.error("Listener Error:", error);
@@ -292,6 +296,30 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const isLocked = dailyRecord?.isLocked || false;
   const isMonthLocked = monthlyStatus?.isLocked || false;
+
+  // Meal Fund Auto-Carry Over Logic
+  useEffect(() => {
+      const fetchPrevBalance = async () => {
+          if (!selectedClinicId || !currentDate) return;
+          
+          // Only auto-update if NOT locked. If locked, we rely on the saved state loaded from onSnapshot.
+          if (!isLocked) {
+              const bal = await getPreviousDayMealBalance(selectedClinicId, currentDate);
+              setMealFund(prev => {
+                  // Only update if different to avoid render loops, though React handles basic equality checks.
+                  if (prev.initial !== bal) {
+                      // We update local state to reflect the calculated value.
+                      // Note: This new value won't be saved to DB until a user action triggers persistData (e.g. adding expenses).
+                      // This is generally acceptable behavior for auto-calculated fields.
+                      return { ...prev, initial: bal };
+                  }
+                  return prev;
+              });
+          }
+      };
+      
+      fetchPrevBalance();
+  }, [selectedClinicId, currentDate, isLocked]);
 
   const visibleRows = useMemo(() => {
       let filtered = rows;
@@ -334,6 +362,13 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           totalExpenditure
       };
   }, [rows, expenditures]);
+
+  // Meal Fund Totals
+  const mealStats = useMemo(() => {
+      const totalSpent = mealExpenses.reduce((sum, m) => sum + (m.amount || 0), 0);
+      const balance = (mealFund.initial || 0) + (mealFund.added || 0) - totalSpent;
+      return { totalSpent, balance };
+  }, [mealExpenses, mealFund]);
 
   const validationErrors = useMemo(() => {
       const errors: string[] = [];
@@ -404,17 +439,26 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       });
   };
 
-  const persistData = useCallback(async (currentRows: AccountingRow[], currentExp: Expenditure[], diffDetails?: string) => {
+  const persistData = useCallback(async (
+      currentRows: AccountingRow[], 
+      currentExp: Expenditure[], 
+      currentFund: MealFund, 
+      currentMeals: MealExpense[],
+      diffDetails?: string
+  ) => {
       if (!selectedClinicId) return;
       setSaveStatus('saving');
       try {
           const cleanRows = prepareDataForSave(currentRows);
           
-          const payload = {
+          const payload: any = {
               clinicId: selectedClinicId,
               date: currentDate,
               rows: cleanRows,
               expenditures: currentExp,
+              mealExpenses: currentMeals,
+              mealFund: currentFund,
+              
               lastUpdated: Date.now(),
               isLocked: dailyRecord?.isLocked || false,
           };
@@ -440,7 +484,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       } catch (e) {
           console.error(e);
           setSaveStatus('error');
-          // Re-throw to allow caller to catch (e.g. handleLockDay)
           throw e; 
       }
   }, [selectedClinicId, currentDate, dailyRecord?.isLocked, currentUser]);
@@ -493,7 +536,6 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
               return (a.event.start.dateTime || '').localeCompare(b.event.start.dateTime || '');
           });
 
-          // Sync Loop with Refined CRM Lookup Strategy
           const processedCalendarRows = await Promise.all(sortedEvents.map(async (item, index) => {
               const { event, doc, isPublic } = item;
               const parsed = parseCalendarEvent(event.summary);
@@ -504,13 +546,9 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
               const existingRow = currentRows.find(r => r.id === event.id);
 
-              // REFINED LOGIC: Only lookup CRM for existing patients to avoid incorrect NP linking
               if (!parsed.isNP && parsed.chartId) {
                   try {
-                      // Fetch profile strictly using Name and ID
                       const profile = await findPatientProfile(selectedClinicId, parsed.name, parsed.chartId);
-                      
-                      // Match check: ensure the profile found actually matches the ID we have
                       if (profile && profile.chartId === parsed.chartId) {
                           if (profile.lastConsultant) lastConsultant = profile.lastConsultant;
                       }
@@ -548,7 +586,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
           const finalCombined = [...validCalendarRows, ...existingManualRows];
 
           setRows(finalCombined);
-          await persistData(finalCombined, expendituresRef.current);
+          await persistData(finalCombined, expendituresRef.current, mealFundRef.current, mealExpensesRef.current);
           
       } catch (e) {
           console.error(e);
@@ -582,7 +620,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
-          persistData(rowsRef.current, expendituresRef.current);
+          persistData(rowsRef.current, expendituresRef.current, mealFundRef.current, mealExpensesRef.current);
       }, 10000);
   }, [isLocked, persistData]);
 
@@ -592,7 +630,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       setIsManualSaving(true);
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       try {
-          await persistData(rowsRef.current, expendituresRef.current);
+          await persistData(rowsRef.current, expendituresRef.current, mealFundRef.current, mealExpensesRef.current);
           alert("✅ 儲存成功！");
       } catch (error: any) {
           alert("❌ 儲存失敗: " + error.message);
@@ -610,7 +648,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
     }));
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
-        persistData(rowsRef.current, expendituresRef.current);
+        persistData(rowsRef.current, expendituresRef.current, mealFundRef.current, mealExpensesRef.current);
     }, 10000);
   }, [persistData]);
 
@@ -695,7 +733,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
-          persistData(rowsRef.current, expendituresRef.current, diffStringForEffect || undefined);
+          persistData(rowsRef.current, expendituresRef.current, mealFundRef.current, mealExpensesRef.current, diffStringForEffect || undefined);
       }, 10000);
   }, [isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, persistData]);
 
@@ -714,7 +752,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
-          persistData(rowsRef.current, expendituresRef.current);
+          persistData(rowsRef.current, expendituresRef.current, mealFundRef.current, mealExpensesRef.current);
       }, 10000);
   }, [isLocked, persistData]);
 
@@ -726,49 +764,104 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
-          persistData(rowsRef.current, expendituresRef.current);
+          persistData(rowsRef.current, newExp, mealFundRef.current, mealExpensesRef.current);
       }, 10000);
+  };
+
+  const handleFundChange = (field: keyof MealFund, val: string) => {
+      if (isLocked) return;
+      hasUnsavedChangesRef.current = true;
+      setHasUnsavedChanges(true);
+      
+      const newFund = { ...mealFund, [field]: safeNum(val) };
+      setMealFund(newFund);
+
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+          persistData(rowsRef.current, expendituresRef.current, newFund, mealExpensesRef.current);
+      }, 5000);
+  };
+
+  const handleAddMeal = (type: MealType) => {
+      if (isLocked) return;
+      hasUnsavedChangesRef.current = true;
+      setHasUnsavedChanges(true);
+
+      const newMeal: MealExpense = {
+          id: crypto.randomUUID(),
+          type,
+          personId: '',
+          personName: '',
+          amount: 0
+      };
+      
+      const newExpenses = [...mealExpenses, newMeal];
+      setMealExpenses(newExpenses);
+
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+          persistData(rowsRef.current, expendituresRef.current, mealFundRef.current, newExpenses);
+      }, 5000);
+  };
+
+  const handleUpdateMeal = (id: string, updates: Partial<MealExpense>) => {
+      if (isLocked) return;
+      hasUnsavedChangesRef.current = true;
+      setHasUnsavedChanges(true);
+
+      const newExpenses = mealExpenses.map(m => m.id === id ? { ...m, ...updates } : m);
+      setMealExpenses(newExpenses);
+
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+          persistData(rowsRef.current, expendituresRef.current, mealFundRef.current, newExpenses);
+      }, 5000);
+  };
+
+  const handleDeleteMeal = (id: string) => {
+      if (isLocked) return;
+      hasUnsavedChangesRef.current = true;
+      setHasUnsavedChanges(true);
+
+      const newExpenses = mealExpenses.filter(m => m.id !== id);
+      setMealExpenses(newExpenses);
+
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+          persistData(rowsRef.current, expendituresRef.current, mealFundRef.current, newExpenses);
+      }, 5000);
   };
 
   const handleLockDay = async () => {
       if (!currentUser || !selectedClinicId) return;
       
-      // 1. Auto-Save First if needed
       if (hasUnsavedChanges) {
           try {
-              // Ensure we await the save operation to guarantee DB is up-to-date
-              await persistData(rowsRef.current, expendituresRef.current);
+              await persistData(rowsRef.current, expendituresRef.current, mealFundRef.current, mealExpensesRef.current);
           } catch (e) {
               alert("自動存檔失敗，無法進行結帳。請稍後再試。");
-              return; // Stop here if save fails
+              return; 
           }
       }
 
-      // 2. Validate Rows (Client-side)
-      // Note: We use validationErrors which is updated based on 'rows' state.
-      // Since persistData ensures backend is in sync with 'rows', this validation is valid.
       if (validationErrors.length > 0) {
           alert("無法結帳，請檢查以下資料：\n\n" + validationErrors.join("\n"));
-          return; // Stop here if validation fails
+          return; 
       }
 
-      // Clear any pending save timeout
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       
       setClosingError(null); 
 
-      // 3. Pre-fetch previous unlocked dates
       setIsLoading(true);
       try {
           const previous = await checkPreviousUnlocked(currentDate, selectedClinicId);
           setUnlockedDates(previous);
       } catch (e) {
           console.error("Failed to check previous dates", e);
-          // Non-fatal, just warn the user via empty list (or could alert)
           setUnlockedDates([]);
       } finally {
           setIsLoading(false);
-          // 4. Open Modal to Confirm Lock
           setIsClosingModalOpen(true);
       }
   };
@@ -1012,6 +1105,82 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
             <div className="p-4 bg-rose-50 border-b border-rose-100 flex justify-between items-center"><h4 className="font-bold text-rose-700 text-sm">診所支出</h4><div className="flex items-center gap-4"><span className="text-xs font-bold text-rose-600">總計: ${totals.totalExpenditure.toLocaleString()}</span>{!isLocked && (<button onClick={() => handleExpenditureChange([...expenditures, { id: crypto.randomUUID(), item: '', amount: 0 }])} className="text-xs bg-white text-rose-600 px-2 py-1 rounded border border-rose-200 font-bold hover:bg-rose-100">+ 新增</button>)}</div></div>
             <div className="p-2 space-y-2 max-h-[200px] overflow-y-auto">{expenditures.map((ex, idx) => (<div key={ex.id} className="flex gap-2 items-center bg-slate-50 p-1.5 rounded border border-slate-100"><input className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none" value={ex.item} disabled={isLocked} onChange={e => { const newEx = [...expenditures]; newEx[idx].item = e.target.value; handleExpenditureChange(newEx); }} placeholder="項目名稱" /><input type="number" className="w-24 bg-white border border-slate-200 rounded px-2 py-1 text-xs outline-none text-right font-bold text-rose-600" value={ex.amount} disabled={isLocked} onChange={e => { const newEx = [...expenditures]; newEx[idx].amount = Number(e.target.value); handleExpenditureChange(newEx); }} placeholder="0" />{!isLocked && (<button onClick={() => handleExpenditureChange(expenditures.filter((_, i) => i !== idx))} className="text-slate-400 hover:text-rose-500"><Trash2 size={14} /></button>)}</div>))}</div>
         </div>
+
+        {/* Meal Fund Section */}
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mt-6">
+            <div className="p-4 bg-teal-50 border-b border-teal-100 flex flex-col md:flex-row justify-between items-center gap-4">
+                <h4 className="font-bold text-teal-800 text-sm flex items-center gap-2">
+                    <Utensils size={16} /> 餐費公積金管理 (Meal Fund)
+                </h4>
+                <div className="flex items-center gap-4 text-xs">
+                    <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-500">期初:</span>
+                        <input 
+                            type="number" 
+                            className="w-20 border rounded px-2 py-1 text-right font-mono bg-slate-100 text-slate-500 cursor-not-allowed"
+                            value={mealFund.initial}
+                            readOnly
+                            disabled
+                        />
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-500">補入:</span>
+                        <input 
+                            type="number" 
+                            className="w-20 border rounded px-2 py-1 text-right font-mono"
+                            value={mealFund.added}
+                            onChange={e => handleFundChange('added', e.target.value)}
+                            disabled={isLocked}
+                        />
+                    </div>
+                    <div className="flex items-center gap-2 bg-white px-3 py-1 rounded border border-teal-200 shadow-sm">
+                        <span className="font-bold text-slate-500">總支:</span>
+                        <span className="font-mono text-rose-600 font-bold">${mealStats.totalSpent.toLocaleString()}</span>
+                    </div>
+                    <div className="flex items-center gap-2 bg-white px-3 py-1 rounded border border-teal-200 shadow-sm">
+                        <span className="font-bold text-slate-500">結餘:</span>
+                        <span className={`font-mono font-bold ${mealStats.balance < 0 ? 'text-rose-600' : 'text-teal-600'}`}>${mealStats.balance.toLocaleString()}</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-100">
+                <MealColumn 
+                    title="午餐 (Lunch)" 
+                    type="lunch" 
+                    icon={<Utensils size={14} className="text-orange-500"/>}
+                    expenses={mealExpenses} 
+                    allPersonOptions={allPersonOptions}
+                    isLocked={isLocked}
+                    onAdd={() => handleAddMeal('lunch')}
+                    onUpdate={handleUpdateMeal}
+                    onDelete={handleDeleteMeal}
+                />
+                <MealColumn 
+                    title="晚餐 (Dinner)" 
+                    type="dinner" 
+                    icon={<Utensils size={14} className="text-indigo-500"/>}
+                    expenses={mealExpenses} 
+                    allPersonOptions={allPersonOptions}
+                    isLocked={isLocked}
+                    onAdd={() => handleAddMeal('dinner')}
+                    onUpdate={handleUpdateMeal}
+                    onDelete={handleDeleteMeal}
+                />
+                <MealColumn 
+                    title="飲料 (Drink)" 
+                    type="drink" 
+                    icon={<Coffee size={14} className="text-emerald-500"/>}
+                    expenses={mealExpenses} 
+                    allPersonOptions={allPersonOptions}
+                    isLocked={isLocked}
+                    onAdd={() => handleAddMeal('drink')}
+                    onUpdate={handleUpdateMeal}
+                    onDelete={handleDeleteMeal}
+                />
+            </div>
+        </div>
+
         <ClosingSummaryModal 
             isOpen={isClosingModalOpen} 
             onClose={() => setIsClosingModalOpen(false)} 
@@ -1038,6 +1207,61 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
         )}
     </div>
   );
+};
+
+const MealColumn = ({ title, type, icon, expenses, allPersonOptions, isLocked, onAdd, onUpdate, onDelete }: any) => {
+    const filtered = expenses.filter((e: MealExpense) => e.type === type);
+    
+    return (
+        <div className="p-3 bg-slate-50/30">
+            <div className="flex justify-between items-center mb-3 pb-2 border-b border-slate-200">
+                <div className="flex items-center gap-2 font-bold text-slate-600 text-xs">
+                    {icon} {title}
+                </div>
+                {!isLocked && (
+                    <button onClick={onAdd} className="text-teal-600 hover:bg-teal-50 p-1 rounded transition-colors">
+                        <Plus size={14} />
+                    </button>
+                )}
+            </div>
+            <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1">
+                {filtered.map((item: MealExpense) => (
+                    <div key={item.id} className="flex gap-2 items-center bg-white border border-slate-200 p-1.5 rounded shadow-sm">
+                        <select 
+                            className="flex-1 bg-transparent text-xs outline-none w-24"
+                            value={item.personId}
+                            onChange={(e) => {
+                                const p = allPersonOptions.find((p: any) => p.id === e.target.value);
+                                onUpdate(item.id, { personId: e.target.value, personName: p ? p.name : '' });
+                            }}
+                            disabled={isLocked}
+                        >
+                            <option value="">選擇人員</option>
+                            {allPersonOptions.map((p: any) => (
+                                <option key={p.id} value={p.id}>{p.name} ({p.role})</option>
+                            ))}
+                        </select>
+                        <div className="flex items-center border-l pl-2">
+                            <span className="text-[10px] text-slate-400">$</span>
+                            <input 
+                                type="number" 
+                                className="w-12 text-right text-xs outline-none font-mono"
+                                value={item.amount}
+                                onChange={(e) => onUpdate(item.id, { amount: safeNum(e.target.value) })}
+                                disabled={isLocked}
+                            />
+                        </div>
+                        {!isLocked && (
+                            <button onClick={() => onDelete(item.id)} className="text-slate-300 hover:text-rose-500">
+                                <Trash2 size={12} />
+                            </button>
+                        )}
+                    </div>
+                ))}
+                {filtered.length === 0 && <div className="text-center text-[10px] text-slate-300 py-4 italic">無紀錄</div>}
+            </div>
+        </div>
+    );
 };
 
 export default DailyAccounting;

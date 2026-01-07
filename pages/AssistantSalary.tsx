@@ -1,13 +1,14 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Consultant, DailySchedule, AccountingRow } from '../types';
 import { 
-    getStaffList, loadAppData, loadDailyAccounting, hydrateRow, getBonusSettings, getYearlySickLeaveCount, getMonthlyScheduleStats 
+    getStaffList, loadAppData, loadDailyAccounting, hydrateRow, getBonusSettings, getYearlySickLeaveCount, getMonthlyScheduleStats, getMonthlyMealStats
 } from '../services/firebase';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from '../components/ClinicSelector';
 import { 
     Calculator, DollarSign, Calendar, Loader2, FileSpreadsheet, 
-    AlertCircle, Clock, Trophy, Umbrella, Info
+    AlertCircle, Clock, Trophy, Umbrella, Info, Utensils
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -48,6 +49,7 @@ interface SalaryRow {
     performanceBonus: number;
     
     // Adjustments
+    mealDeduction: number; // NEW: Auto-deducted from Meal Fund
     insurance: number; // Input
     adjustment: number; // Input
     
@@ -158,8 +160,12 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
             const staffList = await getStaffList(selectedClinicId);
             const targetStaff = staffList.filter(c => c.role !== 'part_time');
 
-            const monthStats = await getMonthlyScheduleStats(selectedClinicId, currentMonth);
-            const bonusMap = await fetchPerformanceBonus(targetStaff);
+            const [monthStats, bonusMap, mealStats] = await Promise.all([
+                getMonthlyScheduleStats(selectedClinicId, currentMonth),
+                fetchPerformanceBonus(targetStaff),
+                getMonthlyMealStats(selectedClinicId, currentMonth)
+            ]);
+
             const [y, m] = currentMonth.split('-').map(Number);
 
             const newRows: SalaryRow[] = await Promise.all(targetStaff.map(async (staff) => {
@@ -207,8 +213,9 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                 const insurance = insuranceInputs[staff.id] !== undefined ? insuranceInputs[staff.id] : (staff.monthlyInsuranceCost || 0);
                 const adjustment = adjustmentInputs[staff.id] || 0;
                 const performanceBonus = bonusMap[staff.id] || 0;
+                const mealDeduction = mealStats[staff.id] || 0;
 
-                const netPay = totalBase - leaveDeduction + finalFullAttendanceBonus + sundayOTPay + regularOTPay + performanceBonus - insurance + adjustment;
+                const netPay = totalBase - leaveDeduction + finalFullAttendanceBonus + sundayOTPay + regularOTPay + performanceBonus - mealDeduction - insurance + adjustment;
 
                 const details = [];
                 if (personalDays > 0) details.push(`事:${personalDays}`);
@@ -226,7 +233,7 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                     bonusDisqualifiedReason: disqualifiedReason,
                     sundayOTDays, sundayOTPay,
                     regularOTMins, regularOTPay,
-                    performanceBonus, insurance, adjustment, netPay
+                    performanceBonus, mealDeduction, insurance, adjustment, netPay
                 };
             }));
 
@@ -243,7 +250,7 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
         setSalaryData(prev => prev.map(row => {
             if (row.consultant.id !== staffId) return row;
             const newRow = { ...row, ...updates };
-            newRow.netPay = newRow.totalBase - newRow.leaveDeduction + newRow.fullAttendanceBonus + newRow.sundayOTPay + newRow.regularOTPay + newRow.performanceBonus - newRow.insurance + newRow.adjustment;
+            newRow.netPay = newRow.totalBase - newRow.leaveDeduction + newRow.fullAttendanceBonus + newRow.sundayOTPay + newRow.regularOTPay + newRow.performanceBonus - newRow.mealDeduction - newRow.insurance + newRow.adjustment;
             return newRow;
         }));
     };
@@ -287,6 +294,7 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
             '平日加班分鐘': row.regularOTMins,
             '平日加班費': row.regularOTPay,
             '績效獎金': row.performanceBonus,
+            '代扣餐費': row.mealDeduction,
             '勞健保自付': row.insurance,
             '其他調整': row.adjustment,
             '實領薪資': row.netPay
@@ -336,11 +344,12 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                             <tr>
                                 <th className="px-4 py-3 sticky left-0 bg-slate-50 z-10">姓名/職稱</th>
                                 <th className="px-4 py-3 text-right">薪資基數</th>
-                                <th className="px-4 py-3 min-w-[220px]">考勤統計</th>
+                                <th className="px-4 py-3 min-w-[200px]">考勤統計</th>
                                 <th className="px-4 py-3 text-right text-emerald-600">全勤獎金</th>
                                 <th className="px-4 py-3 text-right text-amber-600">週日加班</th>
-                                <th className="px-4 py-3 text-right min-w-[120px]">平日加班 (分)</th>
+                                <th className="px-4 py-3 text-right">平日加班</th>
                                 <th className="px-4 py-3 text-right text-purple-600">績效獎金</th>
+                                <th className="px-4 py-3 text-right text-rose-600">代扣餐費</th>
                                 <th className="px-4 py-3 text-right min-w-[100px]">勞健保 (扣)</th>
                                 <th className="px-4 py-3 text-right min-w-[100px]">其他調整</th>
                                 <th className="px-4 py-3 text-right font-black bg-indigo-50 text-indigo-700 border-l border-indigo-100">實領薪資</th>
@@ -387,6 +396,9 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                                     <td className="px-4 py-3 text-right font-bold text-purple-600 tabular-nums">
                                         +${row.performanceBonus.toLocaleString()}
                                     </td>
+                                    <td className="px-4 py-3 text-right font-bold text-rose-600 tabular-nums">
+                                        {row.mealDeduction > 0 ? `-$${row.mealDeduction.toLocaleString()}` : '-'}
+                                    </td>
                                     <td className="px-4 py-3 text-right">
                                         <input type="number" className="w-20 border rounded px-1 py-0.5 text-right text-sm text-rose-600 font-bold bg-rose-50/50 focus:bg-white focus:ring-1 focus:ring-rose-500 outline-none mb-1" value={row.insurance} onChange={e => handleInsuranceChange(row.consultant.id, e.target.value)} />
                                     </td>
@@ -399,7 +411,7 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                                 </tr>
                             ))}
                             {salaryData.length === 0 && (
-                                <tr><td colSpan={10} className="p-12 text-center text-slate-400 font-bold">尚未同步數據。請選擇月份並點擊上方按鈕。</td></tr>
+                                <tr><td colSpan={11} className="p-12 text-center text-slate-400 font-bold">尚未同步數據。請選擇月份並點擊上方按鈕。</td></tr>
                             )}
                         </tbody>
                     </table>
@@ -414,7 +426,7 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                         <li><strong>全勤獎金:</strong> 若該月有「遲到」或「事假」紀錄，全勤獎金立即歸零。</li>
                         <li><strong>事假扣款:</strong> 薪資基數依 30 天比例扣薪。</li>
                         <li><strong>病假扣款:</strong> 薪資基數扣除半薪；全勤獎金每年享有 10 天緩衝，超過 10 天後開始按天數扣除。</li>
-                        <li><strong>週日加班:</strong> 依「薪資基數/30」計算每日加班費，半日班則減半計算。</li>
+                        <li><strong>代扣餐費:</strong> 自動從每日帳務「餐費公積金」中匯總該員工的點餐費用。</li>
                     </ul>
                 </div>
             </div>

@@ -1,3 +1,4 @@
+
 export type ShiftType = 'Morning' | 'Afternoon' | 'Evening';
 
 export enum DayOfWeek {
@@ -243,6 +244,22 @@ export interface Expenditure {
     amount: number;
 }
 
+// NEW: Meal Fund & Expenses
+export type MealType = 'lunch' | 'dinner' | 'drink';
+
+export interface MealExpense {
+  id: string;
+  type: MealType;
+  personId: string; // Doctor ID or Staff ID
+  personName: string;
+  amount: number;
+}
+
+export interface MealFund {
+  initial: number; // 期初
+  added: number;   // 補入
+}
+
 export interface AuditLogEntry {
     timestamp: string;
     userId: string;
@@ -256,6 +273,10 @@ export interface DailyAccountingRecord {
     date: string;
     rows: AccountingRow[];
     expenditures?: Expenditure[];
+    // NEW: Meal Management
+    mealExpenses?: MealExpense[];
+    mealFund?: MealFund;
+    
     initialCash?: number;
     reportImageUrl?: string | null;
     lastUpdated?: number;

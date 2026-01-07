@@ -7,7 +7,7 @@ import { NHIClaimsModal } from './NHIClaimsModal';
 import { 
   Calculator, ChevronDown, 
   Banknote, TrendingUp, DollarSign, Loader2, AlertCircle, FileText, FileEdit, Plus, Trash2, ArrowUpCircle, ArrowDownCircle, FileSpreadsheet,
-  Users, User, X, Info
+  Users, User, X, Info, Lock
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -352,15 +352,44 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
             }
         });
 
-        // 5. Adjustments
+        // 5. Adjustments (Manual)
         const myAdjustments = adjRecords.filter(a => a.doctorId === docId);
-        const totalAdj = myAdjustments.reduce((sum, item) => sum + item.amount, 0);
+        
+        // 6. Automatic Meal Deductions (Virtual Adjustment)
+        let totalMealCost = 0;
+        dailyRecords.forEach(record => {
+            if (record && record.mealExpenses) {
+                record.mealExpenses.forEach(meal => {
+                    if (meal.personId === docId) {
+                        totalMealCost += (meal.amount || 0);
+                    }
+                });
+            }
+        });
+
+        // Combine Adjustments
+        const finalAdjustments = [...myAdjustments];
+        if (totalMealCost > 0) {
+            finalAdjustments.push({
+                id: 'virtual_meal_deduction',
+                clinicId: selectedClinicId,
+                doctorId: docId,
+                month: selectedMonth,
+                date: selectedMonth, // Display month as date
+                category: '代扣餐費',
+                amount: -totalMealCost,
+                note: '自動計算 (Meal Fund)',
+                updatedAt: Date.now()
+            });
+        }
+
+        const totalAdj = finalAdjustments.reduce((sum, item) => sum + item.amount, 0);
         
         return {
             reportData: tempReport,
             totalIncome: totalIncome + totalAdj,
             totalAdjustments: totalAdj,
-            adjustments: myAdjustments
+            adjustments: finalAdjustments
         };
     };
 
@@ -847,9 +876,13 @@ export const SalaryStatementPage: React.FC<Props> = ({ clinics, doctors }) => {
                                                 {adj.amount.toLocaleString()}
                                             </td>
                                             <td className="px-4 py-2 text-center">
-                                                <button onClick={() => handleDeleteAdjustment(adj.id!)} className="text-slate-300 hover:text-rose-500">
-                                                    <Trash2 size={14} />
-                                                </button>
+                                                {adj.id === 'virtual_meal_deduction' ? (
+                                                    <span className="text-slate-400" title="自動計算項目"><Lock size={14} /></span>
+                                                ) : (
+                                                    <button onClick={() => handleDeleteAdjustment(adj.id!)} className="text-slate-300 hover:text-rose-500">
+                                                        <Trash2 size={14} />
+                                                    </button>
+                                                )}
                                             </td>
                                         </tr>
                                     ))}

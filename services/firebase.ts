@@ -1,3 +1,4 @@
+
 import firebase from "firebase/compat/app";
 import "firebase/compat/auth";
 import "firebase/compat/firestore";
@@ -309,7 +310,6 @@ export const saveDoctors = async (clinicId: string, doctors: Doctor[]) => {
     await db.collection('clinics').doc(clinicId).update({ doctors: sanitizedDoctors });
 };
 
-// Fix: Renamed laboratoriesSave to saveLaboratories to match the expected export in App.tsx
 export const saveLaboratories = async (clinicId: string, labs: Laboratory[]) => {
     await db.collection('clinics').doc(clinicId).update({ laboratories: deepSanitize(labs) });
 };
@@ -323,22 +323,14 @@ export const saveSchedules = async (clinicId: string, schedules: DailySchedule[]
     }
 };
 
-// NEW: Strict Single-Clinic Schedule Update (Emergency Fix)
 export const saveClinicSchedule = async (clinicId: string, schedules: DailySchedule[]) => {
   console.log("[saveClinicSchedule] Attempting to save schedule for Clinic ID:", clinicId);
-  
-  if (!clinicId) {
-    throw new Error("Clinic ID is missing!");
-  }
-
+  if (!clinicId) throw new Error("Clinic ID is missing!");
   try {
-    // CRITICAL: Use .update() to modify ONLY the schedules field.
-    // If this fails, it means the document doesn't exist.
     await db.collection('clinics').doc(clinicId).update({
       schedules: deepSanitize(schedules),
       lastUpdated: new Date().toISOString()
     });
-    
     console.log("[saveClinicSchedule] Schedule updated successfully for:", clinicId);
   } catch (error) {
     console.error("[saveClinicSchedule] Failed to update schedule for clinic:", clinicId, error);
@@ -443,6 +435,41 @@ export const loadDailyAccounting = async (clinicId: string, date: string): Promi
         return doc.data() as DailyAccountingRecord;
     }
     return null;
+};
+
+// NEW: Meal Fund Balance Carry-Over Calculation
+export const getPreviousDayMealBalance = async (clinicId: string, currentDate: string): Promise<number> => {
+  try {
+    // 使用 Compat SDK 的鏈式寫法 (不用 import query/where)
+    const snapshot = await db.collection('daily_accounting')
+      .where('clinicId', '==', clinicId)
+      .where('date', '<', currentDate)
+      .orderBy('date', 'desc')
+      .limit(1)
+      .get();
+
+    if (!snapshot.empty) {
+      const data = snapshot.docs[0].data();
+      
+      const initial = Number(data.mealFund?.initial) || 0;
+      const added = Number(data.mealFund?.added) || 0;
+      
+      const totalSpent = (data.mealExpenses || []).reduce((sum: number, ex: any) => {
+        return sum + (Number(ex.amount) || 0);
+      }, 0);
+      
+      return initial + added - totalSpent;
+    }
+    
+    return 0; 
+  } catch (error: any) {
+    console.error("Error fetching previous meal balance:", error);
+    // 如果跳出索引錯誤，會在 Console 顯示連結
+    if (error.message.includes('index')) {
+        console.warn("⚠️ 請點擊上方連結建立索引 (Create Index)");
+    }
+    return 0;
+  }
 };
 
 export const saveDailyAccounting = async (record: DailyAccountingRecord, auditEntry?: AuditLogEntry) => {
@@ -710,46 +737,34 @@ export const upsertPatient = async (clinicId: string, data: { chartId: string | 
     }
 };
 
-/**
- * CRM Migration: Enforce strict composite key (Clinic_ChartID_Name)
- * Targets rename/merge logic when a Chart ID is assigned or changed.
- */
 export const migratePatientId = async (oldDocId: string, newChartId: string, clinicId: string) => {
-    // 1. Fetch old document to get the Name
     const oldRef = db.collection('patients').doc(oldDocId);
     const oldSnap = await oldRef.get();
     if (!oldSnap.exists) throw new Error("Patient not found");
     const oldData = oldSnap.data() as Patient;
 
-    // 2. Construct Target ID using Name from the old document
     const safeName = (oldData.name || '').replace(/[\/\s]/g, '_');
     const safeId = newChartId || 'NP';
     const newDocId = `${clinicId}_${safeId}_${safeName}`;
     const newRef = db.collection('patients').doc(newDocId);
 
-    // 3. Transaction for safe merge/delete
     await db.runTransaction(async (t) => {
         const newSnap = await t.get(newRef);
         let newData: any;
         
         if (newSnap.exists) {
-            // Target exists - Merge logic
             const existing = newSnap.data() as Patient;
             newData = {
                 ...existing,
-                chartId: newChartId, // Ensure it's updated if target was somehow 'NP'
+                chartId: newChartId, 
                 totalSpending: (existing.totalSpending || 0) + (oldData.totalSpending || 0),
-                // Merge arrays without duplicates
                 visitHistory: [...(existing.visitHistory || []), ...(oldData.visitHistory || [])],
                 purchasedItems: Array.from(new Set([...(existing.purchasedItems || []), ...(oldData.purchasedItems || [])])),
-                // Keep most recent visit
                 lastVisit: (existing.lastVisit > oldData.lastVisit) ? existing.lastVisit : oldData.lastVisit,
-                // Merge consultants
                 pastConsultants: Array.from(new Set([...(existing.pastConsultants || []), ...(oldData.pastConsultants || [])])),
                 updatedAt: firebase.firestore.FieldValue.serverTimestamp()
             };
         } else {
-            // Target doesn't exist - Just rename/move
             newData = { 
                 ...oldData, 
                 chartId: newChartId, 
@@ -837,9 +852,7 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
 
     const groups: Record<string, AccountingRow[]> = {};
     rows.forEach(r => {
-        // Skip invalid rows without name
         if (!r.patientName || !r.patientName.trim()) return;
-
         const key = `${r.chartId || 'NP'}_${r.patientName}`;
         if(!groups[key]) groups[key] = [];
         groups[key].push(r);
@@ -849,12 +862,10 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
         const groupRows = groups[key];
         const rep = groupRows[0]; 
         
-        // Double safety check
         if (!rep.patientName) continue;
 
         const chartId = rep.chartId || null; 
         const name = rep.patientName;
-        // Construct composite document ID: ClinicID_ChartID_Name
         const safeName = name.replace(/[\/\s]/g, '_');
         const patientDocId = `${clinicId}_${chartId || 'NP'}_${safeName}`;
         const patientRef = db.collection('patients').doc(patientDocId);
@@ -862,7 +873,6 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
         let totalSpend = 0;
         const items = new Set<string>();
         
-        // Prepare visit history data with strict sanitization for arrayUnion
         const visitHistoryData = groupRows.map(r => deepSanitize({
             date, 
             doctor: r.doctorName || '', 
@@ -888,7 +898,6 @@ export const lockDailyReport = async (date: string, clinicId: string, rows: Acco
             clinicId, chartId, name, lastVisit: date,
             updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
             totalSpending: firebase.firestore.FieldValue.increment(totalSpend),
-            // Use undefined check to avoid empty arrayUnion calls if necessary, but empty is safe with ...spread
             purchasedItems: purchasedItemsArray.length > 0 ? firebase.firestore.FieldValue.arrayUnion(...purchasedItemsArray) : undefined,
             visitHistory: visitHistoryData.length > 0 ? firebase.firestore.FieldValue.arrayUnion(...visitHistoryData) : undefined
         }), { merge: true });
@@ -907,12 +916,10 @@ export const unlockDailyReport = async (date: string, clinicId: string, user: {u
 };
 
 export const checkPreviousUnlocked = async (currentDate: string, clinicId: string): Promise<string[]> => {
-    // Look back 60 days
     const pastDate = new Date(currentDate); 
     pastDate.setDate(pastDate.getDate() - 60);
     const minDateStr = pastDate.toISOString().split('T')[0];
     
-    // Correct range query interpolation
     const snap = await db.collection('daily_accounting')
         .where(firebase.firestore.FieldPath.documentId(), '>=', `${clinicId}_${minDateStr}`)
         .where(firebase.firestore.FieldPath.documentId(), '<', `${clinicId}_${currentDate}`)
@@ -961,7 +968,6 @@ export const lockMonthlyReport = async (clinicId: string, yearMonth: string, use
         lockedAt: new Date().toISOString(),
         lockedBy: { uid: user.uid, name: user.name }
     };
-    // Fix: Correctly access the document reference before calling set()
     await db.collection('monthly_closings').doc(docId).set(deepSanitize(payload));
 };
 
@@ -1018,6 +1024,48 @@ export interface MonthlyScheduleStats {
     }
 }
 
+// --- Meal Expense Aggregation for Assistant Salary ---
+
+export const getMonthlyMealStats = async (clinicId: string, yearMonth: string): Promise<Record<string, number>> => {
+  try {
+    // 1. Calculate Date Range
+    const [year, month] = yearMonth.split('-').map(Number);
+    const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+    // Calculate end date (first day of next month)
+    const nextMonth = month === 12 ? 1 : month + 1;
+    const nextYear = month === 12 ? year + 1 : year;
+    const endDate = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`;
+
+    // 2. Query Daily Accounting
+    const snapshot = await db.collection('daily_accounting')
+      .where('clinicId', '==', clinicId)
+      .where('date', '>=', startDate)
+      .where('date', '<', endDate)
+      .get();
+
+    const stats: Record<string, number> = {};
+
+    // 3. Aggregate Expenses
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      if (data.mealExpenses && Array.isArray(data.mealExpenses)) {
+        data.mealExpenses.forEach((expense: any) => {
+          if (expense.personId && expense.amount) {
+            const pid = expense.personId;
+            const amt = Number(expense.amount) || 0;
+            stats[pid] = (stats[pid] || 0) + amt;
+          }
+        });
+      }
+    });
+
+    return stats;
+  } catch (error) {
+    console.error("Error fetching meal stats:", error);
+    return {};
+  }
+};
+
 export const getMonthlyScheduleStats = async (clinicId: string, yearMonth: string): Promise<MonthlyScheduleStats> => {
     const doc = await db.collection('clinics').doc(clinicId).get();
     if (!doc.exists) return {};
@@ -1033,7 +1081,6 @@ export const getMonthlyScheduleStats = async (clinicId: string, yearMonth: strin
             const dateObj = new Date(s.date);
             const isSunday = dateObj.getDay() === 0;
 
-            // 1. Process Lates
             if (config.late) {
                 config.late.forEach(id => {
                     if (!stats[id]) stats[id] = { personalLeave: 0, sickLeave: 0, sundayOT: 0, lateCount: 0, specialLeave: 0 };
@@ -1041,7 +1088,6 @@ export const getMonthlyScheduleStats = async (clinicId: string, yearMonth: strin
                 });
             }
 
-            // 2. Process Leaves
             if (config.leave) {
                 config.leave.forEach(l => {
                     const id = l.id;
@@ -1057,9 +1103,7 @@ export const getMonthlyScheduleStats = async (clinicId: string, yearMonth: strin
                 });
             }
 
-            // 3. Process Sunday OT
             if (isSunday) {
-                // Check explicit OT
                 if (config.overtime) {
                     config.overtime.forEach(ot => {
                         const id = ot.id;
@@ -1068,8 +1112,6 @@ export const getMonthlyScheduleStats = async (clinicId: string, yearMonth: strin
                         stats[id].sundayOT += duration;
                     });
                 }
-                // Also check if NOT off and NOT on leave (implicit OT)
-                // This logic is usually handled by UI but we safeguard here
             }
         }
     });

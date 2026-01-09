@@ -52,7 +52,7 @@ const InputCell = ({
         <input
             type={type}
             disabled={disabled}
-            className={`w-full bg-transparent outline-none px-1 py-1 focus:bg-white focus:ring-2 focus:ring-inset focus:ring-blue-500 rounded-sm transition-colors placeholder-slate-500 ${alignClass} ${className} ${disabled ? 'cursor-not-allowed text-slate-400' : ''}`}
+            className={`w-full bg-transparent outline-none px-1 py-1 focus:bg-white focus:ring-2 focus:ring-inset focus:ring-blue-500 rounded-sm transition-colors placeholder-gray-500 placeholder:text-sm  ${alignClass} ${className} ${disabled ? 'cursor-not-allowed text-slate-400' : ''}`}
             value={value === 0 && type === 'number' ? '' : value}
             onChange={(e) => setValue(e.target.value)}
             onBlur={handleBlur}
@@ -145,7 +145,7 @@ const DailyAccountingRow: React.FC<RowProps> = ({
                                 disabled={isLocked}
                             />
                         ) : (
-                            <span className="text-[10px] text-slate-400 font-mono">
+                            <span className="text-[10px] text-slate-700 font-mono">
                                 {row.sortOrder || 0}
                             </span>
                         )}
@@ -153,7 +153,7 @@ const DailyAccountingRow: React.FC<RowProps> = ({
                 </div>
             </td>
             <td className="px-1 py-1 border-r border-gray-200 sticky left-[32px] bg-white group-hover:bg-blue-50/30 z-30 align-middle min-w-[80px]">
-                <InputCell initialValue={row.chartId} onCommit={(v) => onUpdate(row.id, { chartId: v })} className={`text-slate-700 font-mono text-[11px] ${isChartIdLocked ? 'bg-slate-50' : ''}`} placeholder="病歷號" disabled={isChartIdLocked} />
+                <InputCell initialValue={row.chartId} onCommit={(v) => onUpdate(row.id, { chartId: v })} className={`text-slate-700 font-mono text-lg ${isChartIdLocked ? 'bg-slate-50' : ''}`} placeholder="病歷號" disabled={isChartIdLocked} />
             </td>
             <td className="px-1 py-1 border-r border-gray-200 sticky left-[114px] bg-white group-hover:bg-blue-50/30 z-30 align-middle min-w-[112px]">
                 <InputCell initialValue={row.patientName} onCommit={(v) => onUpdate(row.id, { patientName: v })} className={getPatientNameClass(row)} disabled={isLocked} />

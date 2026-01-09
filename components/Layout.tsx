@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { 
@@ -73,7 +74,7 @@ const SidebarItem: React.FC<SidebarItemProps> = ({
 export const Layout: React.FC<Props> = ({ 
   children, saveStatus, onRetrySave, userEmail, onLogout, userRole 
 }) => {
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({});
   const [rolePermissions, setRolePermissions] = useState<Record<string, string[]> | null>(null);
   
@@ -89,7 +90,7 @@ export const Layout: React.FC<Props> = ({
   };
 
   useEffect(() => {
-    setIsMobileMenuOpen(false);
+    setIsSidebarOpen(false);
   }, [location.pathname]);
 
   // --- ACCESS CONTROL LOGIC ---
@@ -165,18 +166,18 @@ export const Layout: React.FC<Props> = ({
 
   return (
     <div className="flex h-screen w-screen bg-slate-50 overflow-hidden">
-      {/* Mobile Menu Overlay */}
-      {isMobileMenuOpen && (
+      {/* Sidebar Overlay (Backdrop) */}
+      {isSidebarOpen && (
         <div 
-          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm lg:hidden"
-          onClick={() => setIsMobileMenuOpen(false)}
+          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
+          onClick={() => setIsSidebarOpen(false)}
         />
       )}
 
-      {/* Sidebar */}
+      {/* Sidebar (Fixed, Collapsible) */}
       <aside className={`
-        fixed lg:static top-0 left-0 z-50 h-full w-72 bg-slate-900 text-white flex flex-col transition-transform duration-300 shadow-xl shrink-0
-        ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+        fixed top-0 left-0 z-50 h-full w-72 bg-slate-900 text-white flex flex-col transition-transform duration-300 shadow-xl shrink-0
+        ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
       `}>
         {/* Header */}
         <div className="p-6 flex items-center justify-between border-b border-slate-800 bg-slate-900">
@@ -188,7 +189,7 @@ export const Layout: React.FC<Props> = ({
               <h1 className="font-bold text-white leading-tight tracking-wide">Dental Manager</h1>
             </div>
           </div>
-          <button onClick={() => setIsMobileMenuOpen(false)} className="lg:hidden text-slate-400 hover:text-white">
+          <button onClick={() => setIsSidebarOpen(false)} className="text-slate-400 hover:text-white transition-colors">
             <X />
           </button>
         </div>
@@ -289,41 +290,47 @@ export const Layout: React.FC<Props> = ({
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
-        {/* Mobile Header */}
-        <header className="lg:hidden bg-slate-900 text-white p-4 flex justify-between items-center shrink-0 shadow-md z-30">
+        {/* Universal Header (Mobile & Desktop) */}
+        <header className="bg-white border-b border-slate-200 h-16 px-4 lg:px-6 flex justify-between items-center shrink-0 shadow-sm z-30">
           <div className="flex items-center gap-3">
-            <button onClick={() => setIsMobileMenuOpen(true)} className="text-slate-300">
-              <Menu />
+            <button 
+                onClick={() => setIsSidebarOpen(true)} 
+                className="text-slate-500 hover:bg-slate-100 p-2 rounded-lg transition-colors"
+            >
+              <Menu size={24} />
             </button>
-            <span className="font-bold text-lg">Dental Manager</span>
+            <span className="font-bold text-lg text-slate-800 tracking-tight">Dental Manager</span>
           </div>
+          
           <div className="flex items-center gap-2">
-             {saveStatus === 'saving' && <Loader2 size={18} className="animate-spin text-teal-400" />}
-             {saveStatus === 'saved' && <Check size={18} className="text-emerald-400" />}
-             {saveStatus === 'error' && <AlertCircle size={18} className="text-rose-400" />}
+             {/* Mobile Status Icons */}
+             <div className="lg:hidden flex items-center gap-2">
+                {saveStatus === 'saving' && <Loader2 size={18} className="animate-spin text-teal-500" />}
+                {saveStatus === 'saved' && <Check size={18} className="text-emerald-500" />}
+                {saveStatus === 'error' && <AlertCircle size={18} className="text-rose-500" />}
+                {saveStatus === 'unsaved' && <AlertCircle size={18} className="text-amber-500" />}
+             </div>
+
+             {/* Desktop Status Badges */}
+             <div className="hidden lg:flex items-center gap-2 text-xs font-medium">
+                {saveStatus === 'saving' && (
+                    <span className="text-teal-600 flex items-center gap-1 bg-teal-50 px-3 py-1.5 rounded-full border border-teal-100"><Loader2 size={12} className="animate-spin"/> 自動儲存中...</span>
+                )}
+                {saveStatus === 'saved' && (
+                    <span className="text-emerald-600 flex items-center gap-1 bg-emerald-50 px-3 py-1.5 rounded-full border border-emerald-100"><Check size={12} /> 資料已同步</span>
+                )}
+                {saveStatus === 'error' && (
+                    <span className="text-rose-600 flex items-center gap-1 bg-rose-50 px-3 py-1.5 rounded-full border border-rose-100"><AlertCircle size={12} /> 儲存失敗</span>
+                )}
+                {saveStatus === 'unsaved' && (
+                    <span className="text-amber-600 flex items-center gap-1 bg-amber-50 px-3 py-1.5 rounded-full border border-amber-100"><AlertCircle size={12} /> 未儲存變更</span>
+                )}
+             </div>
           </div>
         </header>
 
-        {/* Desktop Status Bar */}
-        <div className="hidden lg:flex justify-end items-center px-8 py-2 bg-white border-b border-slate-200 gap-4 h-12 shrink-0">
-            <div className="flex items-center gap-2 text-xs font-medium">
-                {saveStatus === 'saving' && (
-                    <span className="text-teal-600 flex items-center gap-1 bg-teal-50 px-2 py-1 rounded-full"><Loader2 size={12} className="animate-spin"/> 自動儲存中...</span>
-                )}
-                {saveStatus === 'saved' && (
-                    <span className="text-emerald-600 flex items-center gap-1 bg-emerald-50 px-2 py-1 rounded-full"><Check size={12} /> 資料已同步</span>
-                )}
-                {saveStatus === 'error' && (
-                    <span className="text-rose-600 flex items-center gap-1 bg-rose-50 px-2 py-1 rounded-full"><AlertCircle size={12} /> 儲存失敗</span>
-                )}
-                {saveStatus === 'unsaved' && (
-                    <span className="text-amber-600 flex items-center gap-1 bg-amber-50 px-2 py-1 rounded-full"><AlertCircle size={12} /> 未儲存變更</span>
-                )}
-            </div>
-        </div>
-
         {/* Scrollable Page Content */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 lg:p-8 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 lg:p-8 custom-scrollbar bg-slate-50">
           {children}
         </div>
       </main>

@@ -1043,15 +1043,16 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                         <table className="min-w-[2000px] border-collapse text-xs">
                             <thead className="bg-gray-50 z-40 shadow-sm font-bold tracking-tight">
                                 <tr className="sticky top-[2px] z-[60]">
-                                    <th className="px-2 py-2 border-r border-gray-200 text-center sticky left-0 bg-gray-50 z-[70] min-w-[30px] text-slate-600" rowSpan={2}>#</th>
-                                    <th className="px-2 py-2 border-r border-gray-200 sticky left-[32px] bg-gray-50 z-[70] min-w-[80px] text-left text-slate-600" rowSpan={2}>病歷號</th>
-                                    <th className="px-2 py-2 border-r border-gray-200 sticky left-[114px] bg-gray-50 z-[70] min-w-[110px] text-left text-slate-600" rowSpan={2}>病患姓名</th>
-                                    <th className="px-2 py-2 border-r-2 border-gray-300 sticky left-[226px] bg-gray-50 z-[70] min-w-[110px] text-right" rowSpan={2}>醫師</th>
-                                    <th colSpan={2} className="px-2 py-1 border-r border-gray-200 border-t-4 border-blue-400 bg-blue-50 text-center text-slate-700">基本費用 (FEES)</th>
-                                    <th colSpan={9} className="px-2 py-1 border-r border-gray-200 border-t-4 border-purple-400 bg-purple-50 text-center text-slate-700">自費療程 (TREATMENT)</th>
-                                    <th colSpan={4} className="px-2 py-1 border-r border-gray-200 border-t-4 border-orange-400 bg-orange-50 text-center text-slate-700">小金庫 (RETAIL)</th>
-                                    <th colSpan={2} className="px-2 py-1 border-r border-gray-200 border-t-4 border-emerald-500 bg-emerald-50 text-center text-slate-700">結帳 (PAYMENT)</th>
-                                    <th colSpan={4} className="px-2 py-1 border-t-4 border-slate-300 bg-slate-50 text-center text-slate-600">備註與操作</th>
+                                    <th className="px-2 py-2 border-r border-t-4 border-gray-200 text-center sticky left-0 bg-gray-50 z-[70] min-w-[30px] text-slate-600" rowSpan={2}>#</th>
+                                    <th className="px-2 py-2 border-r border-t-4 border-gray-200 sticky left-[32px] bg-gray-50 z-[70] min-w-[80px] text-left text-slate-600" rowSpan={2}>病歷號</th>
+                                    <th className="px-2 py-2 border-r border-t-4 border-gray-200 sticky left-[114px] bg-gray-50 z-[70] min-w-[110px] text-left text-slate-600" rowSpan={2}>病患姓名</th>
+                                    <th className="px-2 py-2 border-r-2 border-t-4 border-gray-200 sticky left-[226px] bg-gray-50 z-[70] min-w-[110px] text-right" rowSpan={2}>醫師</th>
+                                    <th colSpan={2} className="px-2 py-1 border-r border-t-4 border-blue-400 bg-blue-50 text-center text-slate-700">基本費用 (FEES)</th>
+                                    <th colSpan={9} className="px-2 py-1 border-r border-t-4 border-purple-400 bg-purple-50 text-center text-slate-700">自費療程 (TREATMENT)</th>
+                                    <th colSpan={3} className="px-2 py-1 border-r border-t-4 border-slate-300 bg-slate-50 text-center text-slate-600">備註與操作</th>
+
+                                    <th colSpan={4} className="px-2 py-1 border-r border-t-4 border-orange-400 bg-orange-50 text-center text-slate-700">小金庫 (RETAIL)</th>
+                                    <th colSpan={3} className="px-2 py-1 border-r border-t-4 border-emerald-500 bg-emerald-50 text-center text-slate-700">結帳 (PAYMENT)</th>
                                 </tr>
                                 <tr className="sticky top-[25px] z-30 shadow-sm text-center">
                                     <th className={`${headerCellStyle} border-r-blue-100 bg-blue-50 min-w-[60px]`}>掛號</th>
@@ -1065,16 +1066,16 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                                     <th className={`${headerCellStyle} border-r-purple-100 bg-purple-50 min-w-[70px]`}>美白</th>
                                     <th className={`${headerCellStyle} bg-purple-50 min-w-[70px]`}>其他</th>
                                     <th className={`${headerCellStyle} bg-purple-50 min-w-[80px]`}>諮詢師</th>
+                                    <th className={`${headerCellStyle} bg-slate-50 min-w-[50px]`}>NP</th>
+                                    <th className={`${headerCellStyle} bg-slate-50 min-w-[120px]`}>內容</th>
+                                    <th className={`${headerCellStyle} bg-slate-50 min-w-[100px]`}>技工所</th>
                                     <th className={`${headerCellStyle} border-r-orange-100 bg-orange-50 min-w-[70px]`}>小金庫</th>
                                     <th className={`${headerCellStyle} border-r-orange-100 bg-orange-50 min-w-[70px]`}>物販</th>
                                     <th className={`${headerCellStyle} border-r-orange-100 bg-orange-50 min-w-[100px]`}>品項</th>
                                     <th className={`${headerCellStyle} bg-orange-50 min-w-[80px]`}>經手人</th>
                                     <th className={`${headerCellStyle} border-r-emerald-100 bg-emerald-50 min-w-[80px]`}>實收</th>
                                     <th className={`${headerCellStyle} bg-emerald-50 min-w-[70px]`}>方式</th>
-                                    <th className={`${headerCellStyle} bg-slate-50 min-w-[50px]`}>NP</th>
-                                    <th className={`${headerCellStyle} bg-slate-50 min-w-[120px]`}>內容</th>
-                                    <th className={`${headerCellStyle} bg-slate-50 min-w-[100px]`}>技工所</th>
-                                    <th className="px-2 py-1 bg-slate-50 w-8"></th>
+                                    <th className="px-2 py-1 bg-emerald-50 w-8"></th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100 bg-white">

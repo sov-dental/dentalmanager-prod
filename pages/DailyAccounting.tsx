@@ -834,7 +834,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const handleLockDay = async () => {
       if (!currentUser || !selectedClinicId) return;
-      
+        
       if (hasUnsavedChanges) {
           try {
               await persistData(rowsRef.current, expendituresRef.current, mealFundRef.current, mealExpensesRef.current);
@@ -850,7 +850,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       }
 
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-      
+        
       setClosingError(null); 
 
       setIsLoading(true);
@@ -881,8 +881,8 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
 
   const handleUnlockDay = async () => {
       if (!currentUser || !selectedClinicId) return;
-      
-      const canUnlock = ['admin', 'manager', 'team_leader', 'staff'].includes(userRole || '');
+        
+      const canUnlock = ['admin', 'manager', 'team_leader'].includes(userRole || '');
       if (!canUnlock) {
           alert("權限不足");
           return;
@@ -920,44 +920,44 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   const headerCellStyle = "px-2 py-1 border-r border-slate-200 text-slate-700 text-center font-bold";
 
   return (
-    <div className="space-y-6 pb-20">
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div className="flex items-center gap-3">
-                <ClinicSelector className="border p-2 rounded-lg bg-slate-50 min-w-[150px]" />
-                <div className="flex items-center bg-slate-100 rounded-lg p-1">
-                    <button onClick={() => handleSafeDateChange(getNextDate(currentDate, -1))} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500"><ChevronLeft size={20}/></button>
-                    <input type="date" className="bg-transparent border-none text-center font-bold text-slate-700 outline-none w-32 cursor-pointer" value={currentDate} onChange={e => handleSafeDateChange(e.target.value)} />
-                    <button onClick={() => handleSafeDateChange(getNextDate(currentDate, 1))} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500"><ChevronRight size={20}/></button>
-                </div>
-                {isLocked ? (
-                    <div className={`flex items-center gap-2 px-3 py-1.5 border rounded-lg text-sm font-bold ${isMonthLocked ? 'bg-rose-100 border-rose-300 text-rose-800' : 'bg-rose-50 border-rose-200 text-rose-700'}`}>
-                        <Lock size={14} /> {isMonthLocked ? '月結鎖定中' : '已結帳'}
-                    </div>
-                ) : (
-                    <button onClick={handleLockDay} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-sm font-bold hover:bg-emerald-100 transition-colors">
-                        <Unlock size={14} /> 結帳鎖定
-                    </button>
-                )}
-            </div>
+      <div className="space-y-6 pb-20">
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <div className="flex items-center gap-3">
+                  <ClinicSelector className="border p-2 rounded-lg bg-slate-50 min-w-[150px]" />
+                  <div className="flex items-center bg-slate-100 rounded-lg p-1">
+                      <button onClick={() => handleSafeDateChange(getNextDate(currentDate, -1))} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500"><ChevronLeft size={20}/></button>
+                      <input type="date" className="bg-transparent border-none text-center font-bold text-slate-700 outline-none w-32 cursor-pointer" value={currentDate} onChange={e => handleSafeDateChange(e.target.value)} />
+                      <button onClick={() => handleSafeDateChange(getNextDate(currentDate, 1))} className="p-1.5 hover:bg-white rounded-md shadow-sm text-slate-500"><ChevronRight size={20}/></button>
+                  </div>
+                  {isLocked ? (
+                      <div className={`flex items-center gap-2 px-3 py-1.5 border rounded-lg text-sm font-bold ${isMonthLocked ? 'bg-rose-100 border-rose-300 text-rose-800' : 'bg-rose-50 border-rose-200 text-rose-700'}`}>
+                          <Lock size={14} /> {isMonthLocked ? '月結鎖定中' : '已結帳'}
+                      </div>
+                  ) : (
+                      <button onClick={handleLockDay} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-sm font-bold hover:bg-emerald-100 transition-colors">
+                          <Unlock size={14} /> 結帳鎖定
+                      </button>
+                  )}
+              </div>
 
-            <div className="flex gap-2 items-center">
-                {saveStatus === 'saving' && <span className="text-xs text-blue-500 font-bold animate-pulse">儲存中...</span>}
-                {hasUnsavedChanges && saveStatus !== 'saving' && <span className="text-xs text-amber-600 font-bold">變更未儲存</span>}
-                {!hasUnsavedChanges && saveStatus === 'saved' && <span className="text-xs text-emerald-600 font-bold">資料已儲存</span>}
-                
-                {isLocked && (['admin', 'manager', 'team_leader', 'staff'].includes(userRole || '')) && (
-                    <button onClick={handleUnlockDay} disabled={isSyncing || isMonthLocked} className={`px-3 py-2 rounded-lg font-bold text-sm border flex items-center gap-2 transition-all ${isMonthLocked ? 'text-slate-400 cursor-not-allowed' : 'text-rose-500 hover:bg-rose-50'}`}>
-                        {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <Unlock size={16} />} 
-                        解鎖
-                    </button>
-                )}
+              <div className="flex gap-2 items-center">
+                  {saveStatus === 'saving' && <span className="text-xs text-blue-500 font-bold animate-pulse">儲存中...</span>}
+                  {hasUnsavedChanges && saveStatus !== 'saving' && <span className="text-xs text-amber-600 font-bold">變更未儲存</span>}
+                  {!hasUnsavedChanges && saveStatus === 'saved' && <span className="text-xs text-emerald-600 font-bold">資料已儲存</span>}
+                    
+                  {isLocked && (['admin', 'manager', 'team_leader'].includes(userRole || '')) && (
+                      <button onClick={handleUnlockDay} disabled={isSyncing || isMonthLocked} className={`px-3 py-2 rounded-lg font-bold text-sm border flex items-center gap-2 transition-all ${isMonthLocked ? 'text-slate-400 cursor-not-allowed' : 'text-rose-500 hover:bg-rose-50'}`}>
+                          {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <Unlock size={16} />} 
+                          解鎖
+                      </button>
+                  )}
 
-                <button onClick={() => setIsAuditModalOpen(true)} className="text-slate-400 hover:text-slate-600 p-2 rounded-full hover:bg-slate-100" title="異動紀錄"><History size={18} /></button>
-                <button onClick={handleManualSave} disabled={isManualSaving || isLocked} className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50">{isManualSaving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} 儲存</button>
-                <button onClick={handleSyncCalendar} disabled={isSyncing || isLocked} className="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-blue-100 transition-colors disabled:opacity-50">{isSyncing ? <Loader2 className="animate-spin" size={16}/> : <RefreshCw size={16}/>} 同步預約</button>
-                <button onClick={() => selectedClinic && exportDailyReportToExcel(selectedClinic.id, selectedClinic.name, currentDate, rows, expenditures, fullStaffList)} className="bg-slate-100 text-slate-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-slate-200 transition-colors"><FileSpreadsheet size={16} /> 匯出</button>
-            </div>
-        </div>
+                  <button onClick={() => setIsAuditModalOpen(true)} className="text-slate-400 hover:text-slate-600 p-2 rounded-full hover:bg-slate-100" title="異動紀錄"><History size={18} /></button>
+                  <button onClick={handleManualSave} disabled={isManualSaving || isLocked} className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50">{isManualSaving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} 儲存</button>
+                  <button onClick={handleSyncCalendar} disabled={isSyncing || isLocked} className="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-blue-100 transition-colors disabled:opacity-50">{isSyncing ? <Loader2 className="animate-spin" size={16}/> : <RefreshCw size={16}/>} 同步預約</button>
+                  <button onClick={() => selectedClinic && exportDailyReportToExcel(selectedClinic.id, selectedClinic.name, currentDate, rows, expenditures, fullStaffList)} className="bg-slate-100 text-slate-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-slate-200 transition-colors"><FileSpreadsheet size={16} /> 匯出</button>
+              </div>
+          </div>
 
         {/* Totals Section */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-fade-in">

@@ -1,9 +1,10 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Consultant, AccountingRow, DailyAccountingRecord } from '../types';
 import { hydrateRow, db, saveBonusSettings, getBonusSettings, CLINIC_ORDER } from '../services/firebase';
 import { 
   Calculator, Loader2, DollarSign, Save, Users, 
-  PieChart, Wallet, ChevronRight, Gift
+  PieChart, Wallet, ChevronRight, Gift, Percent, Globe
 } from 'lucide-react';
 import { BonusDetailModal } from './BonusDetailModal';
 
@@ -42,7 +43,12 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
     
     // Calculation State
     const [calculatedData, setCalculatedData] = useState<CalculatedStaff[]>([]);
+    
+    // Configurable Rates (Global)
     const [poolRate, setPoolRate] = useState<number>(30); // Default 30%
+    const [selfPayRate, setSelfPayRate] = useState<number>(1); // Default 1%
+    const [retailRate, setRetailRate] = useState<number>(10); // Default 10%
+
     const [rawRows, setRawRows] = useState<AccountingRow[]>([]);
     
     // UI State
@@ -60,35 +66,40 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
         }
     }, [sortedClinics, selectedClinicId]);
 
-    // Load Pool Rate Setting using new getBonusSettings
+    // Load Global Bonus Settings (Dependent only on ClinicID)
     useEffect(() => {
-        if (selectedClinicId && selectedMonth) {
+        if (selectedClinicId) {
             const loadSettings = async () => {
                 try {
-                    const settings = await getBonusSettings(selectedClinicId, selectedMonth);
-                    if (settings && settings.poolRate !== undefined) {
-                        setPoolRate(Number(settings.poolRate));
-                    } else {
-                        setPoolRate(30); // Default
-                    }
+                    const settings = await getBonusSettings(selectedClinicId);
+                    // getBonusSettings now returns defaults if empty, so we can trust it mostly
+                    // But safe checks are good
+                    setPoolRate(settings?.poolRate !== undefined ? Number(settings.poolRate) : 30);
+                    setSelfPayRate(settings?.selfPayRate !== undefined ? Number(settings.selfPayRate) : 1);
+                    setRetailRate(settings?.retailRate !== undefined ? Number(settings.retailRate) : 10);
                 } catch (e) {
                     console.error("Failed to load bonus settings", e);
                 }
             };
             loadSettings();
         }
-    }, [selectedClinicId, selectedMonth]);
+    }, [selectedClinicId]);
 
     const handleSaveSettings = async () => {
-        if (!selectedClinicId || !selectedMonth) return;
+        if (!selectedClinicId) return;
         setIsSavingSettings(true);
         try {
-            await saveBonusSettings(selectedClinicId, selectedMonth, { poolRate: Number(poolRate) });
+            await saveBonusSettings(selectedClinicId, { 
+                poolRate: Number(poolRate),
+                selfPayRate: Number(selfPayRate),
+                retailRate: Number(retailRate)
+            });
             
-            // Optionally trigger a silent recalc to ensure UI is in sync if data exists
+            // Trigger silent recalc if data is already present
             if (calculatedData.length > 0) {
                 handleCalculate();
             }
+            alert("全域設定已儲存 (Saved to Global Settings)");
         } catch (e) {
             alert("Save Error: " + (e as Error).message);
         } finally {
@@ -110,7 +121,6 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
             const [year, month] = selectedMonth.split('-').map(Number);
             const daysInMonth = new Date(year, month, 0).getDate();
             
-            // Construct Date Range for Firestore Query
             const startStr = `${year}-${String(month).padStart(2, '0')}-01`;
             const endStr = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
 
@@ -147,8 +157,7 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
                 allowedRoles.includes(c.role || 'consultant')
             );
 
-            // 4. Calculate Base Metrics
-            // --- 修正開始: 支援 ID 與 Name 雙重比對 ---
+            // Calculate Base Metrics
             let tempStaffData = clinicStaff.map(staff => {
                 let selfPayTotal = 0;
                 let retailTotal = 0;
@@ -159,15 +168,12 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
                     const t = row.treatments;
                     const r = row.retail;
 
-                    // 1. 自費項目 (Self Pay) 比對
-                    // 資料庫可能是 ID，也可能是名字 (如截圖中的 "SYUW")
                     const rowConsultant = (t.consultant || '').trim();
                     const isTreatmentMatch = (
                         rowConsultant === staff.id || 
                         rowConsultant === staffName
                     );
 
-                    // 計算金額
                     const sp = (t.prostho || 0) + (t.implant || 0) + (t.ortho || 0) + 
                                (t.sov || 0) + (t.perio || 0) + (t.whitening || 0) + 
                                (t.inv || 0) + (t.otherSelfPay || 0);
@@ -176,8 +182,6 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
                         selfPayTotal += sp;
                     }
 
-                    // 2. 販售項目 (Retail) 比對
-                    // 如果沒有指定銷售人員 (staff)，則預設歸屬給諮詢師 (consultant)
                     const rowRetailer = (r.staff || t.consultant || '').trim();
                     const isRetailMatch = (
                         rowRetailer === staff.id || 
@@ -191,8 +195,8 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
                     }
                 });
 
-                // Base Bonus Formula
-                const baseBonus = Math.round((selfPayTotal * 0.01) + (retailTotal * 0.1));
+                // Dynamic Rate Calculation
+                const baseBonus = Math.round((selfPayTotal * (selfPayRate / 100)) + (retailTotal * (retailRate / 100)));
 
                 return {
                     id: staff.id,
@@ -209,7 +213,6 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
                     isEligibleForPool: false
                 };
             });
-            // --- 修正結束 ---
 
             // Apply Pool Logic
             let totalPool = 0;
@@ -297,19 +300,44 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
                         </select>
                     </div>
 
-                    <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
-                        <span className="text-xs font-bold text-slate-600 whitespace-nowrap">團體公積金 %</span>
-                        <input 
-                            type="number" min="0" max="100" step="5"
-                            className="w-14 border rounded px-1 py-1 text-center font-bold text-purple-700 text-sm outline-none focus:border-purple-500"
-                            value={poolRate}
-                            onChange={e => setPoolRate(Number(e.target.value))}
-                        />
+                    {/* Rate Settings Group */}
+                    <div className="flex flex-wrap gap-2 items-center bg-slate-50 p-2 rounded-lg border border-slate-200">
+                        <div className="flex items-center gap-1 border-r border-slate-200 pr-2">
+                            <Globe size={14} className="text-slate-400" />
+                            <span className="text-[10px] font-bold text-slate-500">全域設定</span>
+                        </div>
+                        <div className="flex items-center gap-1" title="自費獎金比率">
+                            <span className="text-[10px] font-bold text-slate-500 whitespace-nowrap">自費%</span>
+                            <input 
+                                type="number" min="0" max="100" step="0.1"
+                                className="w-10 border rounded px-1 py-0.5 text-center font-bold text-indigo-600 text-sm outline-none focus:border-indigo-500"
+                                value={selfPayRate}
+                                onChange={e => setSelfPayRate(Number(e.target.value))}
+                            />
+                        </div>
+                        <div className="flex items-center gap-1" title="物販獎金比率">
+                            <span className="text-[10px] font-bold text-slate-500 whitespace-nowrap">物販%</span>
+                            <input 
+                                type="number" min="0" max="100" step="0.5"
+                                className="w-10 border rounded px-1 py-0.5 text-center font-bold text-amber-600 text-sm outline-none focus:border-amber-500"
+                                value={retailRate}
+                                onChange={e => setRetailRate(Number(e.target.value))}
+                            />
+                        </div>
+                        <div className="flex items-center gap-1" title="團體公積金提撥率">
+                            <span className="text-[10px] font-bold text-slate-500 whitespace-nowrap">公積金%</span>
+                            <input 
+                                type="number" min="0" max="100" step="5"
+                                className="w-10 border rounded px-1 py-0.5 text-center font-bold text-purple-600 text-sm outline-none focus:border-purple-500"
+                                value={poolRate}
+                                onChange={e => setPoolRate(Number(e.target.value))}
+                            />
+                        </div>
                         <button 
                             onClick={handleSaveSettings}
                             disabled={isSavingSettings}
-                            className="ml-1 p-1.5 bg-white border border-slate-300 rounded-md text-slate-500 hover:text-emerald-600 hover:border-emerald-300 transition-colors shadow-sm"
-                            title="儲存設定"
+                            className="ml-1 p-1.5 bg-white border border-slate-300 rounded text-slate-500 hover:text-emerald-600 hover:border-emerald-300 transition-colors shadow-sm"
+                            title="儲存為診所全域設定"
                         >
                             {isSavingSettings ? <Loader2 size={14} className="animate-spin"/> : <Save size={14} />}
                         </button>
@@ -445,6 +473,8 @@ export const AssistantBonus: React.FC<Props> = ({ clinics, consultants }) => {
                 staffId={selectedDetailStaff?.id || ''}
                 month={selectedMonth}
                 rawRows={rawRows}
+                selfPayRate={selfPayRate}
+                retailRate={retailRate}
             />
         </div>
     );

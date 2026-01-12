@@ -642,14 +642,118 @@ export const deleteSalaryAdjustment = async (id: string) => {
     await db.collection('salary_adjustments').doc(id).delete();
 };
 
-export const getBonusSettings = async (clinicId: string, month: string): Promise<any> => {
-    const doc = await db.collection('bonus_settings').doc(`${clinicId}_${month}`).get();
-    return doc.exists ? doc.data() : null;
+// --- BONUS SETTINGS (Global per Clinic) ---
+export const getBonusSettings = async (clinicId: string, _month?: string): Promise<any> => {
+    // New Architecture: Settings are global per clinic, stored in `_global` document.
+    // The `_month` parameter is kept for backward compatibility but ignored.
+    const id = `${clinicId}_global`;
+    const doc = await db.collection('bonus_settings').doc(id).get();
+    
+    if (doc.exists) {
+        return doc.data();
+    }
+    
+    // Return Default Values if not found
+    return { 
+        poolRate: 30, 
+        selfPayRate: 1, 
+        retailRate: 10 
+    };
 };
 
-export const saveBonusSettings = async (clinicId: string, month: string, settings: any) => {
-    await db.collection('bonus_settings').doc(`${clinicId}_${month}`).set(deepSanitize(settings), { merge: true });
+export const saveBonusSettings = async (clinicId: string, settings: any) => {
+    const id = `${clinicId}_global`;
+    await db.collection('bonus_settings').doc(id).set(deepSanitize(settings), { merge: true });
 };
+
+// --- SHARED BONUS CALCULATION LOGIC ---
+export const calculateMonthlyBonus = async (clinicId: string, yearMonth: string): Promise<Record<string, number>> => {
+    // 1. Load Settings (Global)
+    const settings = await getBonusSettings(clinicId);
+    const poolRate = Number(settings?.poolRate ?? 30);
+    const selfPayRate = Number(settings?.selfPayRate ?? 1);
+    const retailRate = Number(settings?.retailRate ?? 10);
+
+    // 2. Load Data
+    const [accountingRows, staffList] = await Promise.all([
+        getMonthlyAccounting(clinicId, yearMonth),
+        getStaffList(clinicId)
+    ]);
+
+    // 3. Filter Eligible Staff
+    // Consultant, trainee, assistant are potentially eligible for bonus calculation
+    const eligibleRoles = ['consultant', 'trainee', 'assistant'];
+    const activeStaff = staffList.filter(s => eligibleRoles.includes(s.role || 'consultant'));
+
+    const bonusMap: Record<string, number> = {};
+    let totalPool = 0;
+    let poolEligibleCount = 0;
+
+    // Intermediate calculation to determine pool contribution
+    const staffCalc = activeStaff.map(staff => {
+        let selfPayTotal = 0;
+        let retailTotal = 0;
+        const staffName = (staff.name || '').trim();
+
+        accountingRows.forEach(row => {
+            const t = row.treatments;
+            const r = row.retail;
+
+            // Self Pay Matching
+            const rowConsultant = (t.consultant || '').trim();
+            const isTreatmentMatch = (rowConsultant === staff.id || rowConsultant === staffName);
+            
+            const sp = (t.prostho || 0) + (t.implant || 0) + (t.ortho || 0) + 
+                       (t.sov || 0) + (t.perio || 0) + (t.whitening || 0) + 
+                       (t.inv || 0) + (t.otherSelfPay || 0);
+            
+            if (sp > 0 && isTreatmentMatch) {
+                selfPayTotal += sp;
+            }
+
+            // Retail Matching
+            const rowRetailer = (r.staff || t.consultant || '').trim();
+            const isRetailMatch = (rowRetailer === staff.id || rowRetailer === staffName);
+
+            const ret = (r.products || 0) + (r.diyWhitening || 0);
+            if (ret > 0 && isRetailMatch) {
+                retailTotal += ret;
+            }
+        });
+
+        // Base Calculation
+        const baseBonus = Math.round((selfPayTotal * (selfPayRate / 100)) + (retailTotal * (retailRate / 100)));
+        
+        // Pool Logic
+        // Only 'consultant' role participates in the pool split/contribution
+        const isConsultant = staff.role === 'consultant';
+        
+        let contribution = 0;
+        if (isConsultant) {
+            if (baseBonus > 0) contribution = Math.round(baseBonus * (poolRate / 100));
+            poolEligibleCount++;
+        }
+
+        totalPool += contribution;
+
+        return {
+            id: staff.id,
+            personalKeep: baseBonus - contribution,
+            isEligibleForPool: isConsultant
+        };
+    });
+
+    // 4. Distribute Pool
+    const sharePerPerson = poolEligibleCount > 0 ? Math.round(totalPool / poolEligibleCount) : 0;
+
+    staffCalc.forEach(s => {
+        const poolShare = s.isEligibleForPool ? sharePerPerson : 0;
+        bonusMap[s.id] = s.personalKeep + poolShare;
+    });
+
+    return bonusMap;
+};
+
 
 // --- CRM / PATIENT LOGIC ---
 

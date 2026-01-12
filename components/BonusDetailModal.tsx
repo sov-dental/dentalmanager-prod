@@ -1,3 +1,4 @@
+
 import React, { useMemo } from 'react';
 import { AccountingRow } from '../types';
 import { X, DollarSign, Stethoscope, ShoppingBag } from 'lucide-react';
@@ -9,9 +10,14 @@ interface Props {
     staffId: string;
     month: string;
     rawRows: AccountingRow[];
+    selfPayRate: number;
+    retailRate: number;
 }
 
-export const BonusDetailModal: React.FC<Props> = ({ isOpen, onClose, staffName, staffId, month, rawRows }) => {
+export const BonusDetailModal: React.FC<Props> = ({ 
+    isOpen, onClose, staffName, staffId, month, rawRows, 
+    selfPayRate, retailRate 
+}) => {
     if (!isOpen) return null;
 
     const { selfPayData, retailData, totals } = useMemo(() => {
@@ -20,7 +26,6 @@ export const BonusDetailModal: React.FC<Props> = ({ isOpen, onClose, staffName, 
         let selfPayTotal = 0;
         let retailTotal = 0;
 
-        // 正規化目標名字，避免空白鍵干擾
         const targetName = (staffName || '').trim();
 
         rawRows.forEach(row => {
@@ -30,7 +35,6 @@ export const BonusDetailModal: React.FC<Props> = ({ isOpen, onClose, staffName, 
                                (t.sov || 0) + (t.perio || 0) + (t.whitening || 0) + 
                                (t.inv || 0) + (t.otherSelfPay || 0);
             
-            // 雙重比對：ID 或 Name
             const rowConsultant = (t.consultant || '').trim();
             const isSelfPayMatch = (rowConsultant === staffId || rowConsultant === targetName);
             
@@ -43,10 +47,7 @@ export const BonusDetailModal: React.FC<Props> = ({ isOpen, onClose, staffName, 
             const r = row.retail;
             const retailSum = (r.products || 0) + (r.diyWhitening || 0);
             
-            // Logic matches AssistantBonus: Explicit Staff OR Fallback to Consultant
             const rowRetailer = (r.staff || t.consultant || '').trim();
-            
-            // 雙重比對：ID 或 Name
             const isRetailMatch = (rowRetailer === staffId || rowRetailer === targetName);
             
             if (retailSum > 0 && isRetailMatch) {
@@ -65,8 +66,8 @@ export const BonusDetailModal: React.FC<Props> = ({ isOpen, onClose, staffName, 
         selfPay.sort(sorter);
         retail.sort(sorter);
 
-        const selfPayBonus = Math.round(selfPayTotal * 0.01);
-        const retailBonus = Math.round(retailTotal * 0.1);
+        const selfPayBonus = Math.round(selfPayTotal * (selfPayRate / 100));
+        const retailBonus = Math.round(retailTotal * (retailRate / 100));
 
         return {
             selfPayData: selfPay,
@@ -79,7 +80,7 @@ export const BonusDetailModal: React.FC<Props> = ({ isOpen, onClose, staffName, 
                 grandTotalBonus: selfPayBonus + retailBonus
             }
         };
-    }, [rawRows, staffId, staffName]); // Added staffName to dependencies
+    }, [rawRows, staffId, staffName, selfPayRate, retailRate]); 
 
     const getRowDate = (r: AccountingRow) => (r.originalDate || r.startTime?.split('T')[0] || '-').slice(5);
 
@@ -107,7 +108,7 @@ export const BonusDetailModal: React.FC<Props> = ({ isOpen, onClose, staffName, 
                                 <Stethoscope size={18} /> 自費療程 (Self-Pay)
                             </h4>
                             <span className="text-xs font-bold text-indigo-400 bg-white px-2 py-1 rounded border border-indigo-100">
-                                獎金 1%
+                                獎金 {selfPayRate}%
                             </span>
                         </div>
                         <table className="w-full text-sm text-left">
@@ -142,7 +143,7 @@ export const BonusDetailModal: React.FC<Props> = ({ isOpen, onClose, staffName, 
                                     <td className="px-4 py-2 text-right">${totals.selfPayRevenue.toLocaleString()}</td>
                                 </tr>
                                 <tr>
-                                    <td colSpan={4} className="px-4 py-2 text-right text-xs uppercase tracking-wider opacity-70">獎金試算 (1%)</td>
+                                    <td colSpan={4} className="px-4 py-2 text-right text-xs uppercase tracking-wider opacity-70">獎金試算 ({selfPayRate}%)</td>
                                     <td className="px-4 py-2 text-right text-lg">${totals.selfPayBonus.toLocaleString()}</td>
                                 </tr>
                             </tfoot>
@@ -156,7 +157,7 @@ export const BonusDetailModal: React.FC<Props> = ({ isOpen, onClose, staffName, 
                                 <ShoppingBag size={18} /> 物販/小金庫 (Retail)
                             </h4>
                             <span className="text-xs font-bold text-orange-400 bg-white px-2 py-1 rounded border border-orange-100">
-                                獎金 10%
+                                獎金 {retailRate}%
                             </span>
                         </div>
                         <table className="w-full text-sm text-left">
@@ -193,7 +194,7 @@ export const BonusDetailModal: React.FC<Props> = ({ isOpen, onClose, staffName, 
                                     <td className="px-4 py-2 text-right">${totals.retailRevenue.toLocaleString()}</td>
                                 </tr>
                                 <tr>
-                                    <td colSpan={4} className="px-4 py-2 text-right text-xs uppercase tracking-wider opacity-70">獎金試算 (10%)</td>
+                                    <td colSpan={4} className="px-4 py-2 text-right text-xs uppercase tracking-wider opacity-70">獎金試算 ({retailRate}%)</td>
                                     <td className="px-4 py-2 text-right text-lg">${totals.retailBonus.toLocaleString()}</td>
                                 </tr>
                             </tfoot>

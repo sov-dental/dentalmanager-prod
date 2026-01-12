@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Consultant, DailySchedule, AccountingRow } from '../types';
 import { 
-    getStaffList, loadAppData, loadDailyAccounting, hydrateRow, getBonusSettings, getYearlySickLeaveCount, getMonthlyScheduleStats, getMonthlyMealStats
+    getStaffList, loadDailyAccounting, hydrateRow, getBonusSettings, getYearlySickLeaveCount, getMonthlyScheduleStats, getMonthlyMealStats, calculateMonthlyBonus
 } from '../services/firebase';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from '../components/ClinicSelector';
@@ -80,89 +80,16 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
         }
     }, [selectedClinicId, currentMonth]);
 
-    const fetchPerformanceBonus = async (consultants: Consultant[]) => {
-        const [year, month] = currentMonth.split('-').map(Number);
-        const daysInMonth = new Date(year, month, 0).getDate();
-        
-        const dailyPromises = [];
-        for (let d = 1; d <= daysInMonth; d++) {
-            const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-            dailyPromises.push(loadDailyAccounting(selectedClinicId, dateStr));
-        }
-        const dailyRecords = await Promise.all(dailyPromises);
-        
-        const allRows: AccountingRow[] = [];
-        dailyRecords.forEach(rec => {
-            if (rec && rec.rows) {
-                rec.rows.forEach(r => allRows.push(hydrateRow(r)));
-            }
-        });
-
-        const poolSettings = await getBonusSettings(selectedClinicId, currentMonth);
-        const poolRate = poolSettings?.poolRate ?? 30;
-
-        let poolTotal = 0;
-        let eligibleCount = 0;
-
-        const bonusMap: Record<string, { base: number, contribution: number, keep: number, role: string }> = {};
-
-        consultants.forEach(c => {
-            let selfPayTotal = 0;
-            let retailTotal = 0;
-            const staffName = (c.name || '').trim();
-
-            allRows.forEach(row => {
-                const t = row.treatments;
-                const r = row.retail;
-                const sp = (t.prostho || 0) + (t.implant || 0) + (t.ortho || 0) + 
-                           (t.sov || 0) + (t.perio || 0) + (t.whitening || 0) + 
-                           (t.inv || 0) + (t.otherSelfPay || 0);
-                if (sp > 0 && (t.consultant === c.id || t.consultant === staffName)) selfPayTotal += sp;
-
-                const ret = (r.products || 0) + (r.diyWhitening || 0);
-                const ownerId = r.staff || t.consultant;
-                if (ret > 0 && (ownerId === c.id || ownerId === staffName)) retailTotal += ret;
-            });
-
-            const baseBonus = Math.round((selfPayTotal * 0.01) + (retailTotal * 0.1));
-            const isConsultant = c.role === 'consultant';
-            
-            let contribution = 0;
-            if (isConsultant) {
-                if (baseBonus > 0) contribution = Math.round(baseBonus * (poolRate / 100));
-                eligibleCount++;
-            }
-
-            poolTotal += contribution;
-            bonusMap[c.id] = {
-                base: baseBonus,
-                contribution,
-                keep: baseBonus - contribution,
-                role: c.role || 'consultant'
-            };
-        });
-
-        const share = eligibleCount > 0 ? Math.round(poolTotal / eligibleCount) : 0;
-        
-        const finalBonusMap: Record<string, number> = {};
-        consultants.forEach(c => {
-            const data = bonusMap[c.id];
-            const isEligible = data.role === 'consultant';
-            finalBonusMap[c.id] = (data?.keep || 0) + (isEligible ? share : 0);
-        });
-
-        return finalBonusMap;
-    };
-
     const calculateSalary = async () => {
         setIsLoading(true);
         try {
             const staffList = await getStaffList(selectedClinicId);
             const targetStaff = staffList.filter(c => c.role !== 'part_time');
 
+            // 1. Get Scheduling Stats, Full Bonus Calculation, and Meal Stats in parallel
             const [monthStats, bonusMap, mealStats] = await Promise.all([
                 getMonthlyScheduleStats(selectedClinicId, currentMonth),
-                fetchPerformanceBonus(targetStaff),
+                calculateMonthlyBonus(selectedClinicId, currentMonth), // New shared function
                 getMonthlyMealStats(selectedClinicId, currentMonth)
             ]);
 
@@ -212,7 +139,10 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                 
                 const insurance = insuranceInputs[staff.id] !== undefined ? insuranceInputs[staff.id] : (staff.monthlyInsuranceCost || 0);
                 const adjustment = adjustmentInputs[staff.id] || 0;
+                
+                // Use the shared bonus map result
                 const performanceBonus = bonusMap[staff.id] || 0;
+                
                 const mealDeduction = mealStats[staff.id] || 0;
 
                 const netPay = totalBase - leaveDeduction + finalFullAttendanceBonus + sundayOTPay + regularOTPay + performanceBonus - mealDeduction - insurance + adjustment;
@@ -427,6 +357,7 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                         <li><strong>事假扣款:</strong> 薪資基數依 30 天比例扣薪。</li>
                         <li><strong>病假扣款:</strong> 薪資基數扣除半薪；全勤獎金每年享有 10 天緩衝，超過 10 天後開始按天數扣除。</li>
                         <li><strong>代扣餐費:</strong> 自動從每日帳務「餐費公積金」中匯總該員工的點餐費用。</li>
+                        <li><strong>績效獎金:</strong> 依據全域獎金設定與公積金比例自動計算 (與獎金頁面同步)。</li>
                     </ul>
                 </div>
             </div>

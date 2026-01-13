@@ -225,6 +225,17 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       return () => unsubscribe();
   }, [selectedClinicId, currentDate]);
 
+  // NEW: Handler for immediate local update from Modal to prevent stale state overwrite
+  const handleNPUpdate = useCallback((recordId: string, newData: Partial<NPRecord>) => {
+      setTodaysNPRecords(prev => {
+          const existing = prev[recordId] || {};
+          return {
+              ...prev,
+              [recordId]: { ...existing, ...newData } as NPRecord
+          };
+      });
+  }, []);
+
   const consultantOptions = useMemo(() => 
       fullStaffList.filter(c => c.role === 'consultant' || c.role === 'trainee'), 
   [fullStaffList]);
@@ -708,16 +719,23 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                       
                       if (isNPDetected) {
                           (newRow as any).isNP = true;
+                          // Use latest local NP data to prevent overwrite of fields like source/tag/status
+                          const existingNP = todaysNPRecords[newRow.id];
                           saveNPRecord(newRow.id, {
                               date: currentDate,
                               clinicId: selectedClinicId,
                               patientName: newRow.patientName.trim(),
                               treatment: newRow.treatmentContent || '',
-                              isVisited: false,
-                              isClosed: false,
-                              source: 'Line',
-                              marketingTag: '矯正諮詢',
+                              // Preserve existing values if present, else default
+                              isVisited: existingNP?.isVisited ?? false,
+                              isClosed: existingNP?.isClosed ?? false,
+                              dealAmount: existingNP?.dealAmount ?? 0,
+                              consultant: existingNP?.consultant ?? '',
+                              source: existingNP?.source || 'Line',
+                              marketingTag: existingNP?.marketingTag || '矯正諮詢',
                               calendarTreatment: newRow.calendarTreatment,
+                              calendarNote: existingNP?.calendarNote || '',
+                              note: existingNP?.note || '',
                               updatedAt: new Date().toISOString(),
                               isHidden: false 
                           }).catch(e => console.error("[AutoNP] Restoration failed:", e));
@@ -735,7 +753,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
       saveTimeoutRef.current = setTimeout(() => {
           persistData(rowsRef.current, expendituresRef.current, mealFundRef.current, mealExpensesRef.current, diffStringForEffect || undefined);
       }, 10000);
-  }, [isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, persistData]);
+  }, [isLocked, clinicDocs, selectedClinicId, realtimeSovReferrals, currentDate, persistData, todaysNPRecords]);
 
   const handleDeleteRow = useCallback(async (id: string) => {
       if (isLocked) return;
@@ -1204,6 +1222,7 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
                 clinicId={selectedClinicId} 
                 date={currentDate} 
                 onRevokeNP={() => handleRevokeNP(npModalData.row.id)}
+                onUpdate={handleNPUpdate}
             />
         )}
     </div>

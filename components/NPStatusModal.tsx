@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { AccountingRow, NPRecord } from '../types';
 import { getStaffList, saveNPRecord, getNPRecord, getMarketingTags, saveMarketingTags, db, deleteNPRecord } from '../services/firebase';
@@ -13,13 +14,13 @@ interface Props {
     clinicId: string;
     date: string;
     onRevokeNP?: () => void;
-    // Allow passing the full row for legacy support if needed, but we prefer explicit fields
+    onUpdate?: (recordId: string, data: Partial<NPRecord>) => void; // New Prop
     row?: any; 
 }
 
 const SOURCES = ['FB', 'Line', '電話', '小幫手', '介紹', '過路客', '官網', 'SOV轉介', '其他'];
 
-export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, recordId, patientName, calendarTreatment, actualTreatment, clinicId, date, onRevokeNP, row }) => {
+export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, recordId, patientName, calendarTreatment, actualTreatment, clinicId, date, onRevokeNP, onUpdate, row }) => {
     const [formData, setFormData] = useState<Partial<NPRecord>>({
         source: 'Line',
         marketingTag: '矯正諮詢',
@@ -131,6 +132,12 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, recordId, pati
             };
 
             await saveNPRecord(recordId, record);
+            
+            // Immediate Update Callback to Parent
+            if (onUpdate) {
+                onUpdate(recordId, record);
+            }
+
             onClose();
         } catch (e: any) {
             alert(`儲存失敗: ${e.message || '請檢查網路連線'}`);

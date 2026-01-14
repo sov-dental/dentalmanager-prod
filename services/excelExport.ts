@@ -79,9 +79,17 @@ export const exportDailyReportToExcel = async (
   }
 
   // C. Group/Sort by Doctor Name (Using filtered activeRows)
-  const sortedRows = [...activeRows].sort((a, b) => 
-      (a.doctorName || '').localeCompare(b.doctorName || '', 'zh-TW')
-  );
+  const sortedRows = [...activeRows].sort((a, b) => {
+    const isPublicA = a.doctorId === 'clinic_public' || a.doctorName?.includes('診所');
+    const isPublicB = b.doctorId === 'clinic_public' || b.doctorName?.includes('診所');
+
+    // 1. Public Doctor goes to bottom
+    if (isPublicA && !isPublicB) return 1;
+    if (!isPublicA && isPublicB) return -1;
+
+    // 2. Alphabetical Sort for others
+    return (a.doctorName || '').localeCompare(b.doctorName || '', 'zh-TW');
+  });
 
   // --- 1. Workbook Setup ---
   const workbook = new ExcelJS.Workbook();

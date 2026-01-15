@@ -1021,7 +1021,7 @@ export const unlockDailyReport = async (date: string, clinicId: string, user: {u
 
 export const checkPreviousUnlocked = async (currentDate: string, clinicId: string): Promise<string[]> => {
     const pastDate = new Date(currentDate); 
-    pastDate.setDate(pastDate.getDate() - 60);
+    pastDate.setDate(pastDate.getDate() - 14);
     const minDateStr = pastDate.toISOString().split('T')[0];
     
     const snap = await db.collection('daily_accounting')

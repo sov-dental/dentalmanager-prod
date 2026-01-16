@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, memo } from 'react';
 import { Clinic, Consultant, NPRecord, UserRole, ClinicMonthlySummary, AccountingRow, MonthlyTarget } from '../types';
 import { 
@@ -16,7 +17,7 @@ import {
     Trophy, Activity, Target, PieChart as PieChartIcon,
     Filter, LineChart, CheckCircle, ArrowUp, ArrowDown,
     Medal, Star, Trash2, Clock, AlertCircle, User, Info as InfoIcon,
-    Tag, MessageCircle, ShieldOff, RefreshCw, PlugZap, LayoutGrid
+    Tag, MessageCircle, ShieldOff, RefreshCw, PlugZap, LayoutGrid, CalendarDays
 } from 'lucide-react';
 import { 
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -46,6 +47,34 @@ const PIE_COLORS = ['#818cf8', '#8b5cf6', '#10b981', '#f59e0b', '#f43f5e', '#ec4
 const CLINIC_COLORS = ['#6366f1', '#a855f7', '#10b981', '#f59e0b', '#f43f5e', '#ec4899', '#06b6d4'];
 
 // --- MEMOIZED SUB-COMPONENTS ---
+
+const InlineTableInput = ({ value, onCommit, placeholder }: { value: string, onCommit: (val: string) => void, placeholder?: string }) => {
+    const [localValue, setLocalValue] = useState(value);
+    
+    useEffect(() => { setLocalValue(value); }, [value]);
+
+    const handleBlur = () => {
+        if (localValue !== value) onCommit(localValue);
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+        if (e.key === 'Enter') {
+            (e.target as HTMLInputElement).blur();
+        }
+    };
+
+    return (
+        <input 
+            className="w-full text-[11px] border-b border-transparent hover:border-indigo-300 focus:border-indigo-500 bg-transparent focus:bg-white px-1 py-1 outline-none transition-all font-bold text-indigo-700 placeholder:text-slate-300"
+            value={localValue}
+            onChange={e => setLocalValue(e.target.value)}
+            onBlur={handleBlur}
+            onKeyDown={handleKeyDown}
+            placeholder={placeholder}
+            onClick={e => e.stopPropagation()} 
+        />
+    );
+};
 
 const CustomTooltip = memo(({ active, payload, label, valuePrefix = '$', sortedClinics = [], isMarketing = false }: CustomTooltipProps) => {
     if (active && payload && payload.length) {
@@ -200,7 +229,7 @@ const SelfPayAchievementChart = memo(({ data }: any) => (
     <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11, fontWeights: 'bold' }} />
+            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11, fontWeight: 'bold' }} />
             <YAxis yAxisId="left" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10 }} tickFormatter={(v) => `$${v/1000}k`} />
             <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fill: '#f59e0b', fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
             <Tooltip 
@@ -220,7 +249,7 @@ const SelfPayBreakdownChart = memo(({ data }: any) => {
 
     const renderCustomLegend = (props: any) => {
         const { payload } = props;
-        if (!payload || payload.length === 0) return null; // Safety guard clause
+        if (!payload || payload.length === 0) return null;
 
         return (
             <ul className="flex flex-col gap-1.5 mt-4 max-h-48 overflow-y-auto custom-scrollbar pr-2">
@@ -341,19 +370,20 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
     const [currentMonth, setCurrentMonth] = useState<string>(new Date().toISOString().slice(0, 7));
     const [isLoading, setIsLoading] = useState(false);
     const [activeTab, setActiveTab] = useState<'revenue' | 'self-pay' | 'marketing'>('revenue');
+    
+    // Revenue Filters
     const [trendFilter, setTrendFilter] = useState('all');
     const [breakdownFilter, setBreakdownFilter] = useState('all');
-    const [marketingFilter, setMarketingFilter] = useState('all');
-    const [trendTagFilter, setTrendTagFilter] = useState('all');
-    
-    const [pieClinicFilter, setPieClinicFilter] = useState('all');
-    const [pieTagFilter, setPieTagFilter] = useState('all');
 
+    // Marketing Global Filters
+    const [globalFilterClinic, setGlobalFilterClinic] = useState('all');
+    const [globalFilterTag, setGlobalFilterTag] = useState('all');
     const [excludeNHI, setExcludeNHI] = useState(false);
+
     const [isSyncingNP, setIsSyncingNP] = useState(false);
     const [isGoogleLoggedIn, setIsGoogleLoggedIn] = useState(false);
 
-    // Column Filter States
+    // Column Filter States (for Raw Data Table)
     const [filterDate, setFilterDate] = useState('');
     const [filterClinic, setFilterClinic] = useState('');
     const [filterDoctor, setFilterDoctor] = useState('');
@@ -407,8 +437,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     return { clinicId: clinic.id, rows };
                 });
 
-                // FIX: Use explicit any type for await and cast the resulting tuple to ensure types are known
-                // This resolves errors where destructuring result of Promise.all on heterogeneous array results in 'unknown' type
                 const allData = (await Promise.all([
                     snapshotPromise, 
                     Promise.all(granularPromises), 
@@ -421,14 +449,13 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
 
                 const newRows: Record<string, AccountingRow[]> = {};
                 const newStaffMap: Record<string, string> = {};
-                // FIX: Cast granularResults elements to any during iteration to ensure access to clinicId, rows, and staff properties
+                
                 granularResults.forEach((res: any) => {
                     newRows[res.clinicId] = res.rows;
                     res.staff.forEach((s: any) => newStaffMap[s.id] = s.name);
                 });
 
                 const newPrevRows: Record<string, AccountingRow[]> = {};
-                // FIX: Cast prevGranularResults elements to any during iteration to ensure access to clinicId and rows properties
                 prevGranularResults.forEach((res: any) => {
                     newPrevRows[res.clinicId] = res.rows;
                 });
@@ -479,16 +506,57 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
 
     const getClinicName = (id: string) => clinics.find(c => c.id === id)?.name || id;
 
-    const availableMarketingTags = useMemo(() => {
-        const counts: Record<string, number> = {};
-        npRecords.forEach(r => {
-            const tag = r.marketingTag || '未分類';
-            counts[tag] = (counts[tag] || 0) + 1;
+    // --- MARKETING DASHBOARD DERIVED DATA ---
+
+    // 1. Base Records (Apply Global Exclusion first)
+    const baseRecords = useMemo(() => {
+        return npRecords.filter(r => {
+            if (excludeNHI && (r.marketingTag || '').includes('健保')) return false;
+            return true;
         });
-        return [...Object.entries(counts)]
-            .map(([tag, count]) => ({ tag, count }))
+    }, [npRecords, excludeNHI]);
+
+    // 2. Tag Options Logic: Filter by Clinic but NOT by Tag
+    const tagOptions = useMemo(() => {
+        const contextRecords = globalFilterClinic === 'all' 
+            ? baseRecords 
+            : baseRecords.filter(r => r.clinicId === globalFilterClinic);
+        
+        const stats: Record<string, { appt: number, visit: number, closed: number }> = {};
+        
+        contextRecords.forEach(r => {
+            const tag = r.marketingTag || '未分類';
+            if (!stats[tag]) stats[tag] = { appt: 0, visit: 0, closed: 0 };
+            
+            // Logic:
+            // Appt (Booked): date <= today
+            // Visit: isVisited
+            // Closed: isClosed
+            const today = new Date().toISOString().split('T')[0];
+            if (r.date <= today) {
+                stats[tag].appt++;
+                if (r.isVisited) stats[tag].visit++;
+                if (r.isClosed) stats[tag].closed++;
+            }
+        });
+
+        return Object.entries(stats)
+            .map(([tag, s]) => ({ 
+                tag, 
+                label: `${tag} (${s.appt}.${s.visit}.${s.closed})`,
+                count: s.appt 
+            }))
             .sort((a, b) => b.count - a.count);
-    }, [npRecords]);
+    }, [baseRecords, globalFilterClinic]);
+
+    // 3. Active Records (Applied ALL Global Filters) -> Use for ALL Charts
+    const activeRecords = useMemo(() => {
+        return baseRecords.filter(r => {
+            if (globalFilterClinic !== 'all' && r.clinicId !== globalFilterClinic) return false;
+            if (globalFilterTag !== 'all' && (r.marketingTag || '未分類') !== globalFilterTag) return false;
+            return true;
+        });
+    }, [baseRecords, globalFilterClinic, globalFilterTag]);
 
     const totals = useMemo(() => {
         const current = snapshot.current.reduce((acc, curr) => ({
@@ -499,9 +567,19 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         }), { revenue: 0, targetRevenue: 0, selfPay: 0, targetSelfPay: 0 });
         const prev = snapshot.lastMonth.reduce((acc, curr) => ({ revenue: acc.revenue + curr.actualRevenue, selfPay: acc.selfPay + curr.actualSelfPay, }), { revenue: 0, selfPay: 0 });
         const yearPrev = snapshot.lastYear.reduce((acc, curr) => ({ revenue: acc.revenue + curr.actualRevenue, selfPay: acc.selfPay + curr.actualSelfPay, }), { revenue: 0, selfPay: 0 });
-        const marketing = { leads: npRecords.length, visited: npRecords.filter(r => r.isVisited).length, closed: npRecords.filter(r => r.isClosed).length, };
+        
+        // NP Totals
+        const today = new Date().toISOString().split('T')[0];
+        const bookedRecords = activeRecords.filter(r => r.date <= today);
+        
+        const marketing = { 
+            leads: activeRecords.length,
+            pastAppointments: bookedRecords.length,
+            visited: bookedRecords.filter(r => r.isVisited).length, 
+            closed: bookedRecords.filter(r => r.isClosed).length, 
+        };
         return { current, prev, yearPrev, marketing };
-    }, [snapshot, npRecords]);
+    }, [snapshot, activeRecords]);
 
     const dailyTrendData = useMemo(() => {
         const [year, month] = currentMonth.split('-').map(Number);
@@ -526,6 +604,8 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         const [year, month] = currentMonth.split('-').map(Number);
         const daysInMonth = new Date(year, month, 0).getDate();
         const dataMap: Record<number, any> = {};
+        const today = new Date().toISOString().split('T')[0];
+
         for (let d = 1; d <= daysInMonth; d++) {
             dataMap[d] = { 
                 day: d, 
@@ -540,61 +620,51 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             });
         }
 
-        npRecords.forEach(r => {
-            // Apply Exclude NHI Filter
-            if (excludeNHI && r.marketingTag && r.marketingTag.includes('健保')) return;
-
-            if (trendTagFilter !== 'all' && (r.marketingTag || '未分類') !== trendTagFilter) return;
-            
+        // Use Active Records to respect global filters
+        activeRecords.forEach(r => {
             const d = parseInt(r.date.split('-')[2]);
             if (dataMap[d]) {
                 const cid = r.clinicId;
+                // Trend Chart Logic:
+                // Bar Height = Leads (Total records for that day)
+                // Tooltip Stats = Booked.Visited.Closed (Effective stats)
+                
+                // For Bar Height (Leads)
                 dataMap[d][`appt_${cid}`]++;
-                dataMap[d].total_appt++;
-                if (r.isVisited) {
-                    dataMap[d][`visit_${cid}`]++;
-                    dataMap[d].total_visit++;
-                }
-                if (r.isClosed) {
-                    dataMap[d][`closed_${cid}`]++;
-                    dataMap[d].total_closed++;
+                
+                // For Tooltip Stats (Booked/Visit/Closed)
+                if (r.date <= today) {
+                    dataMap[d].total_appt++;
+                    if (r.isVisited) {
+                        dataMap[d][`visit_${cid}`]++;
+                        dataMap[d].total_visit++;
+                    }
+                    if (r.isClosed) {
+                        dataMap[d][`closed_${cid}`]++;
+                        dataMap[d].total_closed++;
+                    }
                 }
             }
         });
 
-        // Compute string representations for tooltip stability
         Object.values(dataMap).forEach((dayData: any) => {
             clinics.forEach(c => {
-                const appt = dayData[`appt_${c.id}`] || 0;
+                // Bar value is total leads (appt_cid)
+                // Stats string is Booked.Visited.Closed
+                // Note: Booked count for a specific day is essentially the same as leads if date <= today
+                const leads = dayData[`appt_${c.id}`] || 0;
                 const visit = dayData[`visit_${c.id}`] || 0;
                 const closed = dayData[`closed_${c.id}`] || 0;
-                dayData[`${c.id}_stats`] = `${appt}.${visit}.${closed}`;
+                
+                // If date is future, visit/closed are 0. If past, leads = booked.
+                // We display Leads.Visits.Closed in tooltip
+                dayData[`${c.id}_stats`] = `${leads}.${visit}.${closed}`;
             });
             dayData['total_stats'] = `${dayData.total_appt}.${dayData.total_visit}.${dayData.total_closed}`;
         });
 
         return [...Object.values(dataMap)].sort((a, b) => a.day - b.day);
-    }, [npRecords, clinics, currentMonth, trendTagFilter, excludeNHI]);
-
-    const chartFilteredRecords = useMemo(() => {
-        return npRecords.filter(r => {
-            if (excludeNHI && (r.marketingTag || '').includes('健保')) return false;
-            return true;
-        });
-    }, [npRecords, excludeNHI]);
-
-    const trendTagOptions = useMemo(() => {
-        const records = (marketingFilter === 'all' ? chartFilteredRecords : chartFilteredRecords.filter(r => r.clinicId === marketingFilter));
-        const counts: Record<string, number> = {};
-        records.forEach(r => {
-            const tag = r.marketingTag || '未分類';
-            counts[tag] = (counts[tag] || 0) + 1;
-        });
-        return {
-            options: Object.entries(counts).map(([tag, count]) => ({ tag, count })).sort((a, b) => b.count - a.count),
-            total: records.length
-        };
-    }, [chartFilteredRecords, marketingFilter]);
+    }, [activeRecords, clinics, currentMonth]);
 
     const performanceMatrix = useMemo(() => {
         return [...snapshot.current]
@@ -690,16 +760,16 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         };
     }, [monthlyRows, prevMonthlyRows, clinics, breakdownFilter]);
 
+    // UPDATED: Marketing Funnel Logic (uses activeRecords)
     const marketingAnalytics = useMemo(() => {
-        const records = marketingFilter === 'all' ? chartFilteredRecords : chartFilteredRecords.filter(r => r.clinicId === marketingFilter);
-        const leads = records.length;
-        const visited = records.filter(r => r.isVisited).length;
-        const closed = records.filter(r => r.isClosed).length;
+        const records = activeRecords;
         
+        // 4. Update Funnel Chart Data
         const conversionData = [
-            { name: '約診 (Leads)', value: leads, fill: '#8884d8' }, 
-            { name: '到診 (Visited)', value: visited, fill: '#82ca9d' }, 
-            { name: '成交 (Closed)', value: closed, fill: '#ffc658' }
+            { name: '總進單', value: totals.marketing.leads, fill: '#818cf8' }, 
+            { name: '約診', value: totals.marketing.pastAppointments, fill: '#60a5fa' }, 
+            { name: '到診', value: totals.marketing.visited, fill: '#34d399' }, 
+            { name: '成交', value: totals.marketing.closed, fill: '#fbbf24' }
         ];
         
         const consultantMap: Record<string, { leads: number, visited: number, closed: number }> = {};
@@ -716,55 +786,48 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             .filter(c => c.name && c.name !== '未指定' && c.name !== 'Unknown')
             .sort((a,b) => b.closed - a.closed);
 
-        return { conversionData, scorecard, leads, visited, closed };
-    }, [chartFilteredRecords, marketingFilter, staffMap]);
-
-    const pieTagOptions = useMemo(() => {
-        const filtered = chartFilteredRecords.filter(r => pieClinicFilter === 'all' || r.clinicId === pieClinicFilter);
-        const counts: Record<string, number> = {};
-        filtered.forEach(r => {
-            const tag = r.marketingTag || '未分類';
-            counts[tag] = (counts[tag] || 0) + 1;
-        });
-        return {
-            options: Object.entries(counts).map(([tag, count]) => ({ tag, count })).sort((a, b) => b.count - a.count),
-            total: filtered.length
-        };
-    }, [chartFilteredRecords, pieClinicFilter]);
+        return { conversionData, scorecard };
+    }, [activeRecords, totals.marketing, staffMap]);
 
     const marketingPieData = useMemo(() => {
-        const filtered = chartFilteredRecords.filter(r => {
-            const clinicMatch = pieClinicFilter === 'all' || r.clinicId === pieClinicFilter;
-            const tagMatch = pieTagFilter === 'all' || (r.marketingTag || '未分類') === pieTagFilter;
-            return clinicMatch && tagMatch;
-        });
-
-        const totalFiltered = filtered.length;
+        const filtered = activeRecords;
+        const today = new Date().toISOString().split('T')[0];
+        
         const counts: Record<string, { value: number, visit: number, closed: number }> = {};
+        
         filtered.forEach(r => {
             const source = r.source || '未分類';
             if (!counts[source]) counts[source] = { value: 0, visit: 0, closed: 0 };
-            counts[source].value++;
-            if (r.isVisited) counts[source].visit++;
-            if (r.isClosed) counts[source].closed++;
+            
+            // Only count effective stats if date <= today
+            if (r.date <= today) {
+                counts[source].value++; // Booked
+                if (r.isVisited) counts[source].visit++;
+                if (r.isClosed) counts[source].closed++;
+            }
         });
 
         return [...Object.entries(counts)]
             .map(([name, stats]) => ({ 
                 name, 
                 ...stats, 
-                rate: totalFiltered > 0 ? (stats.value / totalFiltered) * 100 : 0 
+                // Rate based on Booked (value) -> Closed
+                rate: stats.value > 0 ? (stats.closed / stats.value) * 100 : 0 
             }))
             .sort((a, b) => b.value - a.value);
-    }, [chartFilteredRecords, pieClinicFilter, pieTagFilter]);
+    }, [activeRecords]);
 
     const filteredNpRecords = useMemo(() => {
         const today = new Date().toISOString().split('T')[0];
-        return npRecords.filter(r => {
+        // Start with activeRecords (Clinic, Tag, NHI filtered)
+        // Then apply remaining table filters
+        return activeRecords.filter(r => {
             if (filterDate && r.date !== filterDate) return false;
+            // Clinic & Tag filters already applied in activeRecords, but kept if user uses table column filters specifically
             if (filterClinic && getClinicName(r.clinicId) !== filterClinic) return false;
-            if (filterDoctor && (r.doctorName || r.doctor || '未指定') !== filterDoctor) return false;
             if (filterTag && (r.marketingTag || '未分類') !== filterTag) return false;
+            
+            if (filterDoctor && (r.doctorName || r.doctor || '未指定') !== filterDoctor) return false;
             if (filterConsultant && (staffMap[r.consultant || ''] || '未指定') !== filterConsultant) return false;
             if (filterSource && (r.source || '未分類') !== filterSource) return false;
             if (filterStatus) {
@@ -777,7 +840,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             }
             return true;
         }).sort((a: NPRecord, b: NPRecord) => (b.date || '').localeCompare(a.date || ''));
-    }, [npRecords, filterDate, filterClinic, filterDoctor, filterTag, filterConsultant, filterSource, filterStatus, staffMap]);
+    }, [activeRecords, filterDate, filterClinic, filterDoctor, filterTag, filterConsultant, filterSource, filterStatus, staffMap]);
 
     const filterOptions = useMemo(() => ({
         dates: Array.from<string>(new Set(npRecords.map(r => r.date || ''))).sort((a, b) => b.localeCompare(a)),
@@ -902,6 +965,14 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         }
     };
 
+    const handleInlineTreatmentChange = async (id: string, newTreatment: string) => {
+        try {
+            await updateNPRecord(id, { treatment: newTreatment });
+        } catch (e) {
+            console.error("Failed to update treatment", e);
+        }
+    };
+
     const handleTargetUpdate = async (clinicId: string, field: keyof MonthlyTarget, value: string) => {
         const numValue = parseInt(value) || 0;
         
@@ -964,7 +1035,16 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <KPICard title="總營收 (Total Revenue)" actual={totals.current.revenue} target={totals.current.targetRevenue} prev={totals.prev.revenue} yearPrev={totals.yearPrev.revenue} prefix="$" colorClass="text-indigo-600" isActive={activeTab === 'revenue'} onClick={() => setActiveTab('revenue')} icon={DollarSign} />
                 <KPICard title="自費營營 (Self-Pay)" actual={totals.current.selfPay} target={totals.current.targetSelfPay} prev={totals.prev.selfPay} yearPrev={totals.yearPrev.selfPay} prefix="$" colorClass="text-purple-600" isActive={activeTab === 'self-pay'} onClick={() => setActiveTab('self-pay')} icon={PieChartIcon} />
-                <KPICard title="NP 成交轉換 (NP Conversion)" actual={totals.marketing.closed} customRate={totals.marketing.leads > 0 ? (totals.marketing.closed / totals.marketing.leads) * 100 : 0} customSubtext={`進單: ${totals.marketing.leads} / 已報到: ${totals.marketing.visited}`} isActive={activeTab === 'marketing'} onClick={() => setActiveTab('marketing')} icon={Users} colorClass="text-emerald-600" />
+                <KPICard 
+                    title="NP 成交轉換 (Close Rate)" 
+                    actual={totals.marketing.closed} 
+                    customRate={totals.marketing.pastAppointments > 0 ? (totals.marketing.closed / totals.marketing.pastAppointments) * 100 : 0} 
+                    customSubtext={`進單: ${totals.marketing.leads} / 約診: ${totals.marketing.pastAppointments}`} 
+                    isActive={activeTab === 'marketing'} 
+                    onClick={() => setActiveTab('marketing')} 
+                    icon={Users} 
+                    colorClass="text-emerald-600" 
+                />
             </div>
 
             {/* Content Tabs */}
@@ -976,7 +1056,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                             <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-lg border">
                                 <Filter size={14} className="text-slate-400 ml-2" />
                                 <select className="bg-transparent text-xs font-black text-slate-600 py-1.5 px-2 outline-none cursor-pointer" value={trendFilter} onChange={e => setTrendFilter(e.target.value)}>
-                                    <option value="all">全集團 (Stacked)</option>
+                                    <option value="all">全集團</option>
                                     {sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                                 </select>
                             </div>
@@ -1213,31 +1293,62 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
 
             {activeTab === 'marketing' && (
                 <div className="space-y-6 animate-fade-in">
-                    {/* Filters Bar */}
-                    <div className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
-                         <div className="flex items-center gap-2">
-                            <div className="p-2 bg-rose-50 rounded-lg text-rose-600">
-                                <Filter size={18} />
+                    {/* GLOBAL FILTERS HEADER */}
+                    <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
+                         {/* Left: Filter Controls */}
+                         <div className="flex flex-col md:flex-row gap-4 w-full xl:w-auto">
+                            <div className="flex items-center gap-2 text-slate-700 font-bold bg-slate-50 px-3 py-2 rounded-lg border border-slate-100">
+                                <Filter size={18} className="text-indigo-500" />
+                                <span>全域篩選</span>
                             </div>
-                            <span className="font-bold text-slate-700">行銷數據篩選 (Filters)</span>
-                        </div>
-                         <div className="flex items-center gap-4">
-                            <button
-                                onClick={handleSyncNP}
-                                disabled={isSyncingNP}
-                                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold shadow-sm transition-all active:scale-95 ${isGoogleLoggedIn ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50'}`}
-                            >
-                                {isSyncingNP ? <Loader2 size={16} className="animate-spin" /> : isGoogleLoggedIn ? <RefreshCw size={16} /> : <PlugZap size={16} />}
-                                {isGoogleLoggedIn ? '同步本月 NP (Sync Calendar)' : '連結日曆以同步 NP'}
-                            </button>
-                            <label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 hover:border-indigo-300 transition-all select-none group">
+                            
+                            {/* Clinic Selector */}
+                            <div className="flex items-center gap-2">
+                                <label className="text-xs font-bold text-slate-500 uppercase">診所:</label>
+                                <select 
+                                    className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer min-w-[140px]"
+                                    value={globalFilterClinic}
+                                    onChange={e => setGlobalFilterClinic(e.target.value)}
+                                >
+                                    <option value="all">全集團</option>
+                                    {sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                </select>
+                            </div>
+
+                            {/* Tag Selector */}
+                            <div className="flex items-center gap-2">
+                                <label className="text-xs font-bold text-slate-500 uppercase">行銷:</label>
+                                <select 
+                                    className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer min-w-[140px]"
+                                    value={globalFilterTag}
+                                    onChange={e => setGlobalFilterTag(e.target.value)}
+                                >
+                                    <option value="all">全部標籤</option>
+                                    {tagOptions.map(({ tag, label }) => (
+                                        <option key={tag} value={tag}>{label}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {/* Exclude NHI Checkbox */}
+                            <label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 hover:border-indigo-300 transition-all select-none group">
                                 <input type="checkbox" checked={excludeNHI} onChange={e => setExcludeNHI(e.target.checked)} className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300" />
                                 <div className="flex items-center gap-1.5">
                                     <ShieldOff size={14} className={excludeNHI ? "text-rose-500" : "text-slate-400"} />
-                                    <span className={`text-sm font-black ${excludeNHI ? "text-indigo-600" : "text-slate-500"}`}>排除健保項目 (Exclude NHI)</span>
+                                    <span className={`text-sm font-black ${excludeNHI ? "text-indigo-600" : "text-slate-500"}`}>排除健保</span>
                                 </div>
                             </label>
                          </div>
+
+                         {/* Right: Sync Button */}
+                         <button
+                            onClick={handleSyncNP}
+                            disabled={isSyncingNP}
+                            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold shadow-sm transition-all active:scale-95 whitespace-nowrap ${isGoogleLoggedIn ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50'}`}
+                        >
+                            {isSyncingNP ? <Loader2 size={16} className="animate-spin" /> : isGoogleLoggedIn ? <RefreshCw size={16} /> : <PlugZap size={16} />}
+                            {isGoogleLoggedIn ? '同步本月 NP (Sync Calendar)' : '連結日曆以同步 NP'}
+                        </button>
                     </div>
 
                     {/* Row 1: Conversion Chart + Source Pie (Equal Height) */}
@@ -1249,49 +1360,34 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                 <MarketingConversionChart data={marketingAnalytics.conversionData} />
                              </div>
                              {/* Conversion Stats Summary */}
-                             <div className="grid grid-cols-3 gap-2 w-full mt-6 pt-6 border-t border-slate-50 shrink-0">
-                                <div className="text-center">
-                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">總約診</div>
-                                    <div className="text-xl font-black text-indigo-600 tabular-nums">{marketingAnalytics.leads}</div>
+                             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 w-full mt-6 pt-6 border-t border-slate-50 shrink-0">
+                                <div className="text-center border-r border-slate-100 pr-2">
+                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">總進單</div>
+                                    <div className="text-xl font-black text-indigo-600 tabular-nums">{totals.marketing.leads}</div>
                                 </div>
-                                <div className="text-center border-x border-slate-100">
+                                <div className="text-center border-r border-slate-100 pr-2">
+                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">約診單</div>
+                                    <div className="text-xl font-black text-blue-500 tabular-nums">{totals.marketing.pastAppointments}</div>
+                                </div>
+                                <div className="text-center border-r border-slate-100 pr-2">
                                     <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">到診率</div>
                                     <div className="text-xl font-black text-emerald-600 tabular-nums">
-                                        {marketingAnalytics.leads > 0 ? ((marketingAnalytics.visited / marketingAnalytics.leads) * 100).toFixed(0) : 0}%
+                                        {totals.marketing.pastAppointments > 0 ? ((totals.marketing.visited / totals.marketing.pastAppointments) * 100).toFixed(0) : 0}%
                                     </div>
                                 </div>
                                 <div className="text-center">
                                     <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">成交率</div>
                                     <div className="text-xl font-black text-pink-600 tabular-nums">
-                                        {marketingAnalytics.leads > 0 ? ((marketingAnalytics.closed / marketingAnalytics.leads) * 100).toFixed(0) : 0}%
+                                        {totals.marketing.pastAppointments > 0 ? ((totals.marketing.closed / totals.marketing.pastAppointments) * 100).toFixed(0) : 0}%
                                     </div>
                                 </div>
                              </div>
                         </div>
                         
-                        {/* Source Distribution with Side Legend */}
+                        {/* Source Distribution */}
                         <div className="lg:col-span-2 bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[400px]">
                             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 shrink-0 gap-4">
                                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><PieChartIcon className="text-indigo-500" /> 客群來源分佈 (Source)</h3>
-                                <div className="flex wrap gap-2 w-full sm:w-auto">
-                                    <div className="flex items-center gap-1.5 bg-slate-50 p-1 rounded-lg border">
-                                        <Tag size={12} className="text-slate-400 ml-1.5" />
-                                        <select className="bg-transparent text-[10px] font-black text-slate-600 py-1 px-1 outline-none cursor-pointer" value={pieTagFilter} onChange={e => setPieTagFilter(e.target.value)}>
-                                            <option value="all">全部標籤 ({pieTagOptions.total})</option>
-                                            {pieTagOptions.options.map(({ tag, count }) => (
-                                                <option key={tag} value={tag}>{tag} ({count})</option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                    <div className="flex items-center gap-1.5 bg-slate-50 p-1 rounded-lg border">
-                                        <Filter size={12} className="text-slate-400 ml-1.5" />
-                                        <select className="bg-transparent text-[10px] font-black text-slate-600 py-1 px-1 outline-none cursor-pointer" value={pieClinicFilter} onChange={e => setPieClinicFilter(e.target.value)}>
-                                            <option value="all">全集團診所</option>
-                                            {sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                        </select>
-                                    </div>
-
-                                </div>
                             </div>
                             <div className="flex flex-col md:flex-row items-center gap-8 flex-1 min-h-0">
                                 <div className="w-full md:w-1/2 h-full">
@@ -1322,7 +1418,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                                     <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }}></div>
                                                     <span className="font-bold text-slate-700 text-sm truncate max-w-[120px]">{d.name}</span>
                                                 </div>
-                                                <span className="text-xs font-black text-slate-500 tabular-nums whitespace-nowrap">
+                                                <span className="text-xs font-black text-slate-500 tabular-nums whitespace-nowrap" title="約診.到診.成交">
                                                     {d.value}.{d.visit}.{d.closed} <span className="text-slate-300 ml-1">({d.rate.toFixed(1)}%)</span>
                                                 </span>
                                             </div>
@@ -1333,35 +1429,17 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                         </div>
                     </div>
 
-                    {/* Row 2: Daily Marketing Trend with Tag Filter */}
+                    {/* Row 2: Daily Marketing Trend */}
                     <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
                             <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><LineChart className="text-indigo-500" size={22} /> 每日 NP 進單趨勢</h3>
-                            <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-                                <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-lg border">
-                                    <Tag size={14} className="text-slate-400 ml-2" />
-                                    <select className="bg-transparent text-xs font-black text-slate-600 py-1.5 px-2 outline-none cursor-pointer" value={trendTagFilter} onChange={e => setTrendTagFilter(e.target.value)}>
-                                        <option value="all">全部標籤 ({trendTagOptions.total})</option>
-                                        {trendTagOptions.options.map(({ tag, count }) => {
-                                            // UI Refinement: Respect Exclude NHI in Trend Chart Filter
-                                            if (excludeNHI && tag.includes('健保')) return null;
-                                            return (
-                                                <option key={tag} value={tag}>{tag} ({count})</option>
-                                            );
-                                        })}
-                                    </select>
-                                </div>
-                                <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-lg border">
-                                    <Filter size={14} className="text-slate-400 ml-2" />
-                                    <select className="bg-transparent text-xs font-black text-slate-600 py-1.5 px-2 outline-none cursor-pointer" value={marketingFilter} onChange={e => setMarketingFilter(e.target.value)}>
-                                        <option value="all">全集團 (Stacked)</option>
-                                        {sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                    </select>
-                                </div>
-                            </div>
                         </div>
                         <div className="h-80 w-full">
-                            <MarketingTrendChart data={marketingTrendData} sortedClinics={sortedClinics} filterId={marketingFilter} />
+                            <MarketingTrendChart 
+                                data={marketingTrendData} 
+                                sortedClinics={sortedClinics} 
+                                filterId={globalFilterClinic} // Pass the global clinic filter to chart
+                            />
                         </div>
                     </div>
 
@@ -1369,7 +1447,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                         <div className="p-6 border-b border-slate-50 flex items-center gap-2">
                              <Trophy className="text-amber-500" />
-                             <h3 className="font-bold text-slate-800 uppercase tracking-wider text-sm">諮詢師戰報 (Full List)</h3>
+                             <h3 className="font-bold text-slate-800 uppercase tracking-wider text-sm">諮詢師戰報 (Scorecard)</h3>
                         </div>
                         <div className="max-h-[400px] overflow-y-auto custom-scrollbar">
                             <table className="w-full text-sm text-left">
@@ -1423,6 +1501,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                         <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="診所" value={filterClinic} onChange={setFilterClinic} options={filterOptions.clinics} /></th>
                                         <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="醫師" value={filterDoctor} onChange={setFilterDoctor} options={filterOptions.doctors} /></th>
                                         <th className="px-4 py-4 font-bold text-slate-400 text-[10px] uppercase min-w-[150px]">預約療程</th>
+                                        <th className="px-4 py-4 font-bold text-slate-400 text-[10px] uppercase min-w-[150px]">實際療程 (Actual)</th>
                                         <th className="px-4 py-4 w-[160px]"><TableHeaderFilter label="行銷標籤" value={filterTag} onChange={setFilterTag} options={marketingTags} /></th>
                                         <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="諮詢師" value={filterConsultant} onChange={setFilterConsultant} options={filterOptions.consultants} /></th>
                                         <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="來源" value={filterSource} onChange={setFilterSource} options={filterOptions.sources} /></th>
@@ -1438,6 +1517,13 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                             <td className="px-4 py-4 text-slate-500 font-bold text-xs">{getClinicName(r.clinicId)}</td>
                                             <td className="px-4 py-3 text-slate-600 text-xs font-medium">{r.doctorName || r.doctor || '未指定'}</td>
                                             <td className="px-4 py-4 text-slate-400 text-[11px] truncate max-w-[150px]" title={r.calendarTreatment}>{r.calendarTreatment || '-'}</td>
+                                            <td className="px-4 py-4">
+                                                <InlineTableInput 
+                                                    value={r.treatment || ''} 
+                                                    onCommit={(val) => handleInlineTreatmentChange(r.id!, val)}
+                                                    placeholder={r.calendarTreatment}
+                                                />
+                                            </td>
                                             <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
                                                 <select 
                                                     className="w-full text-[11px] border border-indigo-100 rounded bg-white px-1 py-1 font-bold text-indigo-700 outline-none focus:ring-1 focus:ring-indigo-400"
@@ -1466,7 +1552,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                     ))}
                                     {filteredNpRecords.length === 0 && (
                                         <tr>
-                                            <td colSpan={10} className="p-12 text-center text-slate-400">
+                                            <td colSpan={11} className="p-12 text-center text-slate-400">
                                                 本月尚無符合條件的 NP 資料。
                                             </td>
                                         </tr>

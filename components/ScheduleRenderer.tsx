@@ -85,7 +85,11 @@ export const ScheduleRenderer: React.FC<ScheduleRendererProps> = ({
     };
 
     const renderCellContent = (schedule: DailySchedule | undefined, isClosed: boolean | undefined, isSunday: boolean) => {
-        if (isSunday || isClosed) {
+        // Logic Update: Check for shifts FIRST (Priority 1)
+        const hasShifts = schedule && SHIFTS.some(shift => (schedule.shifts[shift] || []).length > 0);
+
+        // If NO shifts are present, check for Closed/Sunday status (Priority 2)
+        if (!hasShifts && (isSunday || isClosed)) {
             const closedColor = isSunday ? palette.weekend.sunday : (palette.weekend.sunday || '#f43f5e');
             return (
                 <div className="flex-1 w-full flex items-center justify-center">

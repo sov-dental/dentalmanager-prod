@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Doctor, DailySchedule, ShiftType, DayOfWeek } from '../types';
 import { ChevronLeft, ChevronRight, RefreshCw, X, ChevronDown, Download, HelpCircle, Loader2, Image as ImageIcon } from 'lucide-react';
@@ -529,14 +530,16 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
                      {days.map(day => {
                          const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
                          const schedule = schedules.find(s => s.date === dateStr && s.clinicId === selectedClinicId);
-                         const isClosed = schedule?.isClosed;
                          
                          const dateObj = new Date(year, month, day);
+                         const isSunday = dateObj.getDay() === 0;
                          const dayOfWeekStr = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'][dateObj.getDay()];
 
-                         // Consolidate Doctor Shifts
+                         // Consolidate Doctor Shifts - Logic Update:
+                         // We extract shifts FIRST, ignoring 'isClosed' flag initially to check for presence of shifts.
+                         // This ensures that if a day is marked closed but has shifts, we know about it.
                          const doctorMap = new Map<string, Set<ShiftType>>();
-                         if (schedule && !isClosed) {
+                         if (schedule && schedule.shifts) {
                              SHIFTS.forEach(shift => {
                                  const shiftList = schedule.shifts[shift] || [];
                                  shiftList.forEach(docId => {
@@ -545,6 +548,13 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
                                  });
                              });
                          }
+                         
+                         const hasShifts = doctorMap.size > 0;
+                         
+                         // Determine Effective Closed State:
+                         // 1. If shifts exist, it is NOT closed (Priority 1).
+                         // 2. If no shifts, and it is Sunday OR marked closed, then it is Closed (Priority 2).
+                         const displayClosed = !hasShifts && (isSunday || schedule?.isClosed);
 
                          return (
                              <div 
@@ -555,7 +565,7 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
                                     w-full h-auto p-4 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col gap-2
                                     md:w-auto md:min-h-[140px] md:h-auto md:p-2 md:rounded-none md:shadow-none md:border-0 md:border-b md:border-r md:border-slate-100 md:block md:gap-0
                                     
-                                    ${isClosed ? 'bg-slate-50 md:bg-slate-50' : 'hover:border-blue-400 md:hover:bg-blue-50/50'}
+                                    ${displayClosed ? 'bg-slate-50 md:bg-slate-50' : 'hover:border-blue-400 md:hover:bg-blue-50/50'}
                                 `}
                              >
                                 {/* Mobile Date Header */}
@@ -563,21 +573,21 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
                                     <span className="font-bold text-slate-800 text-lg">
                                         {month + 1}/{day} <span className="text-sm font-normal text-slate-500 ml-1">{dayOfWeekStr}</span>
                                     </span>
-                                    {isClosed && <span className="text-xs font-bold text-rose-500 bg-rose-50 px-2 py-1 rounded">休診</span>}
+                                    {displayClosed && <span className="text-xs font-bold text-rose-500 bg-rose-50 px-2 py-1 rounded">休診</span>}
                                 </div>
 
                                 {/* Desktop Date Number */}
-                                <span className={`hidden md:block text-sm font-medium mb-1 ${isClosed ? 'text-slate-400' : 'text-slate-700'}`}>{day}</span>
+                                <span className={`hidden md:block text-sm font-medium mb-1 ${displayClosed ? 'text-slate-400' : 'text-slate-700'}`}>{day}</span>
                                 
                                 {/* Desktop Closed Overlay */}
-                                {schedule && isClosed && (
+                                {displayClosed && (
                                     <div className="hidden md:flex absolute inset-0 items-center justify-center pointer-events-none">
                                         <span className="text-rose-500 font-bold text-xl tracking-widest">休診</span>
                                     </div>
                                 )}
                                 
                                 {/* Content */}
-                                {schedule && !isClosed && (
+                                {hasShifts && (
                                     <div className="flex flex-col gap-1">
                                         {Array.from(doctorMap.entries()).map(([docId, shifts]) => {
                                             const doc = doctors.find(d => d.id === docId);
@@ -610,7 +620,7 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
                                     </div>
                                 )}
                                 
-                                {schedule && !isClosed && doctorMap.size === 0 && (
+                                {!hasShifts && !displayClosed && schedule && (
                                     <div className="md:hidden text-slate-400 italic text-sm">暫無排班</div>
                                 )}
 

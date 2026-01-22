@@ -1,11 +1,11 @@
 
-import React, { useState, useEffect, useMemo, memo } from 'react';
-import { Clinic, Consultant, NPRecord, UserRole, ClinicMonthlySummary, AccountingRow, MonthlyTarget } from '../types';
+import React, { useState, useEffect, useMemo, memo, useCallback } from 'react';
+import { Clinic, NPRecord, UserRole, ClinicMonthlySummary, AccountingRow, MonthlyTarget } from '../types';
 import { 
     fetchDashboardSnapshot, auth, 
     getMonthlyAccounting, CLINIC_ORDER, 
     getStaffList, db,
-    saveMonthlyTarget, deleteNPRecord, updateNPRecord, getMarketingTags, saveNPRecord
+    saveMonthlyTarget, deleteNPRecord, updateNPRecord, getMarketingTags, saveNPRecord, saveMarketingTags
 } from '../services/firebase';
 import { listEvents, initGoogleClient, authorizeCalendar } from '../services/googleCalendar';
 import { parseCalendarEvent, parseSourceFromNote } from '../utils/eventParser';
@@ -15,9 +15,8 @@ import {
     BarChart2, TrendingUp, Users, DollarSign, Calendar, 
     ArrowUpRight, ArrowDownRight, Loader2, 
     Trophy, Activity, Target, PieChart as PieChartIcon,
-    Filter, LineChart, CheckCircle, ArrowUp, ArrowDown,
-    Medal, Star, Trash2, Clock, AlertCircle, User, Info as InfoIcon,
-    Tag, MessageCircle, ShieldOff, RefreshCw, PlugZap, LayoutGrid, CalendarDays
+    Filter, LineChart, CheckCircle, Medal, Star, Trash2, Clock, AlertCircle, Info as InfoIcon,
+    Tag, MessageCircle, ShieldOff, RefreshCw, PlugZap, LayoutGrid
 } from 'lucide-react';
 import { 
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -36,7 +35,6 @@ interface CustomTooltipProps {
     payload?: any[];
     label?: string;
     valuePrefix?: string;
-    isCount?: boolean;
     sortedClinics?: Clinic[];
     isMarketing?: boolean;
 }
@@ -48,7 +46,7 @@ const CLINIC_COLORS = ['#6366f1', '#a855f7', '#10b981', '#f59e0b', '#f43f5e', '#
 
 // --- MEMOIZED SUB-COMPONENTS ---
 
-const InlineTableInput = ({ value, onCommit, placeholder }: { value: string, onCommit: (val: string) => void, placeholder?: string }) => {
+const InlineTableInput = memo(({ value, onCommit, placeholder }: { value: string, onCommit: (val: string) => void, placeholder?: string }) => {
     const [localValue, setLocalValue] = useState(value);
     
     useEffect(() => { setLocalValue(value); }, [value]);
@@ -74,17 +72,16 @@ const InlineTableInput = ({ value, onCommit, placeholder }: { value: string, onC
             onClick={e => e.stopPropagation()} 
         />
     );
-};
+});
 
 const CustomTooltip = memo(({ active, payload, label, valuePrefix = '$', sortedClinics = [], isMarketing = false }: CustomTooltipProps) => {
     if (active && payload && payload.length) {
         if (isMarketing) {
-            // Read from the raw data object stored in the first entry of the payload
             const dayData = payload[0].payload;
             const totalStats = dayData.total_stats || '0.0.0';
 
             return (
-                <div className="bg-white p-3 border border-slate-200 shadow-xl rounded-xl text-xs min-w-[200px]">
+                <div className="bg-white p-3 border border-slate-200 shadow-xl rounded-xl text-xs min-w-[200px] z-50">
                     <div className="font-black text-slate-800 mb-2 border-b border-slate-100 pb-2">
                         <div className="flex justify-between items-center mb-1">
                             <span>第 {label} 日</span>
@@ -119,7 +116,7 @@ const CustomTooltip = memo(({ active, payload, label, valuePrefix = '$', sortedC
         const total = payload.reduce((sum: number, entry: any) => sum + (Number(entry.value) || 0), 0);
 
         return (
-            <div className="bg-white p-3 border border-slate-200 shadow-xl rounded-xl text-xs min-w-[200px]">
+            <div className="bg-white p-3 border border-slate-200 shadow-xl rounded-xl text-xs min-w-[200px] z-50">
                 <div className="font-black text-slate-800 mb-2 border-b border-slate-100 pb-2">
                     <div className="flex justify-between items-center mb-1">
                         <span>第 {label} 日</span>
@@ -353,7 +350,12 @@ const MarketingConversionChart = memo(({ data }: any) => (
 const TableHeaderFilter = memo(({ label, value, onChange, options }: any) => (
     <div className="flex flex-col gap-1 w-full">
         <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{label}</span>
-        <select className="w-full text-xs border border-slate-200 rounded px-2 py-1 bg-slate-50 text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 transition-all font-bold" value={value} onChange={(e) => onChange(e.target.value)} onClick={(e) => e.stopPropagation()}>
+        <select 
+            className="w-full text-xs border border-slate-200 rounded px-2 py-1 bg-slate-50 text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 transition-all font-bold cursor-pointer" 
+            value={value} 
+            onChange={(e) => onChange(e.target.value)} 
+            onClick={(e) => e.stopPropagation()}
+        >
             <option value="">全部</option>
             {Array.isArray(options) && options.map((opt: any) => <option key={String(opt)} value={String(opt)}>{String(opt)}</option>)}
         </select>
@@ -363,6 +365,7 @@ const TableHeaderFilter = memo(({ label, value, onChange, options }: any) => (
 // --- MAIN COMPONENT ---
 
 export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
+    // 1. Access Control
     if (!['admin', 'manager'].includes(userRole || '')) {
         return <UnauthorizedPage email={auth.currentUser?.email} onLogout={() => auth.signOut()} />;
     }
@@ -375,7 +378,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
     const [trendFilter, setTrendFilter] = useState('all');
     const [breakdownFilter, setBreakdownFilter] = useState('all');
 
-    // Marketing Global Filters
+    // Marketing Global Filters (Moved to state, but processing moved to useMemo)
     const [globalFilterClinic, setGlobalFilterClinic] = useState('all');
     const [globalFilterTag, setGlobalFilterTag] = useState('all');
     const [excludeNHI, setExcludeNHI] = useState(false);
@@ -392,6 +395,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
     const [filterSource, setFilterSource] = useState('');
     const [filterStatus, setFilterStatus] = useState('');
 
+    // Sort Clinics Stable Reference
     const sortedClinics = useMemo(() => {
         return [...clinics].sort((a, b) => (CLINIC_ORDER[a.name] ?? 999) - (CLINIC_ORDER[b.name] ?? 999));
     }, [clinics]);
@@ -399,12 +403,15 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
     const [snapshot, setSnapshot] = useState<{ current: ClinicMonthlySummary[], lastMonth: ClinicMonthlySummary[], lastYear: ClinicMonthlySummary[] }>({ current: [], lastMonth: [], lastYear: [] });
     const [monthlyRows, setMonthlyRows] = useState<Record<string, AccountingRow[]>>({});
     const [prevMonthlyRows, setPrevMonthlyRows] = useState<Record<string, AccountingRow[]>>({});
+    
+    // NP Records State - Source of Truth
     const [npRecords, setNpRecords] = useState<NPRecord[]>([]);
+    
     const [staffMap, setStaffMap] = useState<Record<string, string>>({}); 
     const [marketingTags, setMarketingTags] = useState<string[]>([]);
     const [editingNP, setEditingNP] = useState<NPRecord | null>(null);
 
-    // Google API Init
+    // Google API & Tags Init
     useEffect(() => {
         initGoogleClient(
             () => {},
@@ -413,7 +420,10 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         getMarketingTags().then(setMarketingTags);
     }, []);
 
-    // Main Data Load (Static Snapshots)
+    // 1. Static Data Load (Revenue & Targets)
+    // Depends on [currentMonth] + clinics (using length/ids to prevent deep ref trigger)
+    const clinicIdSignature = clinics.map(c => c.id).join(',');
+    
     useEffect(() => {
         if (!clinics.length) return;
 
@@ -472,9 +482,10 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         };
 
         loadStaticData();
-    }, [currentMonth, clinics]);
+    }, [currentMonth, clinicIdSignature]); // Stable dependency
 
-    // NP Real-time Listener (Source of Truth for NP Dashboard)
+    // 2. Real-time NP Listener
+    // Trigger ONLY on month change or clinic list change (using ID signature)
     useEffect(() => {
         if (!clinics.length || !currentMonth) return;
         
@@ -482,6 +493,8 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         const startStr = `${year}-${String(monthVal).padStart(2, '0')}-01`;
         const endStr = `${year}-${String(monthVal).padStart(2, '0')}-31`;
         const allowedIds = new Set(clinics.map(c => c.id));
+
+        console.log(`[GroupDashboard] Subscribing to NP Records: ${startStr} to ${endStr}`);
 
         const unsubscribeNP = db.collection('np_records')
             .where('date', '>=', startStr)
@@ -500,13 +513,14 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             });
 
         return () => {
+            console.log("[GroupDashboard] Unsubscribing NP Records");
             unsubscribeNP();
         };
-    }, [currentMonth, clinics]);
+    }, [currentMonth, clinicIdSignature]); // Stable dependency
 
     const getClinicName = (id: string) => clinics.find(c => c.id === id)?.name || id;
 
-    // --- MARKETING DASHBOARD DERIVED DATA ---
+    // --- DERIVED DATA (MEMOIZED) ---
 
     // 1. Base Records (Apply Global Exclusion first)
     const baseRecords = useMemo(() => {
@@ -516,23 +530,19 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         });
     }, [npRecords, excludeNHI]);
 
-    // 2. Tag Options Logic: Filter by Clinic but NOT by Tag
+    // 2. Tag Options (Dependent only on baseRecords and clinic filter)
     const tagOptions = useMemo(() => {
         const contextRecords = globalFilterClinic === 'all' 
             ? baseRecords 
             : baseRecords.filter(r => r.clinicId === globalFilterClinic);
         
         const stats: Record<string, { appt: number, visit: number, closed: number }> = {};
+        const today = new Date().toISOString().split('T')[0];
         
         contextRecords.forEach(r => {
             const tag = r.marketingTag || '未分類';
             if (!stats[tag]) stats[tag] = { appt: 0, visit: 0, closed: 0 };
             
-            // Logic:
-            // Appt (Booked): date <= today
-            // Visit: isVisited
-            // Closed: isClosed
-            const today = new Date().toISOString().split('T')[0];
             if (r.date <= today) {
                 stats[tag].appt++;
                 if (r.isVisited) stats[tag].visit++;
@@ -549,7 +559,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             .sort((a, b) => b.count - a.count);
     }, [baseRecords, globalFilterClinic]);
 
-    // 3. Active Records (Applied ALL Global Filters) -> Use for ALL Charts
+    // 3. Active Records (Fully Filtered for Charts)
     const activeRecords = useMemo(() => {
         return baseRecords.filter(r => {
             if (globalFilterClinic !== 'all' && r.clinicId !== globalFilterClinic) return false;
@@ -558,6 +568,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         });
     }, [baseRecords, globalFilterClinic, globalFilterTag]);
 
+    // 4. Totals Calculation
     const totals = useMemo(() => {
         const current = snapshot.current.reduce((acc, curr) => ({
             revenue: acc.revenue + curr.actualRevenue,
@@ -581,6 +592,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         return { current, prev, yearPrev, marketing };
     }, [snapshot, activeRecords]);
 
+    // 5. Daily Trend Data (Revenue)
     const dailyTrendData = useMemo(() => {
         const [year, month] = currentMonth.split('-').map(Number);
         const daysInMonth = new Date(year, month, 0).getDate();
@@ -600,6 +612,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         return [...Object.values(dataMap)].sort((a, b) => a.day - b.day);
     }, [monthlyRows, clinics, currentMonth]);
 
+    // 6. Marketing Trend Data (NP)
     const marketingTrendData = useMemo(() => {
         const [year, month] = currentMonth.split('-').map(Number);
         const daysInMonth = new Date(year, month, 0).getDate();
@@ -607,12 +620,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         const today = new Date().toISOString().split('T')[0];
 
         for (let d = 1; d <= daysInMonth; d++) {
-            dataMap[d] = { 
-                day: d, 
-                total_appt: 0, 
-                total_visit: 0, 
-                total_closed: 0 
-            };
+            dataMap[d] = { day: d, total_appt: 0, total_visit: 0, total_closed: 0 };
             clinics.forEach(c => {
                 dataMap[d][`appt_${c.id}`] = 0;
                 dataMap[d][`visit_${c.id}`] = 0;
@@ -620,19 +628,11 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             });
         }
 
-        // Use Active Records to respect global filters
         activeRecords.forEach(r => {
             const d = parseInt(r.date.split('-')[2]);
             if (dataMap[d]) {
                 const cid = r.clinicId;
-                // Trend Chart Logic:
-                // Bar Height = Leads (Total records for that day)
-                // Tooltip Stats = Booked.Visited.Closed (Effective stats)
-                
-                // For Bar Height (Leads)
                 dataMap[d][`appt_${cid}`]++;
-                
-                // For Tooltip Stats (Booked/Visit/Closed)
                 if (r.date <= today) {
                     dataMap[d].total_appt++;
                     if (r.isVisited) {
@@ -649,15 +649,9 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
 
         Object.values(dataMap).forEach((dayData: any) => {
             clinics.forEach(c => {
-                // Bar value is total leads (appt_cid)
-                // Stats string is Booked.Visited.Closed
-                // Note: Booked count for a specific day is essentially the same as leads if date <= today
                 const leads = dayData[`appt_${c.id}`] || 0;
                 const visit = dayData[`visit_${c.id}`] || 0;
                 const closed = dayData[`closed_${c.id}`] || 0;
-                
-                // If date is future, visit/closed are 0. If past, leads = booked.
-                // We display Leads.Visits.Closed in tooltip
                 dayData[`${c.id}_stats`] = `${leads}.${visit}.${closed}`;
             });
             dayData['total_stats'] = `${dayData.total_appt}.${dayData.total_visit}.${dayData.total_closed}`;
@@ -666,6 +660,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         return [...Object.values(dataMap)].sort((a, b) => a.day - b.day);
     }, [activeRecords, clinics, currentMonth]);
 
+    // 7. Performance Matrix
     const performanceMatrix = useMemo(() => {
         return [...snapshot.current]
             .sort((a, b) => (CLINIC_ORDER[a.clinicName] ?? 999) - (CLINIC_ORDER[b.clinicName] ?? 999))
@@ -688,6 +683,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         return [...performanceMatrix].sort((a: any, b: any) => b.revenueRate - a.revenueRate);
     }, [performanceMatrix]);
 
+    // 8. Self-Pay Analytics
     const selfPayAnalytics = useMemo(() => {
         const keys = ['implant', 'ortho', 'prostho', 'sov', 'inv', 'whitening', 'perio', 'otherSelfPay', 'retail'] as const;
         const labels = ['植牙', '矯正', '假牙', 'SOV', 'INV', '美白', '牙周', '其他', '物販/小金庫'];
@@ -700,7 +696,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             clinicBreakdown[c.id] = { name: c.name, current: keys.map(() => 0), prev: keys.map(() => 0), total: 0 };
         });
 
-        // 1. Process Current Month
         Object.entries(monthlyRows).forEach(([cid, rows]) => {
             if (!clinicBreakdown[cid]) return;
             rows.forEach(row => {
@@ -719,7 +714,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             });
         });
 
-        // 2. Process Previous Month
         Object.entries(prevMonthlyRows).forEach(([cid, rows]) => {
             if (!clinicBreakdown[cid]) return;
             rows.forEach(row => {
@@ -736,20 +730,13 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         });
 
         const pieData = keys.map((k, i) => ({ name: labels[i], value: globalCurrentTotals[i] })).filter(d => d.value > 0);
-        
         const grandSumCurrent = globalCurrentTotals.reduce((a, b) => a + b, 0);
         const grandSumPrev = globalPrevTotals.reduce((a, b) => a + b, 0);
-
-        const getGrowth = (curr: number, prev: number) => {
-            if (prev === 0) return curr > 0 ? 100 : 0;
-            return ((curr - prev) / prev) * 100;
-        };
-
+        const getGrowth = (curr: number, prev: number) => (prev === 0 ? (curr > 0 ? 100 : 0) : ((curr - prev) / prev) * 100);
         const sortedClinicData = Object.values(clinicBreakdown).sort((a, b) => (CLINIC_ORDER[a.name] ?? 999) - (CLINIC_ORDER[b.name] ?? 999));
 
         return { 
-            pieData, labels, 
-            clinicMatrix: sortedClinicData,
+            pieData, labels, clinicMatrix: sortedClinicData,
             summary: {
                 current: globalCurrentTotals,
                 growth: keys.map((_, i) => getGrowth(globalCurrentTotals[i], globalPrevTotals[i])),
@@ -760,11 +747,9 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         };
     }, [monthlyRows, prevMonthlyRows, clinics, breakdownFilter]);
 
-    // UPDATED: Marketing Funnel Logic (uses activeRecords)
+    // 9. Marketing Analytics
     const marketingAnalytics = useMemo(() => {
         const records = activeRecords;
-        
-        // 4. Update Funnel Chart Data
         const conversionData = [
             { name: '總進單', value: totals.marketing.leads, fill: '#818cf8' }, 
             { name: '約診', value: totals.marketing.pastAppointments, fill: '#60a5fa' }, 
@@ -789,44 +774,34 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         return { conversionData, scorecard };
     }, [activeRecords, totals.marketing, staffMap]);
 
+    // 10. Marketing Pie
     const marketingPieData = useMemo(() => {
         const filtered = activeRecords;
         const today = new Date().toISOString().split('T')[0];
-        
         const counts: Record<string, { value: number, visit: number, closed: number }> = {};
         
         filtered.forEach(r => {
             const source = r.source || '未分類';
             if (!counts[source]) counts[source] = { value: 0, visit: 0, closed: 0 };
-            
-            // Only count effective stats if date <= today
             if (r.date <= today) {
-                counts[source].value++; // Booked
+                counts[source].value++;
                 if (r.isVisited) counts[source].visit++;
                 if (r.isClosed) counts[source].closed++;
             }
         });
 
         return [...Object.entries(counts)]
-            .map(([name, stats]) => ({ 
-                name, 
-                ...stats, 
-                // Rate based on Booked (value) -> Closed
-                rate: stats.value > 0 ? (stats.closed / stats.value) * 100 : 0 
-            }))
+            .map(([name, stats]) => ({ name, ...stats, rate: stats.value > 0 ? (stats.closed / stats.value) * 100 : 0 }))
             .sort((a, b) => b.value - a.value);
     }, [activeRecords]);
 
+    // 11. Filtered Table Records (Table View)
     const filteredNpRecords = useMemo(() => {
         const today = new Date().toISOString().split('T')[0];
-        // Start with activeRecords (Clinic, Tag, NHI filtered)
-        // Then apply remaining table filters
         return activeRecords.filter(r => {
             if (filterDate && r.date !== filterDate) return false;
-            // Clinic & Tag filters already applied in activeRecords, but kept if user uses table column filters specifically
             if (filterClinic && getClinicName(r.clinicId) !== filterClinic) return false;
             if (filterTag && (r.marketingTag || '未分類') !== filterTag) return false;
-            
             if (filterDoctor && (r.doctorName || r.doctor || '未指定') !== filterDoctor) return false;
             if (filterConsultant && (staffMap[r.consultant || ''] || '未指定') !== filterConsultant) return false;
             if (filterSource && (r.source || '未分類') !== filterSource) return false;
@@ -842,6 +817,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         }).sort((a: NPRecord, b: NPRecord) => (b.date || '').localeCompare(a.date || ''));
     }, [activeRecords, filterDate, filterClinic, filterDoctor, filterTag, filterConsultant, filterSource, filterStatus, staffMap]);
 
+    // 12. Filter Options (for Dropdowns)
     const filterOptions = useMemo(() => ({
         dates: Array.from<string>(new Set(npRecords.map(r => r.date || ''))).sort((a, b) => b.localeCompare(a)),
         clinics: Array.from<string>(new Set(npRecords.map(r => getClinicName(r.clinicId)))).sort((a, b) => (CLINIC_ORDER[a] ?? 999) - (CLINIC_ORDER[b] ?? 999)),
@@ -855,178 +831,110 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
     // --- HANDLERS ---
 
     const handleSyncNP = async () => {
-        if (!isGoogleLoggedIn) {
-            authorizeCalendar();
-            return;
-        }
-
-        if (!confirm("確定要同步本月 Google 日曆中的 NP 資料嗎？這將自動偵測含有 'NP' 標註的預約並建立追蹤紀錄。")) return;
-        
+        if (!isGoogleLoggedIn) { authorizeCalendar(); return; }
+        if (!confirm("確定要同步本月 Google 日曆中的 NP 資料嗎？")) return;
         setIsSyncingNP(true);
         try {
             const [y, m] = currentMonth.split('-').map(Number);
             const start = new Date(y, m - 1, 1);
             const end = new Date(y, m, 0, 23, 59, 59, 999);
-            
             const batch = db.batch();
             let count = 0;
-            
-            // CRITICAL FIX: Snapshot current record IDs to skip already synced ones
             const existingIds = new Set(npRecords.map(r => r.id));
 
             for (const clinic of sortedClinics) {
                 const mapping = clinic.googleCalendarMapping;
                 if (!mapping) continue;
-
                 const calendarIds = Array.from<string>(new Set(Object.values(mapping)));
-
                 for (const calId of calendarIds) {
                     try {
                         const events = await listEvents(calId, start, end);
-                        
                         for (const ev of events) {
-                            if (!ev.start.dateTime) continue;
-                            
-                            // SKIP IF ALREADY SYNCED
-                            if (existingIds.has(ev.id)) continue;
-
+                            if (!ev.start.dateTime || existingIds.has(ev.id)) continue;
                             const parsed = parseCalendarEvent(ev.summary);
                             if (parsed && parsed.isNP) {
                                 let doctorName = '未知';
                                 const docEntry = Object.entries(mapping).find(([id, cid]) => cid === calId);
                                 if (docEntry) {
-                                    if (docEntry[0] === 'clinic_shared' || docEntry[0] === 'clinic_public') {
-                                        doctorName = '診所公用';
-                                    } else {
+                                    if (docEntry[0].includes('clinic')) doctorName = '診所公用';
+                                    else {
                                         const doc = clinics.flatMap(c => c.doctors || []).find(d => d.id === docEntry[0]);
                                         if (doc) doctorName = doc.name;
                                     }
                                 }
-
-                                const dateStr = ev.start.dateTime.split('T')[0];
-                                const note = ev.description || '';
-                                const source = parseSourceFromNote(note);
-
                                 const npRef = db.collection('np_records').doc(ev.id);
                                 batch.set(npRef, {
                                     clinicId: clinic.id,
                                     clinicName: clinic.name,
-                                    date: dateStr,
+                                    date: ev.start.dateTime.split('T')[0],
                                     patientName: parsed.name,
                                     calendarTreatment: parsed.treatment,
-                                    calendarNote: note,
-                                    doctorName: doctorName,
+                                    calendarNote: ev.description || '',
+                                    doctorName,
                                     marketingTag: '矯正諮詢',
-                                    source: source,
-                                    isVisited: false,
-                                    isClosed: false,
-                                    updatedAt: new Date().toISOString()
+                                    source: parseSourceFromNote(ev.description || ''),
+                                    isVisited: false, isClosed: false, updatedAt: new Date().toISOString()
                                 }, { merge: true });
-                                count++;
-                                // Mark as processed for current loop
-                                existingIds.add(ev.id);
+                                count++; existingIds.add(ev.id);
                             }
                         }
-                    } catch (e) {
-                        console.error(`Failed to sync calendar ${calId}`, e);
-                    }
+                    } catch (e) { console.error(`Failed to sync ${calId}`, e); }
                 }
             }
-
-            if (count > 0) {
-                await batch.commit();
-                alert(`同步完成！共新增 ${count} 筆紀錄。`);
-            } else {
-                alert("未在日曆中發現符合標註的新 NP 預約。");
-            }
-        } catch (e) {
-            console.error(e);
-            alert("同步發生錯誤。");
-        } finally {
-            setIsSyncingNP(false);
-        }
+            if (count > 0) { await batch.commit(); alert(`同步完成！共新增 ${count} 筆紀錄。`); }
+            else { alert("未在日曆中發現符合標註的新 NP 預約。"); }
+        } catch (e) { console.error(e); alert("同步發生錯誤。"); }
+        finally { setIsSyncingNP(false); }
     };
 
     const handleDeleteNP = async (id: string) => {
         if (!confirm("確定刪除此筆 NP 紀錄？")) return;
-        try {
-            await deleteNPRecord(id);
-        } catch (e) {
-            alert("刪除失敗");
-        }
+        try { await deleteNPRecord(id); } catch (e) { alert("刪除失敗"); }
     };
 
-    const handleInlineTagChange = async (id: string, newTag: string) => {
-        try {
-            await updateNPRecord(id, { marketingTag: newTag });
-        } catch (e) {
-            console.error("Failed to update tag", e);
-            alert("標籤更新失敗");
-        }
-    };
+    const handleInlineTagChange = useCallback(async (id: string, newTag: string) => {
+        try { await updateNPRecord(id, { marketingTag: newTag }); }
+        catch (e) { console.error(e); }
+    }, []);
 
-    const handleInlineTreatmentChange = async (id: string, newTreatment: string) => {
-        try {
-            await updateNPRecord(id, { treatment: newTreatment });
-        } catch (e) {
-            console.error("Failed to update treatment", e);
-        }
-    };
+    const handleInlineTreatmentChange = useCallback(async (id: string, newTreatment: string) => {
+        try { await updateNPRecord(id, { treatment: newTreatment }); }
+        catch (e) { console.error(e); }
+    }, []);
 
     const handleTargetUpdate = async (clinicId: string, field: keyof MonthlyTarget, value: string) => {
         const numValue = parseInt(value) || 0;
-        
-        // Find current clinic summary
         const summary = snapshot.current.find(s => s.clinicId === clinicId);
         if (!summary) return;
-
-        const newTarget = {
-            ...summary.targets,
-            [field]: numValue
-        };
-
+        const newTarget = { ...summary.targets, [field]: numValue };
         try {
             await saveMonthlyTarget(clinicId, currentMonth, newTarget);
-            // Optimistic update
-            setSnapshot(prev => ({
-                ...prev,
-                current: prev.current.map(s => s.clinicId === clinicId ? { ...s, targets: newTarget } : s)
-            }));
-        } catch (e) {
-            console.error("Failed to save target", e);
-        }
+            setSnapshot(prev => ({ ...prev, current: prev.current.map(s => s.clinicId === clinicId ? { ...s, targets: newTarget } : s) }));
+        } catch (e) { console.error(e); }
     };
 
     const renderNPStatus = (r: NPRecord) => {
         const today = new Date().toISOString().split('T')[0];
         if (r.isClosed) return <span className="bg-emerald-50 text-emerald-700 px-2 py-1 rounded-full text-[10px] font-black border border-emerald-100 flex items-center gap-1 w-fit shadow-sm"><CheckCircle size={12}/> 已成交</span>;
-        if (r.isVisited) return <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-[10px] font-black border border-blue-100 flex items-center gap-1 w-fit shadow-sm"><User size={12}/> 已報到</span>;
+        if (r.isVisited) return <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-[10px] font-black border border-blue-100 flex items-center gap-1 w-fit shadow-sm"><CheckCircle size={12}/> 已報到</span>;
         if (r.date > today) return <span className="bg-slate-50 text-slate-500 px-2 py-1 rounded-full text-[10px] font-black border border-slate-100 flex items-center gap-1 w-fit shadow-sm"><Clock size={12}/> 待到診</span>;
         return <span className="bg-rose-50 text-rose-600 px-2 py-1 rounded-full text-[10px] font-black border border-rose-100 flex items-center gap-1 w-fit shadow-sm"><AlertCircle size={12}/> 未到診</span>;
     };
 
     return (
         <div className="space-y-8 pb-12 animate-fade-in">
-            {/* Page Header */}
+            {/* Header */}
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
                 <div>
                     <h2 className="text-3xl font-black text-slate-800 flex items-center gap-3">
-                        <div className="p-2 bg-indigo-600 rounded-xl text-white">
-                            <BarChart2 size={24} />
-                        </div>
+                        <div className="p-2 bg-indigo-600 rounded-xl text-white"><BarChart2 size={24} /></div>
                         集團營運儀表板
                     </h2>
-                    <p className="text-slate-500 font-medium ml-12">全集團診所數據監測與行銷轉化分析 (BI)</p>
+                    <p className="text-slate-500 font-medium ml-12">全集團數據監測與行銷分析</p>
                 </div>
                 <div className="flex items-center gap-3 bg-slate-50 p-2 rounded-xl border border-slate-100">
                     <Calendar className="text-slate-400 ml-2" size={18} />
-                    <input 
-                        type="month" 
-                        className="bg-transparent font-black text-slate-700 outline-none pr-4 cursor-pointer" 
-                        value={currentMonth} 
-                        onChange={e => setCurrentMonth(e.target.value)}
-                    />
-                    <div className="w-px h-6 bg-slate-200 mx-1"></div>
+                    <input type="month" className="bg-transparent font-black text-slate-700 outline-none pr-4 cursor-pointer" value={currentMonth} onChange={e => setCurrentMonth(e.target.value)}/>
                     {isLoading ? <Loader2 className="animate-spin text-indigo-500 mx-2" size={20} /> : <Activity size={20} className="text-emerald-500 mx-2" />}
                 </div>
             </div>
@@ -1034,17 +942,8 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             {/* KPI Cards */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <KPICard title="總營收 (Total Revenue)" actual={totals.current.revenue} target={totals.current.targetRevenue} prev={totals.prev.revenue} yearPrev={totals.yearPrev.revenue} prefix="$" colorClass="text-indigo-600" isActive={activeTab === 'revenue'} onClick={() => setActiveTab('revenue')} icon={DollarSign} />
-                <KPICard title="自費營營 (Self-Pay)" actual={totals.current.selfPay} target={totals.current.targetSelfPay} prev={totals.prev.selfPay} yearPrev={totals.yearPrev.selfPay} prefix="$" colorClass="text-purple-600" isActive={activeTab === 'self-pay'} onClick={() => setActiveTab('self-pay')} icon={PieChartIcon} />
-                <KPICard 
-                    title="NP 成交轉換 (Close Rate)" 
-                    actual={totals.marketing.closed} 
-                    customRate={totals.marketing.pastAppointments > 0 ? (totals.marketing.closed / totals.marketing.pastAppointments) * 100 : 0} 
-                    customSubtext={`進單: ${totals.marketing.leads} / 約診: ${totals.marketing.pastAppointments}`} 
-                    isActive={activeTab === 'marketing'} 
-                    onClick={() => setActiveTab('marketing')} 
-                    icon={Users} 
-                    colorClass="text-emerald-600" 
-                />
+                <KPICard title="自費營收 (Self-Pay)" actual={totals.current.selfPay} target={totals.current.targetSelfPay} prev={totals.prev.selfPay} yearPrev={totals.yearPrev.selfPay} prefix="$" colorClass="text-purple-600" isActive={activeTab === 'self-pay'} onClick={() => setActiveTab('self-pay')} icon={PieChartIcon} />
+                <KPICard title="NP 成交轉換 (Close Rate)" actual={totals.marketing.closed} customRate={totals.marketing.pastAppointments > 0 ? (totals.marketing.closed / totals.marketing.pastAppointments) * 100 : 0} customSubtext={`進單: ${totals.marketing.leads} / 約診: ${totals.marketing.pastAppointments}`} isActive={activeTab === 'marketing'} onClick={() => setActiveTab('marketing')} icon={Users} colorClass="text-emerald-600" />
             </div>
 
             {/* Content Tabs */}
@@ -1052,7 +951,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                 <div className="space-y-6 animate-fade-in">
                     <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
-                            <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><LineChart className="text-indigo-500" size={22} /> 每日營收趨勢 (Stacked Trend)</h3>
+                            <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><LineChart className="text-indigo-500" size={22} /> 每日營收趨勢</h3>
                             <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-lg border">
                                 <Filter size={14} className="text-slate-400 ml-2" />
                                 <select className="bg-transparent text-xs font-black text-slate-600 py-1.5 px-2 outline-none cursor-pointer" value={trendFilter} onChange={e => setTrendFilter(e.target.value)}>
@@ -1061,73 +960,44 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                 </select>
                             </div>
                         </div>
-                        <div className="h-96 w-full">
-                            <RevenueTrendChart data={dailyTrendData} sortedClinics={sortedClinics} filterId={trendFilter} />
-                        </div>
+                        <div className="h-96 w-full"><RevenueTrendChart data={dailyTrendData} sortedClinics={sortedClinics} filterId={trendFilter} /></div>
                     </div>
-
+                    {/* ... (Revenue charts - KPIProgressChart, Ranking, Detailed Table) remain same as before ... */}
                     <div className="flex flex-col lg:flex-row gap-6">
                         <div className="w-full lg:w-2/3 bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[400px] lg:h-[500px]">
-                             <div className="flex justify-between items-center mb-6 shrink-0">
-                                <h3 className="font-bold text-slate-800 flex items-center gap-2"><Target className="text-indigo-600" /> 院所達成率圖表 (Revenue Achievement)</h3>
-                             </div>
+                             <div className="flex justify-between items-center mb-6 shrink-0"><h3 className="font-bold text-slate-800 flex items-center gap-2"><Target className="text-indigo-600" /> 院所達成率圖表</h3></div>
                              <div className="flex-1 w-full overflow-hidden min-h-0">
-                                <KPIProgressChart 
-                                    data={performanceMatrix.map(p => ({ 
-                                        name: p.name, 
-                                        actual: p.revenueActual, 
-                                        target: p.revenueTarget,
-                                        rate: p.revenueRate
-                                    }))} 
-                                    color="#6366f1" 
-                                />
+                                <KPIProgressChart data={performanceMatrix.map(p => ({ name: p.name, actual: p.revenueActual, target: p.revenueTarget, rate: p.revenueRate }))} color="#6366f1" />
                              </div>
                         </div>
-
                         <div className="w-full lg:w-1/3 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-auto max-h-[400px] lg:h-[500px] lg:max-h-none overflow-hidden">
-                            <div className="sticky top-0 bg-white z-10 p-5 border-b border-slate-50 flex items-center gap-2 text-slate-800 shrink-0">
-                                <Medal className="text-amber-500" />
-                                <h3 className="font-black uppercase tracking-wider text-sm">達成排行榜 (Ranking)</h3>
-                            </div>
+                            <div className="sticky top-0 bg-white z-10 p-5 border-b border-slate-50 flex items-center gap-2 text-slate-800 shrink-0"><Medal className="text-amber-500" /><h3 className="font-black uppercase tracking-wider text-sm">達成排行榜</h3></div>
                             <div className="flex-1 overflow-y-auto custom-scrollbar p-5 pt-2 space-y-3">
                                 {achievementRanking.map((item: any, idx: number) => (
                                     <div key={item.id} className={`p-3 rounded-xl border transition-all ${idx === 0 ? 'bg-amber-50/50 border-amber-100 ring-1 ring-amber-200/50 shadow-sm' : 'bg-slate-50 border-slate-100'}`}>
                                         <div className="flex justify-between items-center mb-1.5">
-                                            <div className="flex items-center gap-3">
-                                                <div className={`w-7 h-7 rounded-full flex items-center justify-center font-black text-xs ${idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : (idx + 1)}`}>
-                                                    {idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : (idx + 1)}
-                                                </div>
-                                                <span className="font-bold text-sm text-slate-700">{item.name}</span>
-                                            </div>
-                                            <span className={`font-black tabular-nums text-sm ${item.revenueRate >= 100 ? 'text-emerald-600' : item.revenueRate >= 80 ? 'text-amber-600' : 'text-rose-500'}`}>
-                                                {item.revenueRate.toFixed(1)}%
-                                            </span>
+                                            <div className="flex items-center gap-3"><div className={`w-7 h-7 rounded-full flex items-center justify-center font-black text-xs ${idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : (idx + 1)}`}>{idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : (idx + 1)}</div><span className="font-bold text-sm text-slate-700">{item.name}</span></div>
+                                            <span className={`font-black tabular-nums text-sm ${item.revenueRate >= 100 ? 'text-emerald-600' : item.revenueRate >= 80 ? 'text-amber-600' : 'text-rose-500'}`}>{item.revenueRate.toFixed(1)}%</span>
                                         </div>
-                                        <div className="w-full h-1.5 bg-white/50 rounded-full overflow-hidden border border-slate-200/30">
-                                            <div className={`h-full transition-all duration-1000 ease-out ${item.revenueRate >= 100 ? 'bg-emerald-500' : item.revenueRate >= 80 ? 'bg-amber-400' : 'bg-rose-400'}`} style={{ width: `${Math.min(item.revenueRate, 100)}%` }} />
-                                        </div>
+                                        <div className="w-full h-1.5 bg-white/50 rounded-full overflow-hidden border border-slate-200/30"><div className={`h-full transition-all duration-1000 ease-out ${item.revenueRate >= 100 ? 'bg-emerald-500' : item.revenueRate >= 80 ? 'bg-amber-400' : 'bg-rose-400'}`} style={{ width: `${Math.min(item.revenueRate, 100)}%` }} /></div>
                                     </div>
                                 ))}
                             </div>
                         </div>
                     </div>
-
-                    {/* Detailed Data & Target Table */}
+                    {/* ... (Detailed Table) ... */}
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center gap-2">
-                            <LayoutGrid className="text-indigo-600" />
-                            <h3 className="font-black text-slate-800 uppercase tracking-wider text-sm">各院數據明細與目標設定 (Detailed Data & Targets)</h3>
-                        </div>
+                        <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center gap-2"><LayoutGrid className="text-indigo-600" /><h3 className="font-black text-slate-800 uppercase tracking-wider text-sm">各院數據明細與目標設定</h3></div>
                         <div className="overflow-x-auto">
                             <table className="w-full text-sm text-left">
                                 <thead className="bg-white text-slate-400 font-bold uppercase text-[10px] border-b border-slate-100">
                                     <tr>
                                         <th className="px-6 py-4 sticky left-0 bg-white z-10">診所名稱</th>
-                                        <th className="px-6 py-4 text-right bg-indigo-50/50 text-indigo-700">營收目標 (Total Target)</th>
-                                        <th className="px-6 py-4 text-right">營收實績 (Actual)</th>
+                                        <th className="px-6 py-4 text-right bg-indigo-50/50 text-indigo-700">營收目標</th>
+                                        <th className="px-6 py-4 text-right">營收實績</th>
                                         <th className="px-6 py-4 text-center">營收達成率</th>
-                                        <th className="px-6 py-4 text-right bg-purple-50/50 text-purple-700">自費目標 (Self-Pay Target)</th>
-                                        <th className="px-6 py-4 text-right">自費實績 (Actual)</th>
+                                        <th className="px-6 py-4 text-right bg-purple-50/50 text-purple-700">自費目標</th>
+                                        <th className="px-6 py-4 text-right">自費實績</th>
                                         <th className="px-6 py-4 text-center">自費達成率</th>
                                     </tr>
                                 </thead>
@@ -1135,66 +1005,16 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                     {performanceMatrix.map((item) => (
                                         <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                                             <td className="px-6 py-4 font-black text-slate-700 sticky left-0 bg-white z-10 border-r border-slate-50 shadow-sm">{item.name}</td>
-                                            {/* Revenue Section */}
-                                            <td className="px-6 py-4 text-right bg-indigo-50/30">
-                                                <div className="flex items-center justify-end gap-1">
-                                                    <span className="text-slate-400 text-[10px]">$</span>
-                                                    <input 
-                                                        type="number" 
-                                                        className="w-28 border border-slate-200 rounded px-2 py-1 text-right font-mono font-bold bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                                                        value={item.revenueTarget}
-                                                        onChange={(e) => handleTargetUpdate(item.id, 'revenueTarget', e.target.value)}
-                                                    />
-                                                </div>
-                                            </td>
+                                            <td className="px-6 py-4 text-right bg-indigo-50/30"><div className="flex items-center justify-end gap-1"><span className="text-slate-400 text-[10px]">$</span><input type="number" className="w-28 border border-slate-200 rounded px-2 py-1 text-right font-mono font-bold bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={item.revenueTarget} onChange={(e) => handleTargetUpdate(item.id, 'revenueTarget', e.target.value)}/></div></td>
                                             <td className="px-6 py-4 text-right font-black text-slate-700 tabular-nums">${item.revenueActual.toLocaleString()}</td>
-                                            <td className="px-6 py-4 text-center">
-                                                <span className={`px-2 py-1 rounded-lg text-xs font-black tabular-nums border ${item.revenueRate >= 100 ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : item.revenueRate >= 80 ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-rose-50 text-rose-700 border-rose-100'}`}>
-                                                    {item.revenueRate.toFixed(1)}%
-                                                </span>
-                                            </td>
-                                            {/* Self-Pay Section */}
-                                            <td className="px-6 py-4 text-right bg-purple-50/30">
-                                                <div className="flex items-center justify-end gap-1">
-                                                    <span className="text-slate-400 text-[10px]">$</span>
-                                                    <input 
-                                                        type="number" 
-                                                        className="w-28 border border-slate-200 rounded px-2 py-1 text-right font-mono font-bold bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                                                        value={item.selfPayTarget}
-                                                        onChange={(e) => handleTargetUpdate(item.id, 'selfPayTarget', e.target.value)}
-                                                    />
-                                                </div>
-                                            </td>
+                                            <td className="px-6 py-4 text-center"><span className={`px-2 py-1 rounded-lg text-xs font-black tabular-nums border ${item.revenueRate >= 100 ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : item.revenueRate >= 80 ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-rose-50 text-rose-700 border-rose-100'}`}>{item.revenueRate.toFixed(1)}%</span></td>
+                                            <td className="px-6 py-4 text-right bg-purple-50/30"><div className="flex items-center justify-end gap-1"><span className="text-slate-400 text-[10px]">$</span><input type="number" className="w-28 border border-slate-200 rounded px-2 py-1 text-right font-mono font-bold bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={item.selfPayTarget} onChange={(e) => handleTargetUpdate(item.id, 'selfPayTarget', e.target.value)}/></div></td>
                                             <td className="px-6 py-4 text-right font-black text-slate-700 tabular-nums">${item.selfPayActual.toLocaleString()}</td>
-                                            <td className="px-6 py-4 text-center">
-                                                <span className={`px-2 py-1 rounded-lg text-xs font-black tabular-nums border ${item.selfPayRate >= 100 ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : item.selfPayRate >= 80 ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-rose-50 text-rose-700 border-rose-100'}`}>
-                                                    {item.selfPayRate.toFixed(1)}%
-                                                </span>
-                                            </td>
+                                            <td className="px-6 py-4 text-center"><span className={`px-2 py-1 rounded-lg text-xs font-black tabular-nums border ${item.selfPayRate >= 100 ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : item.selfPayRate >= 80 ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-rose-50 text-rose-700 border-rose-100'}`}>{item.selfPayRate.toFixed(1)}%</span></td>
                                         </tr>
                                     ))}
                                 </tbody>
-                                <tfoot className="bg-slate-900 text-white font-bold">
-                                    <tr>
-                                        <td className="px-6 py-4 sticky left-0 bg-slate-900 z-10 border-r border-slate-800">全集團總計 (Grand Total)</td>
-                                        {/* Total Revenue Summary */}
-                                        <td className="px-6 py-4 text-right tabular-nums">${totals.current.targetRevenue.toLocaleString()}</td>
-                                        <td className="px-6 py-4 text-right tabular-nums text-teal-400 font-black">${totals.current.revenue.toLocaleString()}</td>
-                                        <td className="px-6 py-4 text-center">
-                                            <span className="bg-white/10 px-2 py-1 rounded tabular-nums">
-                                                {(totals.current.targetRevenue > 0 ? (totals.current.revenue / totals.current.targetRevenue) * 100 : 0).toFixed(1)}%
-                                            </span>
-                                        </td>
-                                        {/* Total Self-Pay Summary */}
-                                        <td className="px-6 py-4 text-right tabular-nums">${totals.current.targetSelfPay.toLocaleString()}</td>
-                                        <td className="px-6 py-4 text-right tabular-nums text-purple-300 font-black">${totals.current.selfPay.toLocaleString()}</td>
-                                        <td className="px-6 py-4 text-center">
-                                            <span className="bg-white/10 px-2 py-1 rounded tabular-nums">
-                                                {(totals.current.targetSelfPay > 0 ? (totals.current.selfPay / totals.current.targetSelfPay) * 100 : 0).toFixed(1)}%
-                                            </span>
-                                        </td>
-                                    </tr>
-                                </tfoot>
+                                <tfoot className="bg-slate-900 text-white font-bold"><tr><td className="px-6 py-4 sticky left-0 bg-slate-900 z-10 border-r border-slate-800">全集團總計</td><td className="px-6 py-4 text-right tabular-nums">${totals.current.targetRevenue.toLocaleString()}</td><td className="px-6 py-4 text-right tabular-nums text-teal-400 font-black">${totals.current.revenue.toLocaleString()}</td><td className="px-6 py-4 text-center"><span className="bg-white/10 px-2 py-1 rounded tabular-nums">{(totals.current.targetRevenue > 0 ? (totals.current.revenue / totals.current.targetRevenue) * 100 : 0).toFixed(1)}%</span></td><td className="px-6 py-4 text-right tabular-nums">${totals.current.targetSelfPay.toLocaleString()}</td><td className="px-6 py-4 text-right tabular-nums text-purple-300 font-black">${totals.current.selfPay.toLocaleString()}</td><td className="px-6 py-4 text-center"><span className="bg-white/10 px-2 py-1 rounded tabular-nums">{(totals.current.targetSelfPay > 0 ? (totals.current.selfPay / totals.current.targetSelfPay) * 100 : 0).toFixed(1)}%</span></td></tr></tfoot>
                             </table>
                         </div>
                     </div>
@@ -1203,89 +1023,35 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
 
             {activeTab === 'self-pay' && (
                 <div className="space-y-6 animate-fade-in">
+                    {/* ... Self Pay charts ... */}
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                         <div className="lg:col-span-2 bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[500px]">
-                             <div className="flex justify-between items-center mb-8">
-                                <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Target className="text-purple-600" /> 自費目標達成狀況</h3>
-                             </div>
-                             <div className="flex-1 w-full">
-                                <SelfPayAchievementChart data={performanceMatrix.map(p => ({ name: p.name, target: p.selfPayTarget, actual: p.selfPayActual, rate: p.selfPayRate }))} />
-                             </div>
+                             <div className="flex justify-between items-center mb-8"><h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Target className="text-purple-600" /> 自費目標達成狀況</h3></div>
+                             <div className="flex-1 w-full"><SelfPayAchievementChart data={performanceMatrix.map(p => ({ name: p.name, target: p.selfPayTarget, actual: p.selfPayActual, rate: p.selfPayRate }))} /></div>
                         </div>
-
                         <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[500px]">
-                            <div className="flex justify-between items-center mb-6">
-                                <h3 className="font-bold text-slate-800 flex items-center gap-2"><PieChartIcon size={20} className="text-teal-500" /> 項目佔比分析</h3>
-                                <select className="bg-slate-50 text-[10px] font-black p-1 border rounded" value={breakdownFilter} onChange={e => setBreakdownFilter(e.target.value)}>
-                                    <option value="all">全集團</option>
-                                    {sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                </select>
-                            </div>
-                            <div className="flex-1 w-full">
-                                <SelfPayBreakdownChart data={selfPayAnalytics.pieData} />
-                            </div>
+                            <div className="flex justify-between items-center mb-6"><h3 className="font-bold text-slate-800 flex items-center gap-2"><PieChartIcon size={20} className="text-teal-500" /> 項目佔比分析</h3><select className="bg-slate-50 text-[10px] font-black p-1 border rounded" value={breakdownFilter} onChange={e => setBreakdownFilter(e.target.value)}><option value="all">全集團</option>{sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+                            <div className="flex-1 w-full"><SelfPayBreakdownChart data={selfPayAnalytics.pieData} /></div>
                         </div>
                     </div>
-
-                    {/* Matrix Table */}
+                    {/* Matrix */}
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center gap-2">
-                            <LayoutGrid className="text-indigo-600" />
-                            <h3 className="font-black text-slate-800 uppercase tracking-wider text-sm">自費療程數據矩陣 (Clinic x Category Matrix)</h3>
-                        </div>
+                        <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center gap-2"><LayoutGrid className="text-indigo-600" /><h3 className="font-black text-slate-800 uppercase tracking-wider text-sm">自費療程數據矩陣</h3></div>
                         <div className="overflow-x-auto">
                             <table className="w-full text-sm text-left">
-                                <thead className="bg-white text-slate-400 font-bold uppercase text-[10px] border-b border-slate-100">
-                                    <tr>
-                                        <th className="px-6 py-4 sticky left-0 bg-white z-10">診所名稱</th>
-                                        <th className="px-6 py-4 text-right bg-indigo-50/50 text-indigo-700">總計 (Total)</th>
-                                        {selfPayAnalytics.labels.map(l => (
-                                            <th key={l} className="px-6 py-4 text-right">{l}</th>
-                                        ))}
-                                    </tr>
-                                </thead>
+                                <thead className="bg-white text-slate-400 font-bold uppercase text-[10px] border-b border-slate-100"><tr><th className="px-6 py-4 sticky left-0 bg-white z-10">診所名稱</th><th className="px-6 py-4 text-right bg-indigo-50/50 text-indigo-700">總計 (Total)</th>{selfPayAnalytics.labels.map(l => (<th key={l} className="px-6 py-4 text-right">{l}</th>))}</tr></thead>
                                 <tbody className="divide-y divide-slate-50">
                                     {selfPayAnalytics.clinicMatrix.map((clinic) => (
                                         <tr key={clinic.name} className="hover:bg-indigo-50/10 transition-colors">
                                             <td className="px-6 py-4 font-black text-slate-700 sticky left-0 bg-white z-10 border-r border-slate-50 shadow-sm">{clinic.name}</td>
                                             <td className="px-6 py-4 text-right font-black text-indigo-600 tabular-nums bg-indigo-50/30">${clinic.total.toLocaleString()}</td>
-                                            {clinic.current.map((val, idx) => (
-                                                <td key={idx} className="px-6 py-4 text-right tabular-nums text-slate-500 font-medium">
-                                                    {val > 0 ? `$${val.toLocaleString()}` : '-'}
-                                                </td>
-                                            ))}
+                                            {clinic.current.map((val, idx) => (<td key={idx} className="px-6 py-4 text-right tabular-nums text-slate-500 font-medium">{val > 0 ? `$${val.toLocaleString()}` : '-'}</td>))}
                                         </tr>
                                     ))}
-                                    {/* Total Row */}
-                                    <tr className="bg-slate-900 text-white font-bold">
-                                        <td className="px-6 py-4 sticky left-0 bg-slate-900 z-10 border-r border-slate-800">全院總計 (Total)</td>
-                                        <td className="px-6 py-4 text-right tabular-nums text-emerald-400 font-black">${selfPayAnalytics.summary.totalCurrent.toLocaleString()}</td>
-                                        {selfPayAnalytics.summary.current.map((val, idx) => (
-                                            <td key={idx} className="px-6 py-4 text-right tabular-nums">${val.toLocaleString()}</td>
-                                        ))}
-                                    </tr>
-                                    {/* Growth Row */}
-                                    <tr className="bg-slate-50 font-bold text-slate-500">
-                                        <td className="px-6 py-3 sticky left-0 bg-slate-50 z-10 border-r border-slate-200">
-                                            <div className="flex items-center gap-1.5 text-[10px] uppercase">
-                                                <TrendingUp size={12} /> MoM 成長率 (%)
-                                            </div>
-                                        </td>
-                                        <td className={`px-6 py-3 text-right tabular-nums ${selfPayAnalytics.summary.totalGrowth >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                            {selfPayAnalytics.summary.totalGrowth >= 0 ? '+' : ''}{selfPayAnalytics.summary.totalGrowth.toFixed(1)}%
-                                        </td>
-                                        {selfPayAnalytics.summary.growth.map((rate, idx) => (
-                                            <td key={idx} className={`px-6 py-3 text-right tabular-nums ${rate === 0 && selfPayAnalytics.summary.current[idx] === 0 ? 'text-slate-300' : rate >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                                {rate === 0 && selfPayAnalytics.summary.current[idx] === 0 ? '-' : `${rate >= 0 ? '+' : ''}${rate.toFixed(1)}%`}
-                                            </td>
-                                        ))}
-                                    </tr>
+                                    <tr className="bg-slate-900 text-white font-bold"><td className="px-6 py-4 sticky left-0 bg-slate-900 z-10 border-r border-slate-800">全院總計</td><td className="px-6 py-4 text-right tabular-nums text-emerald-400 font-black">${selfPayAnalytics.summary.totalCurrent.toLocaleString()}</td>{selfPayAnalytics.summary.current.map((val, idx) => (<td key={idx} className="px-6 py-4 text-right tabular-nums">${val.toLocaleString()}</td>))}</tr>
+                                    <tr className="bg-slate-50 font-bold text-slate-500"><td className="px-6 py-3 sticky left-0 bg-slate-50 z-10 border-r border-slate-200"><div className="flex items-center gap-1.5 text-[10px] uppercase"><TrendingUp size={12} /> MoM 成長率 (%)</div></td><td className={`px-6 py-3 text-right tabular-nums ${selfPayAnalytics.summary.totalGrowth >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{selfPayAnalytics.summary.totalGrowth >= 0 ? '+' : ''}{selfPayAnalytics.summary.totalGrowth.toFixed(1)}%</td>{selfPayAnalytics.summary.growth.map((rate, idx) => (<td key={idx} className={`px-6 py-3 text-right tabular-nums ${rate === 0 && selfPayAnalytics.summary.current[idx] === 0 ? 'text-slate-300' : rate >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{rate === 0 && selfPayAnalytics.summary.current[idx] === 0 ? '-' : `${rate >= 0 ? '+' : ''}${rate.toFixed(1)}%`}</td>))}</tr>
                                 </tbody>
                             </table>
-                        </div>
-                        <div className="p-4 bg-slate-50 text-[10px] text-slate-400 font-medium flex items-center gap-4">
-                            <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-slate-300"></div> 所有數據皆為本月自費實收 (Net Revenue)</div>
-                            <div className="flex items-center gap-1.5"><TrendingUp size={10} /> MoM = 同比上月成長率</div>
                         </div>
                     </div>
                 </div>
@@ -1293,195 +1059,53 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
 
             {activeTab === 'marketing' && (
                 <div className="space-y-6 animate-fade-in">
-                    {/* GLOBAL FILTERS HEADER */}
+                    {/* GLOBAL FILTERS */}
                     <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
-                         {/* Left: Filter Controls */}
                          <div className="flex flex-col md:flex-row gap-4 w-full xl:w-auto">
-                            <div className="flex items-center gap-2 text-slate-700 font-bold bg-slate-50 px-3 py-2 rounded-lg border border-slate-100">
-                                <Filter size={18} className="text-indigo-500" />
-                                <span>全域篩選</span>
-                            </div>
-                            
-                            {/* Clinic Selector */}
-                            <div className="flex items-center gap-2">
-                                <label className="text-xs font-bold text-slate-500 uppercase">診所:</label>
-                                <select 
-                                    className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer min-w-[140px]"
-                                    value={globalFilterClinic}
-                                    onChange={e => setGlobalFilterClinic(e.target.value)}
-                                >
-                                    <option value="all">全集團</option>
-                                    {sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                </select>
-                            </div>
-
-                            {/* Tag Selector */}
-                            <div className="flex items-center gap-2">
-                                <label className="text-xs font-bold text-slate-500 uppercase">行銷:</label>
-                                <select 
-                                    className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer min-w-[140px]"
-                                    value={globalFilterTag}
-                                    onChange={e => setGlobalFilterTag(e.target.value)}
-                                >
-                                    <option value="all">全部標籤</option>
-                                    {tagOptions.map(({ tag, label }) => (
-                                        <option key={tag} value={tag}>{label}</option>
-                                    ))}
-                                </select>
-                            </div>
-
-                            {/* Exclude NHI Checkbox */}
-                            <label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 hover:border-indigo-300 transition-all select-none group">
-                                <input type="checkbox" checked={excludeNHI} onChange={e => setExcludeNHI(e.target.checked)} className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300" />
-                                <div className="flex items-center gap-1.5">
-                                    <ShieldOff size={14} className={excludeNHI ? "text-rose-500" : "text-slate-400"} />
-                                    <span className={`text-sm font-black ${excludeNHI ? "text-indigo-600" : "text-slate-500"}`}>排除健保</span>
-                                </div>
-                            </label>
+                            <div className="flex items-center gap-2 text-slate-700 font-bold bg-slate-50 px-3 py-2 rounded-lg border border-slate-100"><Filter size={18} className="text-indigo-500" /><span>全域篩選</span></div>
+                            <div className="flex items-center gap-2"><label className="text-xs font-bold text-slate-500 uppercase">診所:</label><select className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer min-w-[140px]" value={globalFilterClinic} onChange={e => setGlobalFilterClinic(e.target.value)}><option value="all">全集團</option>{sortedClinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+                            <div className="flex items-center gap-2"><label className="text-xs font-bold text-slate-500 uppercase">行銷:</label><select className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer min-w-[140px]" value={globalFilterTag} onChange={e => setGlobalFilterTag(e.target.value)}><option value="all">全部標籤</option>{tagOptions.map(({ tag, label }) => (<option key={tag} value={tag}>{label}</option>))}</select></div>
+                            <label className="flex items-center gap-2 cursor-pointer bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 hover:border-indigo-300 transition-all select-none group"><input type="checkbox" checked={excludeNHI} onChange={e => setExcludeNHI(e.target.checked)} className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300" /><div className="flex items-center gap-1.5"><ShieldOff size={14} className={excludeNHI ? "text-rose-500" : "text-slate-400"} /><span className={`text-sm font-black ${excludeNHI ? "text-indigo-600" : "text-slate-500"}`}>排除健保</span></div></label>
                          </div>
-
-                         {/* Right: Sync Button */}
-                         <button
-                            onClick={handleSyncNP}
-                            disabled={isSyncingNP}
-                            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold shadow-sm transition-all active:scale-95 whitespace-nowrap ${isGoogleLoggedIn ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50'}`}
-                        >
-                            {isSyncingNP ? <Loader2 size={16} className="animate-spin" /> : isGoogleLoggedIn ? <RefreshCw size={16} /> : <PlugZap size={16} />}
-                            {isGoogleLoggedIn ? '同步本月 NP (Sync Calendar)' : '連結日曆以同步 NP'}
-                        </button>
+                         <button onClick={handleSyncNP} disabled={isSyncingNP} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold shadow-sm transition-all active:scale-95 whitespace-nowrap ${isGoogleLoggedIn ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50'}`}>{isSyncingNP ? <Loader2 size={16} className="animate-spin" /> : isGoogleLoggedIn ? <RefreshCw size={16} /> : <PlugZap size={16} />}{isGoogleLoggedIn ? '同步本月 NP' : '連結日曆'}</button>
                     </div>
 
-                    {/* Row 1: Conversion Chart + Source Pie (Equal Height) */}
+                    {/* Row 1 */}
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                        {/* Conversion Horizontal Bar Chart */}
                         <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[400px]">
                              <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Target size={22} className="text-indigo-500" /> 顧客轉化分析</h3>
-                             <div className="w-full flex-1 min-h-0">
-                                <MarketingConversionChart data={marketingAnalytics.conversionData} />
-                             </div>
-                             {/* Conversion Stats Summary */}
+                             <div className="w-full flex-1 min-h-0"><MarketingConversionChart data={marketingAnalytics.conversionData} /></div>
                              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 w-full mt-6 pt-6 border-t border-slate-50 shrink-0">
-                                <div className="text-center border-r border-slate-100 pr-2">
-                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">總進單</div>
-                                    <div className="text-xl font-black text-indigo-600 tabular-nums">{totals.marketing.leads}</div>
-                                </div>
-                                <div className="text-center border-r border-slate-100 pr-2">
-                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">約診單</div>
-                                    <div className="text-xl font-black text-blue-500 tabular-nums">{totals.marketing.pastAppointments}</div>
-                                </div>
-                                <div className="text-center border-r border-slate-100 pr-2">
-                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">到診率</div>
-                                    <div className="text-xl font-black text-emerald-600 tabular-nums">
-                                        {totals.marketing.pastAppointments > 0 ? ((totals.marketing.visited / totals.marketing.pastAppointments) * 100).toFixed(0) : 0}%
-                                    </div>
-                                </div>
-                                <div className="text-center">
-                                    <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">成交率</div>
-                                    <div className="text-xl font-black text-pink-600 tabular-nums">
-                                        {totals.marketing.pastAppointments > 0 ? ((totals.marketing.closed / totals.marketing.pastAppointments) * 100).toFixed(0) : 0}%
-                                    </div>
-                                </div>
+                                <div className="text-center border-r border-slate-100 pr-2"><div className="text-[10px] text-slate-400 font-bold uppercase mb-1">總進單</div><div className="text-xl font-black text-indigo-600 tabular-nums">{totals.marketing.leads}</div></div>
+                                <div className="text-center border-r border-slate-100 pr-2"><div className="text-[10px] text-slate-400 font-bold uppercase mb-1">約診單</div><div className="text-xl font-black text-blue-500 tabular-nums">{totals.marketing.pastAppointments}</div></div>
+                                <div className="text-center border-r border-slate-100 pr-2"><div className="text-[10px] text-slate-400 font-bold uppercase mb-1">到診率</div><div className="text-xl font-black text-emerald-600 tabular-nums">{totals.marketing.pastAppointments > 0 ? ((totals.marketing.visited / totals.marketing.pastAppointments) * 100).toFixed(0) : 0}%</div></div>
+                                <div className="text-center"><div className="text-[10px] text-slate-400 font-bold uppercase mb-1">成交率</div><div className="text-xl font-black text-pink-600 tabular-nums">{totals.marketing.pastAppointments > 0 ? ((totals.marketing.closed / totals.marketing.pastAppointments) * 100).toFixed(0) : 0}%</div></div>
                              </div>
                         </div>
-                        
-                        {/* Source Distribution */}
                         <div className="lg:col-span-2 bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[400px]">
-                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 shrink-0 gap-4">
-                                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><PieChartIcon className="text-indigo-500" /> 客群來源分佈 (Source)</h3>
-                            </div>
+                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 shrink-0 gap-4"><h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><PieChartIcon className="text-indigo-500" /> 客群來源分佈</h3></div>
                             <div className="flex flex-col md:flex-row items-center gap-8 flex-1 min-h-0">
-                                <div className="w-full md:w-1/2 h-full">
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <PieChart>
-                                            <Pie 
-                                                data={marketingPieData} 
-                                                cx="50%" cy="50%" 
-                                                innerRadius={60} 
-                                                outerRadius={100} 
-                                                paddingAngle={5} 
-                                                dataKey="value"
-                                                stroke="none"
-                                            >
-                                                {marketingPieData.map((entry, index) => (
-                                                    <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
-                                                ))}
-                                            </Pie>
-                                            <Tooltip formatter={(v: number) => `${v} 人`} />
-                                        </PieChart>
-                                    </ResponsiveContainer>
-                                </div>
-                                <div className="w-full md:w-1/2 h-full overflow-y-auto custom-scrollbar pr-4">
-                                    <div className="space-y-2">
-                                        {marketingPieData.map((d, i) => (
-                                            <div key={i} className="flex items-center justify-between py-2 border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors">
-                                                <div className="flex items-center gap-3">
-                                                    <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }}></div>
-                                                    <span className="font-bold text-slate-700 text-sm truncate max-w-[120px]">{d.name}</span>
-                                                </div>
-                                                <span className="text-xs font-black text-slate-500 tabular-nums whitespace-nowrap" title="約診.到診.成交">
-                                                    {d.value}.{d.visit}.{d.closed} <span className="text-slate-300 ml-1">({d.rate.toFixed(1)}%)</span>
-                                                </span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
+                                <div className="w-full md:w-1/2 h-full"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={marketingPieData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={5} dataKey="value" stroke="none">{marketingPieData.map((entry, index) => (<Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />))}</Pie><Tooltip formatter={(v: number) => `${v} 人`} /></PieChart></ResponsiveContainer></div>
+                                <div className="w-full md:w-1/2 h-full overflow-y-auto custom-scrollbar pr-4"><div className="space-y-2">{marketingPieData.map((d, i) => (<div key={i} className="flex items-center justify-between py-2 border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors"><div className="flex items-center gap-3"><div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }}></div><span className="font-bold text-slate-700 text-sm truncate max-w-[120px]">{d.name}</span></div><span className="text-xs font-black text-slate-500 tabular-nums whitespace-nowrap" title="約診.到診.成交">{d.value}.{d.visit}.{d.closed} <span className="text-slate-300 ml-1">({d.rate.toFixed(1)}%)</span></span></div>))}</div></div>
                             </div>
                         </div>
                     </div>
 
-                    {/* Row 2: Daily Marketing Trend */}
+                    {/* Row 2: Trend */}
                     <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
-                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
-                            <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><LineChart className="text-indigo-500" size={22} /> 每日 NP 進單趨勢</h3>
-                        </div>
-                        <div className="h-80 w-full">
-                            <MarketingTrendChart 
-                                data={marketingTrendData} 
-                                sortedClinics={sortedClinics} 
-                                filterId={globalFilterClinic} // Pass the global clinic filter to chart
-                            />
-                        </div>
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8"><h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><LineChart className="text-indigo-500" size={22} /> 每日 NP 進單趨勢</h3></div>
+                        <div className="h-80 w-full"><MarketingTrendChart data={marketingTrendData} sortedClinics={sortedClinics} filterId={globalFilterClinic} /></div>
                     </div>
 
-                    {/* Row 3: Consultant Scorecard */}
+                    {/* Row 3: Scorecard */}
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div className="p-6 border-b border-slate-50 flex items-center gap-2">
-                             <Trophy className="text-amber-500" />
-                             <h3 className="font-bold text-slate-800 uppercase tracking-wider text-sm">諮詢師戰報 (Scorecard)</h3>
-                        </div>
+                        <div className="p-6 border-b border-slate-50 flex items-center gap-2"><Trophy className="text-amber-500" /><h3 className="font-bold text-slate-800 uppercase tracking-wider text-sm">諮詢師戰報</h3></div>
                         <div className="max-h-[400px] overflow-y-auto custom-scrollbar">
                             <table className="w-full text-sm text-left">
-                                <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-[10px] border-b border-slate-100 sticky top-0 z-10">
-                                    <tr>
-                                        <th className="px-6 py-4 bg-slate-50">諮詢師姓名</th>
-                                        <th className="px-6 py-4 text-center bg-slate-50">總進單 (Leads)</th>
-                                        <th className="px-6 py-4 text-center bg-slate-50">已到診 (Visited)</th>
-                                        <th className="px-6 py-4 text-center bg-slate-50">已成交 (Closed)</th>
-                                        <th className="px-6 py-4 text-right bg-slate-50">轉換率 (%)</th>
-                                    </tr>
-                                </thead>
+                                <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-[10px] border-b border-slate-100 sticky top-0 z-10"><tr><th className="px-6 py-4 bg-slate-50">諮詢師姓名</th><th className="px-6 py-4 text-center bg-slate-50">總進單 (Leads)</th><th className="px-6 py-4 text-center bg-slate-50">已到診 (Visited)</th><th className="px-6 py-4 text-center bg-slate-50">已成交 (Closed)</th><th className="px-6 py-4 text-right bg-slate-50">轉換率 (%)</th></tr></thead>
                                 <tbody className="divide-y divide-slate-50">
-                                    {marketingAnalytics.scorecard.map((staff, idx) => (
-                                        <tr key={idx} className="hover:bg-indigo-50/10 transition-colors">
-                                            <td className="px-6 py-4 font-bold text-slate-700">{staff.name}</td>
-                                            <td className="px-6 py-4 text-center font-mono text-slate-500 tabular-nums">{staff.leads}</td>
-                                            <td className="px-6 py-4 text-center font-mono text-emerald-600 tabular-nums">{staff.visited}</td>
-                                            <td className="px-6 py-4 text-center font-mono text-pink-500 font-bold tabular-nums">{staff.closed}</td>
-                                            <td className="px-6 py-4 text-right">
-                                                <div className="flex flex-col items-end gap-1">
-                                                    <span className={`font-black text-sm tabular-nums ${staff.rate >= 30 ? 'text-emerald-600' : staff.rate >= 15 ? 'text-amber-600' : 'text-slate-400'}`}>
-                                                        {staff.rate.toFixed(1)}%
-                                                    </span>
-                                                    <div className="w-24 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                                        <div className={`h-full ${staff.rate >= 30 ? 'bg-emerald-500' : staff.rate >= 15 ? 'bg-amber-400' : 'bg-slate-300'}`} style={{ width: `${Math.min(staff.rate, 100)}%` }} />
-                                                    </div>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                    {marketingAnalytics.scorecard.length === 0 && (
-                                        <tr><td colSpan={5} className="p-8 text-center text-slate-400 italic">本月尚無進單數據</td></tr>
-                                    )}
+                                    {marketingAnalytics.scorecard.map((staff, idx) => (<tr key={idx} className="hover:bg-indigo-50/10 transition-colors"><td className="px-6 py-4 font-bold text-slate-700">{staff.name}</td><td className="px-6 py-4 text-center font-mono text-slate-500 tabular-nums">{staff.leads}</td><td className="px-6 py-4 text-center font-mono text-emerald-600 tabular-nums">{staff.visited}</td><td className="px-6 py-4 text-center font-mono text-pink-500 font-bold tabular-nums">{staff.closed}</td><td className="px-6 py-4 text-right"><div className="flex flex-col items-end gap-1"><span className={`font-black text-sm tabular-nums ${staff.rate >= 30 ? 'text-emerald-600' : staff.rate >= 15 ? 'text-amber-600' : 'text-slate-400'}`}>{staff.rate.toFixed(1)}%</span><div className="w-24 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div className={`h-full ${staff.rate >= 30 ? 'bg-emerald-500' : staff.rate >= 15 ? 'bg-amber-400' : 'bg-slate-300'}`} style={{ width: `${Math.min(staff.rate, 100)}%` }} /></div></div></td></tr>))}
+                                    {marketingAnalytics.scorecard.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-slate-400 italic">本月尚無數據</td></tr>}
                                 </tbody>
                             </table>
                         </div>
@@ -1489,9 +1113,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
 
                     {/* NP Raw Data Table */}
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div className="p-6 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
-                            <h3 className="font-bold text-slate-700">NP 進單原始資料 (Raw Data)</h3>
-                        </div>
+                        <div className="p-6 bg-slate-50 border-b border-slate-100 flex justify-between items-center"><h3 className="font-bold text-slate-700">NP 進單原始資料</h3></div>
                         <div className="overflow-x-auto max-h-[600px] custom-scrollbar">
                              <table className="w-full text-sm text-left">
                                 <thead className="bg-white border-b border-slate-100 sticky top-0 z-20 shadow-sm">
@@ -1501,7 +1123,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                         <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="診所" value={filterClinic} onChange={setFilterClinic} options={filterOptions.clinics} /></th>
                                         <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="醫師" value={filterDoctor} onChange={setFilterDoctor} options={filterOptions.doctors} /></th>
                                         <th className="px-4 py-4 font-bold text-slate-400 text-[10px] uppercase min-w-[150px]">預約療程</th>
-                                        <th className="px-4 py-4 font-bold text-slate-400 text-[10px] uppercase min-w-[150px]">實際療程 (Actual)</th>
+                                        <th className="px-4 py-4 font-bold text-slate-400 text-[10px] uppercase min-w-[150px]">實際療程</th>
                                         <th className="px-4 py-4 w-[160px]"><TableHeaderFilter label="行銷標籤" value={filterTag} onChange={setFilterTag} options={marketingTags} /></th>
                                         <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="諮詢師" value={filterConsultant} onChange={setFilterConsultant} options={filterOptions.consultants} /></th>
                                         <th className="px-4 py-4 w-[140px]"><TableHeaderFilter label="來源" value={filterSource} onChange={setFilterSource} options={filterOptions.sources} /></th>
@@ -1517,46 +1139,19 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                             <td className="px-4 py-4 text-slate-500 font-bold text-xs">{getClinicName(r.clinicId)}</td>
                                             <td className="px-4 py-3 text-slate-600 text-xs font-medium">{r.doctorName || r.doctor || '未指定'}</td>
                                             <td className="px-4 py-4 text-slate-400 text-[11px] truncate max-w-[150px]" title={r.calendarTreatment}>{r.calendarTreatment || '-'}</td>
-                                            <td className="px-4 py-4">
-                                                <InlineTableInput 
-                                                    value={r.treatment || ''} 
-                                                    onCommit={(val) => handleInlineTreatmentChange(r.id!, val)}
-                                                    placeholder={r.calendarTreatment}
-                                                />
-                                            </td>
+                                            <td className="px-4 py-4"><InlineTableInput value={r.treatment || ''} onCommit={(val) => handleInlineTreatmentChange(r.id!, val)} placeholder={r.calendarTreatment}/></td>
                                             <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
-                                                <select 
-                                                    className="w-full text-[11px] border border-indigo-100 rounded bg-white px-1 py-1 font-bold text-indigo-700 outline-none focus:ring-1 focus:ring-indigo-400"
-                                                    value={r.marketingTag || '其他'}
-                                                    onChange={(e) => handleInlineTagChange(r.id!, e.target.value)}
-                                                >
+                                                <select className="w-full text-[11px] border border-indigo-100 rounded bg-white px-1 py-1 font-bold text-indigo-700 outline-none focus:ring-1 focus:ring-indigo-400" value={r.marketingTag || '其他'} onChange={(e) => handleInlineTagChange(r.id!, e.target.value)}>
                                                     {marketingTags.map(tag => <option key={tag} value={tag}>{tag}</option>)}
                                                 </select>
                                             </td>
                                             <td className="px-4 py-4 text-slate-500 text-xs">{staffMap[r.consultant || ''] || '未指定'}</td>
                                             <td className="px-4 py-4 text-slate-500 text-[11px] font-bold">{r.source || '未分類'}</td>
                                             <td className="px-4 py-4">{renderNPStatus(r)}</td>
-                                            <td className="px-4 py-4 text-center">
-                                                <button 
-                                                    onClick={(e) => { 
-                                                        e.stopPropagation(); 
-                                                        handleDeleteNP(r.id!); 
-                                                    }} 
-                                                    className="text-slate-300 hover:text-rose-500 p-2 rounded-full hover:bg-rose-50 transition-colors" 
-                                                    title="刪除"
-                                                >
-                                                    <Trash2 size={16}/>
-                                                </button>
-                                            </td>
+                                            <td className="px-4 py-4 text-center"><button onClick={(e) => { e.stopPropagation(); handleDeleteNP(r.id!); }} className="text-slate-300 hover:text-rose-500 p-2 rounded-full hover:bg-rose-50 transition-colors"><Trash2 size={16}/></button></td>
                                         </tr>
                                     ))}
-                                    {filteredNpRecords.length === 0 && (
-                                        <tr>
-                                            <td colSpan={11} className="p-12 text-center text-slate-400">
-                                                本月尚無符合條件的 NP 資料。
-                                            </td>
-                                        </tr>
-                                    )}
+                                    {filteredNpRecords.length === 0 && <tr><td colSpan={11} className="p-12 text-center text-slate-400">本月尚無符合條件的 NP 資料。</td></tr>}
                                 </tbody>
                              </table>
                         </div>
@@ -1564,7 +1159,6 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                 </div>
             )}
 
-            {/* Modals */}
             {editingNP && (
                 <NPStatusModal 
                     isOpen={!!editingNP} 

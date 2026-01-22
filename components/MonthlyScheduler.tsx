@@ -535,9 +535,7 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
                          const isSunday = dateObj.getDay() === 0;
                          const dayOfWeekStr = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'][dateObj.getDay()];
 
-                         // Consolidate Doctor Shifts - Logic Update:
-                         // We extract shifts FIRST, ignoring 'isClosed' flag initially to check for presence of shifts.
-                         // This ensures that if a day is marked closed but has shifts, we know about it.
+                         // Consolidate Doctor Shifts
                          const doctorMap = new Map<string, Set<ShiftType>>();
                          if (schedule && schedule.shifts) {
                              SHIFTS.forEach(shift => {
@@ -552,9 +550,12 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
                          const hasShifts = doctorMap.size > 0;
                          
                          // Determine Effective Closed State:
-                         // 1. If shifts exist, it is NOT closed (Priority 1).
-                         // 2. If no shifts, and it is Sunday OR marked closed, then it is Closed (Priority 2).
-                         const displayClosed = !hasShifts && (isSunday || schedule?.isClosed);
+                         // Logic Update: Priority is Clinic Closed > Shifts
+                         // 1. If schedule exists and isClosed is true -> CLOSED.
+                         // 2. If schedule exists and isClosed is false -> OPEN (show shifts).
+                         // 3. If schedule is missing -> Default to Closed on Sunday, Open otherwise.
+                         
+                         const displayClosed = schedule ? !!schedule.isClosed : isSunday;
 
                          return (
                              <div 
@@ -586,8 +587,8 @@ export const MonthlyScheduler: React.FC<Props> = ({ doctors, schedules: propsSch
                                     </div>
                                 )}
                                 
-                                {/* Content */}
-                                {hasShifts && (
+                                {/* Content - Only show if NOT closed */}
+                                {hasShifts && !displayClosed && (
                                     <div className="flex flex-col gap-1">
                                         {Array.from(doctorMap.entries()).map(([docId, shifts]) => {
                                             const doc = doctors.find(d => d.id === docId);

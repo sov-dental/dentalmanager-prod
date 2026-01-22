@@ -85,12 +85,10 @@ export const ScheduleRenderer: React.FC<ScheduleRendererProps> = ({
     };
 
     const renderCellContent = (schedule: DailySchedule | undefined, isClosed: boolean | undefined, isSunday: boolean) => {
-        // Logic Update: Check for shifts FIRST (Priority 1)
-        const hasShifts = schedule && SHIFTS.some(shift => (schedule.shifts[shift] || []).length > 0);
-
-        // If NO shifts are present, check for Closed/Sunday status (Priority 2)
-        if (!hasShifts && (isSunday || isClosed)) {
-            const closedColor = isSunday ? palette.weekend.sunday : (palette.weekend.sunday || '#f43f5e');
+        // Priority 1: Explicitly Closed (Highest Priority)
+        // If the schedule exists and is marked closed, we MUST show "Closed", ignoring shifts.
+        if (isClosed) {
+            const closedColor = palette.weekend.sunday || '#f43f5e';
             return (
                 <div className="flex-1 w-full flex items-center justify-center">
                     <span 
@@ -103,6 +101,25 @@ export const ScheduleRenderer: React.FC<ScheduleRendererProps> = ({
             );
         }
 
+        // Priority 2: Default Sunday Rule (Implicitly Closed)
+        // If NO schedule exists for a Sunday, default to Closed.
+        // (If a schedule exists for Sunday, isClosed would be defined (true/false). If false, it skips step 1 and comes here.
+        // We only show closed here if schedule is missing entirely on a Sunday).
+        if (!schedule && isSunday) {
+             const closedColor = palette.weekend.sunday || '#f43f5e';
+             return (
+                <div className="flex-1 w-full flex items-center justify-center">
+                    <span 
+                        className="font-bold text-3xl tracking-widest leading-none select-none"
+                        style={{ color: closedColor }}
+                    >
+                        休診
+                    </span>
+                </div>
+            );
+        }
+
+        // Priority 3: Render Shifts (If open)
         if (!schedule) return null;
 
         const doctorMap = new Map<string, Set<ShiftType>>();
@@ -113,6 +130,8 @@ export const ScheduleRenderer: React.FC<ScheduleRendererProps> = ({
                 doctorMap.get(id)?.add(shift);
             });
         });
+
+        if (doctorMap.size === 0) return null;
 
         const commonText = { 
             fontSize: `calc(${typography.bodySize} * 0.9)`, 

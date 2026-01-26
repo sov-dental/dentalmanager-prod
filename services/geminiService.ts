@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { DailySchedule, Clinic, Doctor } from '../types';
 import * as XLSX from 'xlsx';
@@ -8,9 +7,17 @@ const getDayName = (dateStr: string) => {
   return ['週日', '週一', '週二', '週三', '週四', '週五', '週六'][date.getDay()];
 };
 
-// Initialize with named parameter from process.env.API_KEY exclusively
+// Initialize with named parameter using Vite environment variable
 const getGenAI = () => {
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
+  // Use Vite environment variable
+  // Fix: Property 'env' does not exist on type 'ImportMeta'.
+  const apiKey = (import.meta as any).env.VITE_GEMINI_API_KEY || "";
+  
+  if (!apiKey) {
+    console.error("Gemini API Key is missing! Please set VITE_GEMINI_API_KEY in your environment.");
+  }
+
+  return new GoogleGenAI({ apiKey });
 };
 
 export const generateAnnouncement = async (

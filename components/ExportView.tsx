@@ -1,9 +1,8 @@
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Clinic, Doctor, DailySchedule } from '../types';
 import { generateAnnouncement } from '../services/geminiService';
 import { DEFAULT_STYLE_CONFIG } from '../services/storageService';
-import { CLINIC_ORDER } from '../services/firebase';
+import { CLINIC_ORDER, db } from '../services/firebase';
 import { Copy, Sparkles, ZoomIn, ZoomOut, Download } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { ScheduleRenderer } from './ScheduleRenderer';
@@ -19,6 +18,9 @@ export const ExportView: React.FC<Props> = ({ clinics, doctors, schedules }) => 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [generatedText, setGeneratedText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  
+  // Real-time Schedules State
+  const [realtimeSchedules, setRealtimeSchedules] = useState<DailySchedule[]>(schedules);
   
   // Scaling & Download State
   const [scaleFactor, setScaleFactor] = useState(0.4); 
@@ -40,6 +42,23 @@ export const ExportView: React.FC<Props> = ({ clinics, doctors, schedules }) => 
   useEffect(() => {
     if (sortedClinics.length > 0 && !selectedClinicId) setSelectedClinicId(sortedClinics[0].id);
   }, [sortedClinics]); // Re-select if list changes/reloads
+
+  // Real-time Listener for Schedules
+  useEffect(() => {
+    if (!selectedClinicId) return;
+
+    const unsubscribe = db.collection('clinics').doc(selectedClinicId)
+      .onSnapshot((doc) => {
+        if (doc.exists) {
+          const data = doc.data();
+          setRealtimeSchedules(data?.schedules || []);
+        }
+      }, (error) => {
+          console.error("ExportView schedule listener error:", error);
+      });
+
+    return () => unsubscribe();
+  }, [selectedClinicId]);
 
   const selectedClinic = clinics.find(c => c.id === selectedClinicId);
   const config = selectedClinic?.styleConfig || DEFAULT_STYLE_CONFIG;
@@ -104,7 +123,7 @@ export const ExportView: React.FC<Props> = ({ clinics, doctors, schedules }) => 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
 
-  const monthSchedules = schedules.filter(s => {
+  const monthSchedules = realtimeSchedules.filter(s => {
       const d = new Date(s.date);
       return s.clinicId === selectedClinicId && d.getMonth() === month && d.getFullYear() === year;
   });

@@ -58,9 +58,15 @@ export const BonusDetailModal: React.FC<Props> = ({
 
         // Sort by Doctor then Date
         const sorter = (a: AccountingRow, b: AccountingRow) => {
-            const docDiff = a.doctorName.localeCompare(b.doctorName);
+            const docNameA = a.doctorName || '';
+            const docNameB = b.doctorName || '';
+            const docDiff = docNameA.localeCompare(docNameB, 'zh-TW');
+            
             if (docDiff !== 0) return docDiff;
-            return (a.originalDate || a.startTime || '').localeCompare(b.originalDate || b.startTime || '');
+            
+            const dateA = a.originalDate || a.startTime || '';
+            const dateB = b.originalDate || b.startTime || '';
+            return dateA.localeCompare(dateB);
         };
 
         selfPay.sort(sorter);

@@ -32,6 +32,21 @@ const SplitCapsule: React.FC<SplitCapsuleProps> = ({ label, amount, colorClass }
     </span>
 );
 
+const HeaderFilter = ({ label, value, onChange, options }: { label: string, value: string, onChange: (val: string) => void, options: string[] }) => (
+    <div className="flex flex-col gap-1 w-full">
+        <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">{label}</div>
+        <select 
+            className="w-full text-xs border border-slate-300 rounded px-1 py-1 bg-white text-slate-700 outline-none focus:ring-1 focus:ring-indigo-500 font-medium cursor-pointer"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+        >
+            <option value="">全部</option>
+            {options.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+        </select>
+    </div>
+);
+
 export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
   const navigate = useNavigate();
   const { selectedClinicId } = useClinic();
@@ -49,6 +64,8 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
 
   const [filterDate, setFilterDate] = useState('');
   const [filterDoctor, setFilterDoctor] = useState('');
+  const [filterConsultant, setFilterConsultant] = useState('');
+  const [filterHandler, setFilterHandler] = useState('');
   const [filterPayment, setFilterPayment] = useState('');
   const [filterSelfPay, setFilterSelfPay] = useState('');
   const [filterRetail, setFilterRetail] = useState('');
@@ -69,7 +86,13 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
           setRows(dailyData);
           setNhiRecords(nhiData);
           setMonthlyStatus(status);
-          setFilterDate(''); setFilterDoctor(''); setFilterPayment(''); setFilterSelfPay(''); setFilterRetail('');
+          setFilterDate(''); 
+          setFilterDoctor(''); 
+          setFilterConsultant(''); 
+          setFilterHandler('');
+          setFilterPayment(''); 
+          setFilterSelfPay(''); 
+          setFilterRetail('');
       } catch (error) {
           console.error(error);
           alert("讀取月報表失敗");
@@ -120,9 +143,14 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
   const filteredRows = useMemo(() => {
       return rows.filter(row => {
           if (searchTerm && !row.patientName.toLowerCase().includes(searchTerm.toLowerCase()) && !row.doctorName.toLowerCase().includes(searchTerm.toLowerCase())) return false;
+          
           const rowDate = row.originalDate || (row.startTime ? row.startTime.split('T')[0] : '');
-          if (filterDate && rowDate !== filterDate) return false;
+          
+          if (filterDate && rowDate.slice(5) !== filterDate) return false;
           if (filterDoctor && row.doctorName !== filterDoctor) return false;
+          if (filterConsultant && (row.treatments.consultant || '') !== filterConsultant) return false;
+          if (filterHandler && (row.retail.staff || '') !== filterHandler) return false;
+
           if (filterPayment) {
               const { cash, card, transfer } = row.paymentBreakdown || { cash: 0, card: 0, transfer: 0 };
               let isCash = cash > 0, isCard = card > 0, isTransfer = transfer > 0;
@@ -140,7 +168,29 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
           }
           return true;
       });
-  }, [rows, searchTerm, filterDate, filterDoctor, filterPayment, filterSelfPay, filterRetail]);
+  }, [rows, searchTerm, filterDate, filterDoctor, filterConsultant, filterHandler, filterPayment, filterSelfPay, filterRetail]);
+
+  const uniqueValues = useMemo(() => {
+      const dates = new Set<string>();
+      const doctors = new Set<string>();
+      const consultants = new Set<string>();
+      const handlers = new Set<string>();
+
+      rows.forEach(r => {
+          const d = r.originalDate || (r.startTime ? r.startTime.split('T')[0] : '');
+          if (d) dates.add(d.slice(5)); // Store as MM-DD
+          if (r.doctorName) doctors.add(r.doctorName);
+          if (r.treatments.consultant) consultants.add(r.treatments.consultant);
+          if (r.retail.staff) handlers.add(r.retail.staff);
+      });
+
+      return {
+          dates: Array.from(dates).sort().reverse(),
+          doctors: Array.from(doctors).sort(),
+          consultants: Array.from(consultants).sort(),
+          handlers: Array.from(handlers).sort()
+      };
+  }, [rows]);
 
   const totals = useMemo(() => {
       return filteredRows.reduce((acc, row) => {
@@ -175,7 +225,27 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
   const handleExport = () => {
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.json_to_sheet(filteredRows.map(r => ({
-          日期: r.originalDate || (r.startTime ? r.startTime.split('T')[0] : '-'), 病患: r.patientName, 醫師: r.doctorName, NP備註: r.npStatus, 掛號費: r.treatments.regFee || 0, 部分負擔: r.treatments.copayment || 0, 假牙: r.treatments.prostho || 0, 植牙: r.treatments.implant || 0, 矯正: r.treatments.ortho || 0, SOV: r.treatments.sov || 0, INV: r.treatments.inv || 0, 美白: r.treatments.whitening || 0, 牙周: r.treatments.perio || 0, 其他: r.treatments.otherSelfPay || 0, 物販: r.retail.products || 0, 小金庫: r.retail.diyWhitening || 0, 實收: r.actualCollected, 支付方式: r.paymentBreakdown?.card ? '刷卡' : r.paymentBreakdown?.transfer ? '匯款' : '現金', 療程內容: r.treatmentContent,
+          日期: r.originalDate || (r.startTime ? r.startTime.split('T')[0] : '-'), 
+          病患: r.patientName, 
+          醫師: r.doctorName, 
+          NP備註: r.npStatus, 
+          掛號費: r.treatments.regFee || 0, 
+          部分負擔: r.treatments.copayment || 0, 
+          假牙: r.treatments.prostho || 0, 
+          植牙: r.treatments.implant || 0, 
+          矯正: r.treatments.ortho || 0, 
+          SOV: r.treatments.sov || 0, 
+          INV: r.treatments.inv || 0, 
+          美白: r.treatments.whitening || 0, 
+          牙周: r.treatments.perio || 0, 
+          其他: r.treatments.otherSelfPay || 0, 
+          諮詢師: r.treatments.consultant || '',
+          物販: r.retail.products || 0, 
+          小金庫: r.retail.diyWhitening || 0, 
+          經手人: r.retail.staff || '',
+          實收: r.actualCollected, 
+          支付方式: r.paymentBreakdown?.card ? '刷卡' : r.paymentBreakdown?.transfer ? '匯款' : '現金', 
+          療程內容: r.treatmentContent,
       })));
       XLSX.utils.book_append_sheet(wb, ws, "Daily Detail");
       if (nhiRecords.length > 0) {
@@ -184,7 +254,7 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
       XLSX.writeFile(wb, `Monthly_Report_${selectedClinicId}_${currentMonth}.xlsx`);
   };
 
-  const headerCellStyle = "px-4 py-3 text-xs font-bold text-slate-500 uppercase bg-slate-50 border-b border-slate-200 border-r border-slate-100 sticky top-0 z-20";
+  const headerCellStyle = "px-4 py-3 bg-slate-50 border-b border-slate-200 border-r border-slate-100 sticky top-0 z-20 align-top";
 
   return (
     <div className="space-y-6">
@@ -258,11 +328,43 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                   <table className="w-full border-collapse">
                       <thead>
                           <tr>
-                              <th className={`${headerCellStyle} text-left min-w-[80px]`}>日期</th><th className={`${headerCellStyle} text-left min-w-[100px]`}>病患</th><th className={`${headerCellStyle} text-center min-w-[80px]`}>醫師</th><th className={`${headerCellStyle} text-right min-w-[100px]`}>掛號/部分負擔</th><th className={`${headerCellStyle} text-right min-w-[140px]`}>自費項目</th><th className={`${headerCellStyle} text-right min-w-[140px]`}>小金庫/物販</th><th className={`${headerCellStyle} text-right min-w-[140px]`}>總金額 (實收)</th><th className={`${headerCellStyle} text-left min-w-[100px]`}>療程內容</th><th className={`${headerCellStyle} text-left min-w-[80px] border-r-0`}>NP/備註</th>
+                              <th className={`${headerCellStyle} min-w-[100px]`}>
+                                  <HeaderFilter label="日期" value={filterDate} onChange={setFilterDate} options={uniqueValues.dates} />
+                              </th>
+                              <th className={`${headerCellStyle} text-left min-w-[100px] pt-5`}>病患</th>
+                              <th className={`${headerCellStyle} min-w-[120px]`}>
+                                  <HeaderFilter label="醫師" value={filterDoctor} onChange={setFilterDoctor} options={uniqueValues.doctors} />
+                              </th>
+                              <th className={`${headerCellStyle} text-right min-w-[100px] pt-5`}>掛號/部分負擔</th>
+                              <th className={`${headerCellStyle} text-right min-w-[120px] pt-5`}>自費項目</th>
+                              <th className={`${headerCellStyle} min-w-[100px]`}>
+                                  <HeaderFilter label="諮詢師" value={filterConsultant} onChange={setFilterConsultant} options={uniqueValues.consultants} />
+                              </th>
+                              <th className={`${headerCellStyle} text-right min-w-[120px] pt-5`}>小金庫/物販</th>
+                              <th className={`${headerCellStyle} min-w-[100px]`}>
+                                  <HeaderFilter label="經手人" value={filterHandler} onChange={setFilterHandler} options={uniqueValues.handlers} />
+                              </th>
+                              <th className={`${headerCellStyle} text-right min-w-[140px] pt-5`}>總金額 (實收)</th>
+                              <th className={`${headerCellStyle} text-left min-w-[100px] pt-5`}>療程內容</th>
+                              <th className={`${headerCellStyle} text-left min-w-[80px] border-r-0 pt-5`}>NP/備註</th>
                           </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 bg-white">
-                          {filteredRows.map((row, idx) => (<tr key={idx} className="hover:bg-slate-50 transition-colors group"><td className="px-4 py-3 text-lg font-mono text-blue-600 font-bold border-r border-slate-50 cursor-pointer hover:underline whitespace-nowrap" onClick={() => navigate(`/accounting?date=${row.originalDate || (row.startTime ? row.startTime.split('T')[0] : '')}`)}>{(row.originalDate || (row.startTime ? row.startTime.split('T')[0] : '')).slice(5)}</td><td className="px-4 py-3 text-sm border-r border-slate-50 whitespace-nowrap">{row.patientName}</td><td className="px-2 py-3 border-r border-slate-50 text-center">{row.doctorName}</td><td className="px-4 py-3 text-right text-sm font-mono text-slate-600 border-r border-slate-50 whitespace-nowrap">{row.treatments.regFee + row.treatments.copayment}</td><td className="px-4 py-3 text-right border-r border-slate-50 align-top">${((row.treatments as any).prostho || 0) + ((row.treatments as any).implant || 0) + ((row.treatments as any).ortho || 0) + ((row.treatments as any).sov || 0) + ((row.treatments as any).inv || 0) + ((row.treatments as any).whitening || 0) + ((row.treatments as any).perio || 0)}</td><td className="px-4 py-3 text-right border-r border-slate-50 align-top">${(row.retail.products || 0) + (row.retail.diyWhitening || 0)}</td><td className="px-4 py-3 text-right border-r border-slate-50 whitespace-nowrap align-top font-bold">${row.actualCollected.toLocaleString()}</td><td className="px-4 py-3 text-xs text-slate-500 border-r border-slate-50 truncate max-w-[200px]">{row.treatmentContent}</td><td className="px-4 py-3 text-xs">{row.npStatus}</td></tr>))}
+                          {filteredRows.map((row, idx) => (<tr key={idx} className="hover:bg-slate-50 transition-colors group">
+                              <td className="px-4 py-3 text-lg font-mono text-blue-600 font-bold border-r border-slate-50 cursor-pointer hover:underline whitespace-nowrap" onClick={() => navigate(`/accounting?date=${row.originalDate || (row.startTime ? row.startTime.split('T')[0] : '')}`)}>
+                                  {(row.originalDate || (row.startTime ? row.startTime.split('T')[0] : '')).slice(5)}
+                              </td>
+                              <td className="px-4 py-3 text-sm border-r border-slate-50 whitespace-nowrap">{row.patientName}</td>
+                              <td className="px-2 py-3 border-r border-slate-50 text-center text-sm font-medium">{row.doctorName}</td>
+                              <td className="px-4 py-3 text-right text-sm font-mono text-slate-600 border-r border-slate-50 whitespace-nowrap">{row.treatments.regFee + row.treatments.copayment}</td>
+                              <td className="px-4 py-3 text-right border-r border-slate-50 align-top text-sm">${((row.treatments as any).prostho || 0) + ((row.treatments as any).implant || 0) + ((row.treatments as any).ortho || 0) + ((row.treatments as any).sov || 0) + ((row.treatments as any).inv || 0) + ((row.treatments as any).whitening || 0) + ((row.treatments as any).perio || 0) + ((row.treatments as any).otherSelfPay || 0)}</td>
+                              <td className="px-4 py-3 text-center border-r border-slate-50 text-xs text-slate-600">{row.treatments.consultant}</td>
+                              <td className="px-4 py-3 text-right border-r border-slate-50 align-top text-sm">${(row.retail.products || 0) + (row.retail.diyWhitening || 0)}</td>
+                              <td className="px-4 py-3 text-center border-r border-slate-50 text-xs text-slate-600">{row.retail.staff}</td>
+                              <td className="px-4 py-3 text-right border-r border-slate-50 whitespace-nowrap align-top font-bold text-slate-800">${row.actualCollected.toLocaleString()}</td>
+                              <td className="px-4 py-3 text-xs text-slate-500 border-r border-slate-50 truncate max-w-[200px]">{row.treatmentContent}</td>
+                              <td className="px-4 py-3 text-xs">{row.npStatus}</td>
+                          </tr>))}
                       </tbody>
                   </table>
               )}

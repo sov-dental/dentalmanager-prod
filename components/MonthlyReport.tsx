@@ -47,6 +47,23 @@ const HeaderFilter = ({ label, value, onChange, options }: { label: string, valu
     </div>
 );
 
+const PaymentFilter = ({ value, onChange }: { value: string, onChange: (val: string) => void }) => (
+    <div className="flex flex-col gap-1 w-full">
+        <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider text-right">總金額 (支付)</div>
+        <select 
+            className="w-full text-xs border border-slate-300 rounded px-1 py-1 bg-white text-slate-700 outline-none focus:ring-1 focus:ring-indigo-500 font-medium cursor-pointer text-right"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+        >
+            <option value="">全部 (All)</option>
+            <option value="cash">現金 (Cash)</option>
+            <option value="card">刷卡 (Card)</option>
+            <option value="transfer">匯款 (Trans)</option>
+        </select>
+    </div>
+);
+
 export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
   const navigate = useNavigate();
   const { selectedClinicId } = useClinic();
@@ -169,6 +186,22 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
           return true;
       });
   }, [rows, searchTerm, filterDate, filterDoctor, filterConsultant, filterHandler, filterPayment, filterSelfPay, filterRetail]);
+
+  const tableTotals = useMemo(() => {
+      return filteredRows.reduce((acc, row) => {
+          const t = row.treatments;
+          const r = row.retail;
+          const reg = (t.regFee || 0) + (t.copayment || 0);
+          const sp = ((t as any).prostho || 0) + ((t as any).implant || 0) + ((t as any).ortho || 0) + ((t as any).sov || 0) + ((t as any).inv || 0) + ((t as any).whitening || 0) + ((t as any).perio || 0) + ((t as any).otherSelfPay || 0);
+          const ret = (r.products || 0) + (r.diyWhitening || 0);
+          
+          acc.reg += reg;
+          acc.selfPay += sp;
+          acc.retail += ret;
+          acc.actual += row.actualCollected || 0;
+          return acc;
+      }, { reg: 0, selfPay: 0, retail: 0, actual: 0 });
+  }, [filteredRows]);
 
   const uniqueValues = useMemo(() => {
       const dates = new Set<string>();
@@ -344,7 +377,9 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                               <th className={`${headerCellStyle} min-w-[100px]`}>
                                   <HeaderFilter label="經手人" value={filterHandler} onChange={setFilterHandler} options={uniqueValues.handlers} />
                               </th>
-                              <th className={`${headerCellStyle} text-right min-w-[140px] pt-5`}>總金額 (實收)</th>
+                              <th className={`${headerCellStyle} text-right min-w-[140px]`}>
+                                  <PaymentFilter value={filterPayment} onChange={setFilterPayment} />
+                              </th>
                               <th className={`${headerCellStyle} text-left min-w-[100px] pt-5`}>療程內容</th>
                               <th className={`${headerCellStyle} text-left min-w-[80px] border-r-0 pt-5`}>NP/備註</th>
                           </tr>
@@ -366,6 +401,18 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                               <td className="px-4 py-3 text-xs">{row.npStatus}</td>
                           </tr>))}
                       </tbody>
+                      <tfoot className="bg-slate-50 border-t-2 border-slate-200 font-bold text-slate-700">
+                          <tr>
+                              <td colSpan={3} className="px-4 py-3 text-right">總計</td>
+                              <td className="px-4 py-3 text-right font-mono">${tableTotals.reg.toLocaleString()}</td>
+                              <td className="px-4 py-3 text-right font-mono">${tableTotals.selfPay.toLocaleString()}</td>
+                              <td className="px-4 py-3"></td>
+                              <td className="px-4 py-3 text-right font-mono">${tableTotals.retail.toLocaleString()}</td>
+                              <td className="px-4 py-3"></td>
+                              <td className="px-4 py-3 text-right font-mono text-emerald-600 text-base">${tableTotals.actual.toLocaleString()}</td>
+                              <td colSpan={2}></td>
+                          </tr>
+                      </tfoot>
                   </table>
               )}
           </div>

@@ -662,21 +662,23 @@ export const saveSalaryRecord = async (record: SalaryRecord) => {
 
 // --- BONUS SETTINGS (Global per Clinic) ---
 export const getBonusSettings = async (clinicId: string, _month?: string): Promise<any> => {
-    // New Architecture: Settings are global per clinic, stored in `_global` document.
-    // The `_month` parameter is kept for backward compatibility but ignored.
     const id = `${clinicId}_global`;
     const doc = await db.collection('bonus_settings').doc(id).get();
     
-    if (doc.exists) {
-        return doc.data();
-    }
-    
-    // Return Default Values if not found
-    return { 
+    // Default Values including new salary parameters
+    const defaults = { 
         poolRate: 30, 
         selfPayRate: 1, 
-        retailRate: 10 
+        retailRate: 10,
+        fullAttendanceBonus: 3000,
+        overtimeRate: 3.5
     };
+
+    if (doc.exists) {
+        return { ...defaults, ...doc.data() };
+    }
+    
+    return defaults;
 };
 
 export const saveBonusSettings = async (clinicId: string, settings: any) => {

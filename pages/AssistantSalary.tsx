@@ -2,13 +2,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Clinic, Consultant, DailySchedule, AccountingRow, SalaryRecord } from '../types';
 import { 
-    getStaffList, loadDailyAccounting, hydrateRow, getBonusSettings, getYearlySickLeaveCount, getMonthlyScheduleStats, getMonthlyMealStats, calculateMonthlyBonus, getSalaryRecords, saveSalaryRecord
+    getStaffList, loadDailyAccounting, hydrateRow, getBonusSettings, getYearlySickLeaveCount, getMonthlyScheduleStats, getMonthlyMealStats, calculateMonthlyBonus, getSalaryRecords, saveSalaryRecord, saveBonusSettings
 } from '../services/firebase';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from '../components/ClinicSelector';
 import { 
     Calculator, DollarSign, Calendar, Loader2, FileSpreadsheet, 
-    AlertCircle, Clock, Trophy, Umbrella, Info, Utensils
+    AlertCircle, Clock, Trophy, Umbrella, Info, Utensils, Save
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -64,6 +64,7 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
     const [currentMonth, setCurrentMonth] = useState<string>(new Date().toISOString().slice(0, 7));
     const [attendanceBonusBase, setAttendanceBonusBase] = useState<number>(3000);
     const [otRate, setOtRate] = useState<number>(3.5); // Per Minute
+    const [isSavingSettings, setIsSavingSettings] = useState(false);
     
     // Data State
     const [salaryData, setSalaryData] = useState<SalaryRow[]>([]);
@@ -73,6 +74,38 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
     const [regularOTInputs, setRegularOTInputs] = useState<Record<string, number>>({});
     const [insuranceInputs, setInsuranceInputs] = useState<Record<string, number>>({});
     const [adjustmentInputs, setAdjustmentInputs] = useState<Record<string, number>>({});
+
+    // Load Settings
+    useEffect(() => {
+        if (selectedClinicId) {
+            const fetchSettings = async () => {
+                const settings = await getBonusSettings(selectedClinicId);
+                setAttendanceBonusBase(Number(settings.fullAttendanceBonus ?? 3000));
+                setOtRate(Number(settings.overtimeRate ?? 3.5));
+            };
+            fetchSettings();
+        }
+    }, [selectedClinicId]);
+
+    // Save Settings Handler
+    const handleSaveGlobalSettings = async () => {
+        if (!selectedClinicId) return;
+        setIsSavingSettings(true);
+        try {
+            await saveBonusSettings(selectedClinicId, {
+                fullAttendanceBonus: attendanceBonusBase,
+                overtimeRate: otRate
+            });
+            // Recalculate to ensure consistency?
+            if (salaryData.length > 0) calculateSalary();
+            alert("參數已儲存 (Global Settings Saved)");
+        } catch(e) {
+            console.error(e);
+            alert("儲存失敗");
+        } finally {
+            setIsSavingSettings(false);
+        }
+    };
 
     useEffect(() => {
         if (selectedClinicId && currentMonth) {
@@ -297,6 +330,14 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                     <div className="flex items-center gap-2">
                         <label className="text-xs font-bold text-slate-500 whitespace-nowrap">加班/分 $</label>
                         <input type="number" step="0.1" className="w-full border p-2 rounded bg-white" value={otRate} onChange={e => setOtRate(Number(e.target.value))} />
+                        <button 
+                            onClick={handleSaveGlobalSettings}
+                            disabled={isSavingSettings}
+                            className="p-2 bg-white border border-slate-300 rounded hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-300 transition-colors shadow-sm"
+                            title="儲存為全域設定"
+                        >
+                            {isSavingSettings ? <Loader2 size={16} className="animate-spin"/> : <Save size={16} />}
+                        </button>
                     </div>
                 </div>
             </div>
@@ -316,7 +357,7 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                                 <th className="px-4 py-3 text-right text-rose-600">代扣餐費</th>
                                 <th className="px-4 py-3 text-right min-w-[100px]">勞健保 (扣)</th>
                                 <th className="px-4 py-3 text-right min-w-[100px]">其他調整</th>
-                                <th className="px-4 py-3 text-right font-black bg-indigo-50 text-indigo-700 border-l border-indigo-100">實領薪資</th>
+                                <th className="px-4 py-3 text-right font-black text-lg text-indigo-700 bg-indigo-50/30 border-l border-indigo-100">實領薪資</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">

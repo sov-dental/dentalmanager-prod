@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Clinic, Consultant, DailySchedule, AccountingRow } from '../types';
+import { Clinic, Consultant, DailySchedule, AccountingRow, SalaryRecord } from '../types';
 import { 
-    getStaffList, loadDailyAccounting, hydrateRow, getBonusSettings, getYearlySickLeaveCount, getMonthlyScheduleStats, getMonthlyMealStats, calculateMonthlyBonus
+    getStaffList, loadDailyAccounting, hydrateRow, getBonusSettings, getYearlySickLeaveCount, getMonthlyScheduleStats, getMonthlyMealStats, calculateMonthlyBonus, getSalaryRecords, saveSalaryRecord
 } from '../services/firebase';
 import { useClinic } from '../contexts/ClinicContext';
 import { ClinicSelector } from '../components/ClinicSelector';
@@ -86,12 +86,33 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
             const staffList = await getStaffList(selectedClinicId);
             const targetStaff = staffList.filter(c => c.role !== 'part_time');
 
-            // 1. Get Scheduling Stats, Full Bonus Calculation, and Meal Stats in parallel
-            const [monthStats, bonusMap, mealStats] = await Promise.all([
+            // 1. Fetch ALL data in parallel
+            const [monthStats, bonusMap, mealStats, salaryRecords] = await Promise.all([
                 getMonthlyScheduleStats(selectedClinicId, currentMonth),
-                calculateMonthlyBonus(selectedClinicId, currentMonth), // New shared function
-                getMonthlyMealStats(selectedClinicId, currentMonth)
+                calculateMonthlyBonus(selectedClinicId, currentMonth), 
+                getMonthlyMealStats(selectedClinicId, currentMonth),
+                getSalaryRecords(selectedClinicId, currentMonth)
             ]);
+
+            // 2. Populate input maps from persisted records
+            const recordMap = new Map(salaryRecords.map(r => [r.staffId, r]));
+            const newOTInputs: Record<string, number> = {};
+            const newInsInputs: Record<string, number> = {};
+            const newAdjInputs: Record<string, number> = {};
+
+            targetStaff.forEach(staff => {
+                const rec = recordMap.get(staff.id);
+                if (rec) {
+                    if (rec.regularOvertimeMinutes !== undefined) newOTInputs[staff.id] = rec.regularOvertimeMinutes;
+                    if (rec.laborHealthInsurance !== undefined) newInsInputs[staff.id] = rec.laborHealthInsurance;
+                    if (rec.otherAdjustment !== undefined) newAdjInputs[staff.id] = rec.otherAdjustment;
+                }
+            });
+
+            // Update State for Controlled Inputs
+            setRegularOTInputs(newOTInputs);
+            setInsuranceInputs(newInsInputs);
+            setAdjustmentInputs(newAdjInputs);
 
             const [y, m] = currentMonth.split('-').map(Number);
 
@@ -115,7 +136,6 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                 let bonus = attendanceBonusBase;
                 let disqualifiedReason = '';
 
-                // NEW: Strict Rule - Disqualify if any Late OR any Personal Leave
                 if (lateCount > 0 || personalDays > 0) {
                     bonus = 0;
                     const reasons = [];
@@ -123,7 +143,6 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                     if (personalDays > 0) reasons.push('事假');
                     disqualifiedReason = reasons.join('/');
                 } else if (sickDays > 0) {
-                    // Sick Leave: Proportional deduction only after 10-day buffer
                     const remainingBuffer = Math.max(0, 10 - ytdSickDays);
                     const deductibleSickDays = Math.max(0, sickDays - remainingBuffer);
                     bonus -= (attendanceBonusBase / 30) * deductibleSickDays;
@@ -134,15 +153,15 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                 // --- Standard Salary Logic ---
                 const leaveDeduction = Math.round((personalDays * dailyRate) + (sickDays * dailyRate * 0.5));
                 const sundayOTPay = Math.round(dailyRate * sundayOTDays);
-                const regularOTMins = regularOTInputs[staff.id] || 0;
+                
+                // Use fetched inputs or default to 0 / profile value
+                const regularOTMins = newOTInputs[staff.id] || 0;
                 const regularOTPay = Math.round(regularOTMins * otRate);
                 
-                const insurance = insuranceInputs[staff.id] !== undefined ? insuranceInputs[staff.id] : (staff.monthlyInsuranceCost || 0);
-                const adjustment = adjustmentInputs[staff.id] || 0;
+                const insurance = newInsInputs[staff.id] !== undefined ? newInsInputs[staff.id] : (staff.monthlyInsuranceCost || 0);
+                const adjustment = newAdjInputs[staff.id] || 0;
                 
-                // Use the shared bonus map result
                 const performanceBonus = bonusMap[staff.id] || 0;
-                
                 const mealDeduction = mealStats[staff.id] || 0;
 
                 const netPay = totalBase - leaveDeduction + finalFullAttendanceBonus + sundayOTPay + regularOTPay + performanceBonus - mealDeduction - insurance + adjustment;
@@ -185,9 +204,24 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
         }));
     };
 
+    // --- Persistence Helper ---
+    const persistInput = async (staffId: string, field: keyof SalaryRecord, value: number) => {
+        const id = `${selectedClinicId}_${currentMonth}_${staffId}`;
+        const record: SalaryRecord = {
+            id,
+            clinicId: selectedClinicId,
+            yearMonth: currentMonth,
+            staffId,
+            [field]: value
+        };
+        await saveSalaryRecord(record);
+    };
+
     const handleRegularOTChange = (id: string, mins: string) => {
         const val = Number(mins) || 0;
         setRegularOTInputs(prev => ({ ...prev, [id]: val }));
+        
+        // Update UI Calculation Immediately
         const row = salaryData.find(r => r.consultant.id === id);
         if (row) {
             const regularOTPay = Math.round(val * otRate);
@@ -277,7 +311,7 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                                 <th className="px-4 py-3 min-w-[200px]">考勤統計</th>
                                 <th className="px-4 py-3 text-right text-emerald-600">全勤獎金</th>
                                 <th className="px-4 py-3 text-right text-amber-600">週日加班</th>
-                                <th className="px-4 py-3 text-right">平日加班</th>
+                                <th className="px-4 py-3 text-right">平日加班 (分)</th>
                                 <th className="px-4 py-3 text-right text-purple-600">績效獎金</th>
                                 <th className="px-4 py-3 text-right text-rose-600">代扣餐費</th>
                                 <th className="px-4 py-3 text-right min-w-[100px]">勞健保 (扣)</th>
@@ -318,7 +352,14 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                                     </td>
                                     <td className="px-4 py-3 text-right">
                                         <div className="flex items-center justify-end gap-1 mb-1">
-                                            <input type="number" className="w-16 border rounded px-1 py-0.5 text-right text-sm bg-slate-50 focus:bg-white focus:ring-1 focus:ring-indigo-500 outline-none" placeholder="0" value={row.regularOTMins || ''} onChange={e => handleRegularOTChange(row.consultant.id, e.target.value)} />
+                                            <input 
+                                                type="number" 
+                                                className="w-16 border rounded px-1 py-0.5 text-right text-sm bg-slate-50 focus:bg-white focus:ring-1 focus:ring-indigo-500 outline-none" 
+                                                placeholder="0" 
+                                                value={row.regularOTMins || ''} 
+                                                onChange={e => handleRegularOTChange(row.consultant.id, e.target.value)} 
+                                                onBlur={() => persistInput(row.consultant.id, 'regularOvertimeMinutes', regularOTInputs[row.consultant.id] || 0)}
+                                            />
                                             <span className="text-[10px] text-slate-400">分</span>
                                         </div>
                                         <div className="text-xs font-bold text-slate-600">+${row.regularOTPay.toLocaleString()}</div>
@@ -330,10 +371,23 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                                         {row.mealDeduction > 0 ? `-$${row.mealDeduction.toLocaleString()}` : '-'}
                                     </td>
                                     <td className="px-4 py-3 text-right">
-                                        <input type="number" className="w-20 border rounded px-1 py-0.5 text-right text-sm text-rose-600 font-bold bg-rose-50/50 focus:bg-white focus:ring-1 focus:ring-rose-500 outline-none mb-1" value={row.insurance} onChange={e => handleInsuranceChange(row.consultant.id, e.target.value)} />
+                                        <input 
+                                            type="number" 
+                                            className="w-20 border rounded px-1 py-0.5 text-right text-sm text-rose-600 font-bold bg-rose-50/50 focus:bg-white focus:ring-1 focus:ring-rose-500 outline-none mb-1" 
+                                            value={row.insurance} 
+                                            onChange={e => handleInsuranceChange(row.consultant.id, e.target.value)} 
+                                            onBlur={() => persistInput(row.consultant.id, 'laborHealthInsurance', insuranceInputs[row.consultant.id] || 0)}
+                                        />
                                     </td>
                                     <td className="px-4 py-3 text-right">
-                                        <input type="number" className="w-20 border rounded px-1 py-0.5 text-right text-sm bg-slate-50 focus:bg-white focus:ring-1 focus:ring-indigo-500 outline-none" placeholder="0" value={row.adjustment || ''} onChange={e => handleAdjustmentChange(row.consultant.id, e.target.value)} />
+                                        <input 
+                                            type="number" 
+                                            className="w-20 border rounded px-1 py-0.5 text-right text-sm bg-slate-50 focus:bg-white focus:ring-1 focus:ring-indigo-500 outline-none" 
+                                            placeholder="0" 
+                                            value={row.adjustment || ''} 
+                                            onChange={e => handleAdjustmentChange(row.consultant.id, e.target.value)} 
+                                            onBlur={() => persistInput(row.consultant.id, 'otherAdjustment', adjustmentInputs[row.consultant.id] || 0)}
+                                        />
                                     </td>
                                     <td className="px-4 py-3 text-right font-black text-lg text-indigo-700 bg-indigo-50/30 border-l border-indigo-100 tabular-nums">
                                         ${row.netPay.toLocaleString()}
@@ -357,7 +411,7 @@ export const AssistantSalary: React.FC<Props> = ({ clinics }) => {
                         <li><strong>事假扣款:</strong> 薪資基數依 30 天比例扣薪。</li>
                         <li><strong>病假扣款:</strong> 薪資基數扣除半薪；全勤獎金每年享有 10 天緩衝，超過 10 天後開始按天數扣除。</li>
                         <li><strong>代扣餐費:</strong> 自動從每日帳務「餐費公積金」中匯總該員工的點餐費用。</li>
-                        <li><strong>績效獎金:</strong> 依據全域獎金設定與公積金比例自動計算 (與獎金頁面同步)。</li>
+                        <li><strong>輸入保存:</strong> 加班時數、勞健保與調整金額會在輸入後自動儲存。</li>
                     </ul>
                 </div>
             </div>

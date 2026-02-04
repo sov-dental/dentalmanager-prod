@@ -334,7 +334,7 @@ export interface NHIRecord {
     updatedAt: number;
 }
 
-// NEW: Salary Adjustment Record
+// NEW: Salary Adjustment Record (Legacy for Doctors)
 export interface SalaryAdjustment {
     id?: string;
     clinicId: string;
@@ -345,6 +345,19 @@ export interface SalaryAdjustment {
     amount: number;
     note: string;
     updatedAt: number;
+}
+
+// NEW: Assistant Salary Input Persistence Record
+export interface SalaryRecord {
+    id: string; // ${clinicId}_${yearMonth}_${staffId}
+    clinicId: string;
+    yearMonth: string; // YYYY-MM
+    staffId: string;
+    regularOvertimeMinutes?: number;
+    laborHealthInsurance?: number; // Combined input in UI currently called 'insurance'
+    otherAdjustment?: number;
+    note?: string;
+    updatedAt?: string;
 }
 
 // NEW: Monthly Target for Dashboard

@@ -3,7 +3,7 @@ import firebase from "firebase/compat/app";
 import "firebase/compat/auth";
 import "firebase/compat/firestore";
 import "firebase/compat/storage";
-import { AppData, DailyAccountingRecord, AccountingRow, TechnicianRecord, MonthlyTarget, Clinic, NHIRecord, SalaryAdjustment, Consultant, InsuranceGrade, User, UserRole, Doctor, Laboratory, SOVReferral, DailySchedule, AuditLogEntry, NPRecord, ClinicMonthlySummary, MonthlyClosing } from '../types';
+import { AppData, DailyAccountingRecord, AccountingRow, TechnicianRecord, MonthlyTarget, Clinic, NHIRecord, SalaryAdjustment, Consultant, InsuranceGrade, User, UserRole, Doctor, Laboratory, SOVReferral, DailySchedule, AuditLogEntry, NPRecord, ClinicMonthlySummary, MonthlyClosing, SalaryRecord } from '../types';
 
 // --- CONFIGURATION STRATEGY: HOSTNAME SWITCHING ---
 
@@ -640,6 +640,24 @@ export const addSalaryAdjustment = async (adj: SalaryAdjustment) => {
 
 export const deleteSalaryAdjustment = async (id: string) => {
     await db.collection('salary_adjustments').doc(id).delete();
+};
+
+// --- SALARY RECORDS (Assistant Input Persistence) ---
+
+export const getSalaryRecords = async (clinicId: string, yearMonth: string): Promise<SalaryRecord[]> => {
+    const snap = await db.collection('salary_records')
+        .where('clinicId', '==', clinicId)
+        .where('yearMonth', '==', yearMonth)
+        .get();
+    return snap.docs.map(d => d.data() as SalaryRecord);
+};
+
+export const saveSalaryRecord = async (record: SalaryRecord) => {
+    const docId = record.id;
+    await db.collection('salary_records').doc(docId).set(deepSanitize({
+        ...record,
+        updatedAt: new Date().toISOString()
+    }), { merge: true });
 };
 
 // --- BONUS SETTINGS (Global per Clinic) ---

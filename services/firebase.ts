@@ -495,6 +495,58 @@ export const saveDailyAccounting = async (record: DailyAccountingRecord, auditEn
     Promise.all(updates).catch(err => console.error("Background CRM Sync Error:", err));
 };
 
+export const updateDailyRowField = async (
+    clinicId: string, 
+    date: string, 
+    rowId: string, 
+    field: string, 
+    value: any,
+    user?: { uid: string, name: string }
+) => {
+    const docId = `${clinicId}_${date}`;
+    const docRef = db.collection('daily_accounting').doc(docId);
+
+    try {
+        await db.runTransaction(async (t) => {
+            const doc = await t.get(docRef);
+            if (!doc.exists) throw new Error("Document does not exist");
+
+            const data = doc.data() as DailyAccountingRecord;
+            const rows = data.rows || [];
+            
+            // Find row index
+            const rowIndex = rows.findIndex(r => r.id === rowId);
+            if (rowIndex === -1) throw new Error("Row not found");
+
+            // Update specific field
+            const updatedRow = { ...rows[rowIndex], [field]: value };
+            rows[rowIndex] = updatedRow;
+
+            const updatePayload: any = { 
+                rows: deepSanitize(rows), 
+                lastUpdated: Date.now() 
+            };
+
+            // Add audit log if user provided
+            if (user) {
+                const auditEntry: AuditLogEntry = {
+                    timestamp: new Date().toISOString(),
+                    userId: user.uid,
+                    userName: user.name,
+                    action: 'UPDATE',
+                    details: `Quick Edit: ${field} -> ${value} for patient ${updatedRow.patientName}`
+                };
+                updatePayload.auditLog = firebase.firestore.FieldValue.arrayUnion(deepSanitize(auditEntry));
+            }
+
+            t.update(docRef, updatePayload);
+        });
+    } catch (e) {
+        console.error("Quick Edit Error:", e);
+        throw e;
+    }
+};
+
 export const getMonthlyAccounting = async (clinicId: string, month: string): Promise<AccountingRow[]> => {
     const startId = `${clinicId}_${month}-01`;
     const endId = `${clinicId}_${month}-31`;

@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Clinic, Doctor, AccountingRow, NHIRecord, MonthlyClosing } from '../types';
-import { getMonthlyAccounting, getNHIRecords, getMonthlyClosingStatus, lockMonthlyReport, unlockMonthlyReport } from '../services/firebase';
+import { getMonthlyAccounting, getNHIRecords, getMonthlyClosingStatus, lockMonthlyReport, unlockMonthlyReport, updateDailyRowField } from '../services/firebase';
 import { useClinic } from '../contexts/ClinicContext';
 import { useAuth } from '../contexts/AuthContext';
 import { ClinicSelector } from './ClinicSelector';
@@ -10,7 +10,7 @@ import { NHIClaimsModal } from './NHIClaimsModal';
 import { 
   TrendingUp, Banknote, CreditCard, Landmark, 
   Search, Loader2, FileSpreadsheet, Filter, ChevronDown, PlusCircle,
-  Stethoscope, Activity, Ticket, Wallet, Star, Lock, Unlock
+  Stethoscope, Activity, Ticket, Wallet, Star, Lock, Unlock, CheckCircle
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -66,7 +66,7 @@ const PaymentFilter = ({ value, onChange }: { value: string, onChange: (val: str
 
 export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
   const navigate = useNavigate();
-  const { selectedClinicId } = useClinic();
+  const { selectedClinicId, clinics } = useClinic();
   const { userRole, currentUser } = useAuth();
   
   const [currentMonth, setCurrentMonth] = useState<string>(new Date().toISOString().slice(0, 7));
@@ -78,6 +78,9 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
 
   const [monthlyStatus, setMonthlyStatus] = useState<MonthlyClosing | null>(null);
   const [isClosingActionLoading, setIsClosingActionLoading] = useState(false);
+  
+  // Quick Edit State
+  const [savingRowId, setSavingRowId] = useState<string | null>(null);
 
   const [filterDate, setFilterDate] = useState('');
   const [filterDoctor, setFilterDoctor] = useState('');
@@ -86,6 +89,10 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
   const [filterPayment, setFilterPayment] = useState('');
   const [filterSelfPay, setFilterSelfPay] = useState('');
   const [filterRetail, setFilterRetail] = useState('');
+
+  // Get active labs for dropdown
+  const currentClinic = useMemo(() => clinics.find(c => c.id === selectedClinicId), [clinics, selectedClinicId]);
+  const activeLabs = useMemo(() => currentClinic?.laboratories || [], [currentClinic]);
 
   useEffect(() => {
       if (selectedClinicId && currentMonth) fetchData();
@@ -116,6 +123,30 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
       } finally {
           setIsLoading(false);
       }
+  };
+
+  const handleQuickLabUpdate = async (rowId: string, date: string, newLabName: string) => {
+    if (!date) return;
+    setSavingRowId(rowId);
+    
+    // Optimistic Update
+    setRows(prev => prev.map(r => r.id === rowId ? { ...r, labName: newLabName } : r));
+
+    try {
+        await updateDailyRowField(
+            selectedClinicId,
+            date,
+            rowId,
+            'labName',
+            newLabName,
+            currentUser ? { uid: currentUser.uid, name: currentUser.email || 'User' } : undefined
+        );
+        setTimeout(() => setSavingRowId(null), 500); 
+    } catch(e) {
+        alert("更新失敗");
+        setSavingRowId(null);
+        fetchData(); // Revert
+    }
   };
 
   const handleLockMonth = async () => {
@@ -278,6 +309,7 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
           經手人: r.retail.staff || '',
           實收: r.actualCollected, 
           支付方式: r.paymentBreakdown?.card ? '刷卡' : r.paymentBreakdown?.transfer ? '匯款' : '現金', 
+          技工所: r.labName || '',
           療程內容: r.treatmentContent,
       })));
       XLSX.utils.book_append_sheet(wb, ws, "Daily Detail");
@@ -380,6 +412,7 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                               <th className={`${headerCellStyle} text-right min-w-[140px]`}>
                                   <PaymentFilter value={filterPayment} onChange={setFilterPayment} />
                               </th>
+                              <th className={`${headerCellStyle} min-w-[100px] pt-5`}>技工所 (Lab)</th>
                               <th className={`${headerCellStyle} text-left min-w-[100px] pt-5`}>療程內容</th>
                               <th className={`${headerCellStyle} text-left min-w-[80px] border-r-0 pt-5`}>NP/備註</th>
                           </tr>
@@ -397,6 +430,22 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                               <td className="px-4 py-3 text-right border-r border-slate-50 align-top text-sm">${(row.retail.products || 0) + (row.retail.diyWhitening || 0)}</td>
                               <td className="px-4 py-3 text-center border-r border-slate-50 text-xs text-slate-600">{row.retail.staff}</td>
                               <td className="px-4 py-3 text-right border-r border-slate-50 whitespace-nowrap align-top font-bold text-slate-800">${row.actualCollected.toLocaleString()}</td>
+                              <td className="px-4 py-3 border-r border-slate-50">
+                                  <div className="relative flex items-center">
+                                      <select 
+                                          className="w-full bg-transparent text-xs text-slate-600 outline-none border-b border-transparent hover:border-slate-300 focus:border-indigo-500 transition-colors py-1 cursor-pointer"
+                                          value={row.labName || ''}
+                                          onChange={(e) => handleQuickLabUpdate(row.id, row.originalDate || '', e.target.value)}
+                                          onClick={(e) => e.stopPropagation()}
+                                      >
+                                          <option value="">--</option>
+                                          {activeLabs.map(l => (
+                                              <option key={l.id} value={l.name}>{l.name}</option>
+                                          ))}
+                                      </select>
+                                      {savingRowId === row.id && <span className="absolute right-0 text-emerald-500"><CheckCircle size={12}/></span>}
+                                  </div>
+                              </td>
                               <td className="px-4 py-3 text-xs text-slate-500 border-r border-slate-50 truncate max-w-[200px]">{row.treatmentContent}</td>
                               <td className="px-4 py-3 text-xs">{row.npStatus}</td>
                           </tr>))}
@@ -410,7 +459,7 @@ export const MonthlyReport: React.FC<Props> = ({ doctors }) => {
                               <td className="px-4 py-3 text-right font-mono">${tableTotals.retail.toLocaleString()}</td>
                               <td className="px-4 py-3"></td>
                               <td className="px-4 py-3 text-right font-mono text-emerald-600 text-base">${tableTotals.actual.toLocaleString()}</td>
-                              <td colSpan={2}></td>
+                              <td colSpan={3}></td>
                           </tr>
                       </tfoot>
                   </table>

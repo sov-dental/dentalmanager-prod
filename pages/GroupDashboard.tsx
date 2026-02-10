@@ -44,6 +44,18 @@ interface CustomTooltipProps {
 const PIE_COLORS = ['#818cf8', '#8b5cf6', '#10b981', '#f59e0b', '#f43f5e', '#ec4899', '#06b6d4', '#14b8a6', '#6366f1'];
 const CLINIC_COLORS = ['#6366f1', '#a855f7', '#10b981', '#f59e0b', '#f43f5e', '#ec4899', '#06b6d4'];
 
+// --- HELPERS ---
+
+const calculateSelfPayFromRows = (rows: AccountingRow[]) => {
+    return rows.reduce((sum, row) => {
+        const t = row.treatments as any;
+        const r = row.retail;
+        const selfPaySum = (t.prostho || 0) + (t.implant || 0) + (t.ortho || 0) + (t.sov || 0) + (t.inv || 0) + (t.whitening || 0) + (t.perio || 0) + (t.otherSelfPay || 0);
+        const retailSum = (r.products || 0) + (r.diyWhitening || 0);
+        return sum + selfPaySum + retailSum;
+    }, 0);
+};
+
 // --- MEMOIZED SUB-COMPONENTS ---
 
 const InlineTableInput = memo(({ value, onCommit, placeholder }: { value: string, onCommit: (val: string) => void, placeholder?: string }) => {
@@ -155,8 +167,8 @@ const KPICard = memo(({ title, actual, target, prev, yearPrev, prefix = '', suff
     const rate = customRate !== undefined ? customRate : (target > 0 ? (actual / target) * 100 : 0);
     const isAchieved = rate >= 100; 
     const badgeColor = customRate !== undefined ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : (isAchieved ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-amber-50 text-amber-600 border-amber-100');
-    const mom = prev > 0 ? ((actual - prev) / prev) * 100 : 0;
-    const yoy = yearPrev > 0 ? ((actual - yearPrev) / yearPrev) * 100 : 0;
+    const mom = prev > 0 ? ((actual - prev) / prev) * 100 : (actual > 0 ? 100 : 0);
+    const yoy = yearPrev > 0 ? ((actual - yearPrev) / yearPrev) * 100 : (actual > 0 ? 100 : 0);
 
     return (
         <button 
@@ -447,26 +459,22 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                     return { clinicId: clinic.id, rows };
                 });
 
-                const allData = (await Promise.all([
+                const [snap, granularResults, prevGranularResults] = await Promise.all([
                     snapshotPromise, 
                     Promise.all(granularPromises), 
                     Promise.all(prevGranularPromises)
-                ])) as [any, any[], any[]];
-
-                const snap = allData[0];
-                const granularResults = allData[1];
-                const prevGranularResults = allData[2];
+                ]);
 
                 const newRows: Record<string, AccountingRow[]> = {};
                 const newStaffMap: Record<string, string> = {};
                 
-                granularResults.forEach((res: any) => {
+                (granularResults as any[]).forEach((res: any) => {
                     newRows[res.clinicId] = res.rows;
                     res.staff.forEach((s: any) => newStaffMap[s.id] = s.name);
                 });
 
                 const newPrevRows: Record<string, AccountingRow[]> = {};
-                prevGranularResults.forEach((res: any) => {
+                (prevGranularResults as any[]).forEach((res: any) => {
                     newPrevRows[res.clinicId] = res.rows;
                 });
 
@@ -568,16 +576,38 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         });
     }, [baseRecords, globalFilterClinic, globalFilterTag]);
 
-    // 4. Totals Calculation
+    // 4. Totals Calculation (Updated Logic)
     const totals = useMemo(() => {
+        // Calculate granular totals from loaded rows to properly include Retail
+        const currentSelfPayTotal = Object.values(monthlyRows).reduce((sum, rows) => sum + calculateSelfPayFromRows(rows), 0);
+        const prevSelfPayTotal = Object.values(prevMonthlyRows).reduce((sum, rows) => sum + calculateSelfPayFromRows(rows), 0);
+
         const current = snapshot.current.reduce((acc, curr) => ({
             revenue: acc.revenue + curr.actualRevenue,
             targetRevenue: acc.targetRevenue + (curr.targets.revenueTarget || 0),
-            selfPay: acc.selfPay + curr.actualSelfPay,
+            selfPay: acc.selfPay + curr.actualSelfPay, // Default fallback
             targetSelfPay: acc.targetSelfPay + (curr.targets.selfPayTarget || 0),
         }), { revenue: 0, targetRevenue: 0, selfPay: 0, targetSelfPay: 0 });
-        const prev = snapshot.lastMonth.reduce((acc, curr) => ({ revenue: acc.revenue + curr.actualRevenue, selfPay: acc.selfPay + curr.actualSelfPay, }), { revenue: 0, selfPay: 0 });
-        const yearPrev = snapshot.lastYear.reduce((acc, curr) => ({ revenue: acc.revenue + curr.actualRevenue, selfPay: acc.selfPay + curr.actualSelfPay, }), { revenue: 0, selfPay: 0 });
+        
+        // Override Self-Pay with granular calculation if data exists
+        if (Object.keys(monthlyRows).length > 0) {
+             current.selfPay = currentSelfPayTotal;
+        }
+
+        const prev = snapshot.lastMonth.reduce((acc, curr) => ({ 
+            revenue: acc.revenue + curr.actualRevenue, 
+            selfPay: acc.selfPay + curr.actualSelfPay, 
+        }), { revenue: 0, selfPay: 0 });
+        
+        // Override Previous Self-Pay
+        if (Object.keys(prevMonthlyRows).length > 0) {
+            prev.selfPay = prevSelfPayTotal;
+        }
+
+        const yearPrev = snapshot.lastYear.reduce((acc, curr) => ({ 
+            revenue: acc.revenue + curr.actualRevenue, 
+            selfPay: acc.selfPay + curr.actualSelfPay, 
+        }), { revenue: 0, selfPay: 0 });
         
         // NP Totals
         const today = new Date().toISOString().split('T')[0];
@@ -590,7 +620,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
             closed: bookedRecords.filter(r => r.isClosed).length, 
         };
         return { current, prev, yearPrev, marketing };
-    }, [snapshot, activeRecords]);
+    }, [snapshot, activeRecords, monthlyRows, prevMonthlyRows]);
 
     // 5. Daily Trend Data (Revenue)
     const dailyTrendData = useMemo(() => {
@@ -660,24 +690,30 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         return [...Object.values(dataMap)].sort((a, b) => a.day - b.day);
     }, [activeRecords, clinics, currentMonth]);
 
-    // 7. Performance Matrix
+    // 7. Performance Matrix (Updated Logic)
     const performanceMatrix = useMemo(() => {
         return [...snapshot.current]
             .sort((a, b) => (CLINIC_ORDER[a.clinicName] ?? 999) - (CLINIC_ORDER[b.clinicName] ?? 999))
-            .map(d => ({
-                id: d.clinicId,
-                name: d.clinicName,
-                revenueActual: d.actualRevenue,
-                revenueTarget: d.targets.revenueTarget || 0,
-                selfPayActual: d.actualSelfPay,
-                selfPayTarget: d.targets.selfPayTarget || 0,
-                visitActual: d.actualVisits,
-                visitTarget: d.targets.visitTarget || 0,
-                revenueRate: (d.targets.revenueTarget || 0) > 0 ? (d.actualRevenue / d.targets.revenueTarget) * 100 : 0,
-                selfPayRate: (d.targets.selfPayTarget || 0) > 0 ? (d.actualSelfPay / d.targets.selfPayTarget) * 100 : 0,
-                fullTarget: d.targets
-            }));
-    }, [snapshot.current]);
+            .map(d => {
+                const clinicRows = monthlyRows[d.clinicId];
+                // Only override if we have granular data for this clinic to include Retail
+                const actualSelfPay = clinicRows ? calculateSelfPayFromRows(clinicRows) : d.actualSelfPay;
+
+                return {
+                    id: d.clinicId,
+                    name: d.clinicName,
+                    revenueActual: d.actualRevenue,
+                    revenueTarget: d.targets.revenueTarget || 0,
+                    selfPayActual: actualSelfPay,
+                    selfPayTarget: d.targets.selfPayTarget || 0,
+                    visitActual: d.actualVisits,
+                    visitTarget: d.targets.visitTarget || 0,
+                    revenueRate: (d.targets.revenueTarget || 0) > 0 ? (d.actualRevenue / d.targets.revenueTarget) * 100 : 0,
+                    selfPayRate: (d.targets.selfPayTarget || 0) > 0 ? (actualSelfPay / d.targets.selfPayTarget) * 100 : 0,
+                    fullTarget: d.targets
+                };
+            });
+    }, [snapshot.current, monthlyRows]);
 
     const achievementRanking = useMemo(() => {
         return [...performanceMatrix].sort((a: any, b: any) => b.revenueRate - a.revenueRate);
@@ -688,32 +724,43 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         const keys = ['implant', 'ortho', 'prostho', 'sov', 'inv', 'whitening', 'perio', 'otherSelfPay', 'retail'] as const;
         const labels = ['植牙', '矯正', '假牙', 'SOV', 'INV', '美白', '牙周', '其他', '物販/小金庫'];
         
-        const globalCurrentTotals = keys.map(() => 0);
-        const globalPrevTotals = keys.map(() => 0);
+        // Structure to hold data per clinic
+        const clinicBreakdown: Record<string, { 
+            name: string, 
+            current: number[], // array matching keys
+            prev: number[], 
+            totalCurrent: number // scalar total
+        }> = {};
 
-        const clinicBreakdown: Record<string, { name: string, current: number[], prev: number[], total: number }> = {};
+        // Initialize for all clinics
         clinics.forEach(c => {
-            clinicBreakdown[c.id] = { name: c.name, current: keys.map(() => 0), prev: keys.map(() => 0), total: 0 };
+            clinicBreakdown[c.id] = { 
+                name: c.name, 
+                current: keys.map(() => 0), 
+                prev: keys.map(() => 0), 
+                totalCurrent: 0 
+            };
         });
 
+        // 1. Fill Current Data
         Object.entries(monthlyRows).forEach(([cid, rows]) => {
             if (!clinicBreakdown[cid]) return;
             rows.forEach(row => {
                 const t = row.treatments as any;
                 const r = row.retail;
-                const rowTotal = (t.implant || 0) + (t.ortho || 0) + (t.prostho || 0) + (t.sov || 0) + (t.inv || 0) + (t.whitening || 0) + (t.perio || 0) + (t.otherSelfPay || 0) + (r.products || 0) + (r.diyWhitening || 0);
-                clinicBreakdown[cid].total += rowTotal;
+                // Calculate Row Total (for the total column in matrix)
+                const rowSum = (t.implant || 0) + (t.ortho || 0) + (t.prostho || 0) + (t.sov || 0) + (t.inv || 0) + (t.whitening || 0) + (t.perio || 0) + (t.otherSelfPay || 0) + (r.products || 0) + (r.diyWhitening || 0);
+                clinicBreakdown[cid].totalCurrent += rowSum;
 
+                // Calculate category breakdown
                 keys.forEach((k, idx) => {
                     const amount = k === 'retail' ? (r.products || 0) + (r.diyWhitening || 0) : (t[k] || 0);
                     clinicBreakdown[cid].current[idx] += amount;
-                    if (breakdownFilter === 'all' || breakdownFilter === cid) {
-                        globalCurrentTotals[idx] += amount;
-                    }
                 });
             });
         });
 
+        // 2. Fill Previous Data
         Object.entries(prevMonthlyRows).forEach(([cid, rows]) => {
             if (!clinicBreakdown[cid]) return;
             rows.forEach(row => {
@@ -722,27 +769,61 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                 keys.forEach((k, idx) => {
                     const amount = k === 'retail' ? (r.products || 0) + (r.diyWhitening || 0) : (t[k] || 0);
                     clinicBreakdown[cid].prev[idx] += amount;
-                    if (breakdownFilter === 'all' || breakdownFilter === cid) {
-                        globalCurrentTotals[idx] += amount;
-                    }
                 });
             });
         });
 
-        const pieData = keys.map((k, i) => ({ name: labels[i], value: globalCurrentTotals[i] })).filter(d => d.value > 0);
-        const grandSumCurrent = globalCurrentTotals.reduce((a, b) => a + b, 0);
-        const grandSumPrev = globalPrevTotals.reduce((a, b) => a + b, 0);
-        const getGrowth = (curr: number, prev: number) => (prev === 0 ? (curr > 0 ? 100 : 0) : ((curr - prev) / prev) * 100);
+        // 3. Calculate Totals (Unfiltered for Matrix, Filtered for Pie)
+        const matrixTotalCurrent = keys.map(() => 0);
+        const matrixTotalPrev = keys.map(() => 0);
+        const pieTotalCurrent = keys.map(() => 0);
+        
+        let matrixGrandTotalCurrent = 0;
+        let matrixGrandTotalPrev = 0;
+
+        // Re-iterate via clinics to access ID easily
+        clinics.forEach(c => {
+            const data = clinicBreakdown[c.id];
+            if (!data) return;
+
+            // Matrix Totals (Always Sum All)
+            keys.forEach((_, idx) => {
+                matrixTotalCurrent[idx] += data.current[idx];
+                matrixTotalPrev[idx] += data.prev[idx];
+            });
+            
+            // Pie Totals (Respect Filter)
+            if (breakdownFilter === 'all' || breakdownFilter === c.id) {
+                keys.forEach((_, idx) => {
+                    pieTotalCurrent[idx] += data.current[idx];
+                });
+            }
+        });
+
+        matrixGrandTotalCurrent = matrixTotalCurrent.reduce((a, b) => a + b, 0);
+        matrixGrandTotalPrev = matrixTotalPrev.reduce((a, b) => a + b, 0);
+
+        // 4. Pie Data
+        const pieData = keys.map((k, i) => ({ name: labels[i], value: pieTotalCurrent[i] })).filter(d => d.value > 0);
+
+        // 5. Growth Calculation (Based on Matrix Totals)
+        const getGrowth = (curr: number, prev: number) => {
+            if (prev === 0) return curr > 0 ? 100 : 0;
+            return ((curr - prev) / prev) * 100;
+        };
+
         const sortedClinicData = Object.values(clinicBreakdown).sort((a, b) => (CLINIC_ORDER[a.name] ?? 999) - (CLINIC_ORDER[b.name] ?? 999));
 
         return { 
-            pieData, labels, clinicMatrix: sortedClinicData,
+            pieData, 
+            labels, 
+            clinicMatrix: sortedClinicData,
             summary: {
-                current: globalCurrentTotals,
-                growth: keys.map((_, i) => getGrowth(globalCurrentTotals[i], globalPrevTotals[i])),
-                totalCurrent: grandSumCurrent,
-                totalPrev: grandSumPrev,
-                totalGrowth: getGrowth(grandSumCurrent, grandSumPrev)
+                current: matrixTotalCurrent, // For Table Footer
+                growth: keys.map((_, i) => getGrowth(matrixTotalCurrent[i], matrixTotalPrev[i])),
+                totalCurrent: matrixGrandTotalCurrent,
+                totalPrev: matrixGrandTotalPrev, // Unused in UI but good for debug
+                totalGrowth: getGrowth(matrixGrandTotalCurrent, matrixGrandTotalPrev)
             }
         };
     }, [monthlyRows, prevMonthlyRows, clinics, breakdownFilter]);
@@ -1044,7 +1125,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
                                     {selfPayAnalytics.clinicMatrix.map((clinic) => (
                                         <tr key={clinic.name} className="hover:bg-indigo-50/10 transition-colors">
                                             <td className="px-6 py-4 font-black text-slate-700 sticky left-0 bg-white z-10 border-r border-slate-50 shadow-sm">{clinic.name}</td>
-                                            <td className="px-6 py-4 text-right font-black text-indigo-600 tabular-nums bg-indigo-50/30">${clinic.total.toLocaleString()}</td>
+                                            <td className="px-6 py-4 text-right font-black text-indigo-600 tabular-nums bg-indigo-50/30">${clinic.totalCurrent.toLocaleString()}</td>
                                             {clinic.current.map((val, idx) => (<td key={idx} className="px-6 py-4 text-right tabular-nums text-slate-500 font-medium">{val > 0 ? `$${val.toLocaleString()}` : '-'}</td>))}
                                         </tr>
                                     ))}

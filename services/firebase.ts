@@ -586,6 +586,49 @@ export const getTechnicianRecords = async (clinicId: string, labName: string | n
 };
 
 export const saveTechnicianRecord = async (record: TechnicianRecord) => {
+    // CRITICAL FIX: Deduplication logic
+    // If it is a LINKED record, ensure we overwrite any existing records with the same linkedRowId
+    if (record.type === 'linked' && record.linkedRowId) {
+        try {
+            const q = await db.collection('technician_records')
+                .where('linkedRowId', '==', record.linkedRowId)
+                .get();
+
+            if (!q.empty) {
+                // Found existing record(s)
+                const docs = q.docs;
+                
+                // Identify which document ID to keep
+                // If record.id matches one, keep that. Otherwise use the first one.
+                let targetId = record.id;
+                const match = docs.find(d => d.id === record.id);
+                
+                if (match) {
+                    targetId = match.id;
+                } else {
+                    targetId = docs[0].id;
+                }
+
+                // If duplicates exist (length > 1), delete the extras
+                if (docs.length > 1) {
+                    const batch = db.batch();
+                    docs.forEach(doc => {
+                        if (doc.id !== targetId) {
+                            batch.delete(doc.ref);
+                        }
+                    });
+                    await batch.commit();
+                    console.warn(`[saveTechnicianRecord] Fixed duplicates for row ${record.linkedRowId}. Deleted ${docs.length - 1} records.`);
+                }
+
+                // Force the record ID to match the existing one
+                record.id = targetId;
+            }
+        } catch (e) {
+            console.error("Error checking duplicates for technician record:", e);
+        }
+    }
+
     const id = record.id || crypto.randomUUID();
     await db.collection('technician_records').doc(id).set(deepSanitize({ ...record, id }), { merge: true });
 };

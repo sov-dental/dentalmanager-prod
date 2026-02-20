@@ -237,12 +237,38 @@ export const DailyAccounting: React.FC<Props> = ({ clinics, doctors, consultants
   }, []);
 
   const consultantOptions = useMemo(() => 
-      fullStaffList.filter(c => c.role === 'consultant' || c.role === 'trainee'), 
-  [fullStaffList]);
+      fullStaffList.filter(c => {
+          const isRoleMatch = c.role === 'consultant' || c.role === 'trainee';
+          if (!isRoleMatch) return false;
+          
+          // Filter out resigned staff
+          if (c.resignationDate && c.resignationDate < currentDate) {
+              return false;
+          }
+          // Filter out future staff
+          if (c.onboardDate && c.onboardDate > currentDate) {
+              return false;
+          }
+          return true;
+      }), 
+  [fullStaffList, currentDate]);
 
   const staffOptions = useMemo(() => 
-      fullStaffList.filter(c => ['consultant', 'trainee', 'assistant'].includes(c.role || '')), 
-  [fullStaffList]);
+      fullStaffList.filter(c => {
+          const isRoleMatch = ['consultant', 'trainee', 'assistant'].includes(c.role || '');
+          if (!isRoleMatch) return false;
+
+          // Filter out resigned staff
+          if (c.resignationDate && c.resignationDate < currentDate) {
+              return false;
+          }
+          // Filter out future staff
+          if (c.onboardDate && c.onboardDate > currentDate) {
+              return false;
+          }
+          return true;
+      }), 
+  [fullStaffList, currentDate]);
 
   const clinicDocs = useMemo(() => doctors.filter(d => d.clinicId === selectedClinicId), [doctors, selectedClinicId]);
   const clinicLabs = useMemo(() => laboratories.filter(l => l.clinicId === selectedClinicId), [laboratories, selectedClinicId]);

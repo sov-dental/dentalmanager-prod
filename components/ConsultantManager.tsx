@@ -57,7 +57,9 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
       avatarText: '',
       avatarColor: '#94a3b8',
       onboardDate: '',
+      resignationDate: '',
       baseSalary: 0,
+      hourlyRate: 0,
       allowance: 0,
       insuredSalary: 0,
       dependents: 0,
@@ -101,7 +103,9 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
         avatarText: '',
         avatarColor: '#94a3b8',
         onboardDate: '',
+        resignationDate: '',
         baseSalary: 0,
+        hourlyRate: 0,
         allowance: 0,
         insuredSalary: 0,
         dependents: 0,
@@ -122,7 +126,9 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
         avatarText: consultant.avatarText || '',
         avatarColor: consultant.avatarColor || '#94a3b8',
         onboardDate: consultant.onboardDate || '',
+        resignationDate: consultant.resignationDate || '',
         baseSalary: consultant.baseSalary || 0,
+        hourlyRate: consultant.hourlyRate || 0,
         allowance: consultant.allowance || 0,
         insuredSalary: consultant.insuredSalary || 0,
         dependents: consultant.dependents || 0,
@@ -175,7 +181,9 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
             isActive: true,
             // HR Fields
             onboardDate: formData.onboardDate,
+            resignationDate: formData.resignationDate,
             baseSalary: Number(formData.baseSalary) || 0,
+            hourlyRate: Number(formData.hourlyRate) || 0,
             allowance: Number(formData.allowance) || 0,
             insuredSalary: Number(formData.insuredSalary) || 0,
             dependents: Number(formData.dependents) || 0,
@@ -467,38 +475,65 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
                                 />
                             </div>
                         </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">離職日期 (Resignation)</label>
+                            <div className="relative">
+                                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                                <input
+                                    type="date"
+                                    className="w-full pl-10 border rounded-lg px-3 py-2 focus:ring-2 focus:ring-teal-500 outline-none"
+                                    value={formData.resignationDate}
+                                    onChange={e => updateField('resignationDate', e.target.value)}
+                                />
+                            </div>
+                        </div>
                     </div>
 
                     {/* Right Column: HR & Payroll */}
                     <div className="space-y-4">
                         <h4 className="text-sm font-bold text-slate-600 uppercase mb-2 border-b pb-1">薪資與保險 (Payroll & HR)</h4>
                         
-                        <div className="grid grid-cols-2 gap-4">
+                        {formData.role === 'part_time' ? (
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1">
-                                    <DollarSign size={12}/> 本薪 (Base Salary)
+                                    <Clock size={12}/> 時薪 (Hourly Rate)
                                 </label>
                                 <input
                                     type="number"
-                                    className="w-full border rounded-lg px-3 py-2 text-right font-mono"
-                                    value={formData.baseSalary}
-                                    onChange={e => updateField('baseSalary', e.target.value)}
+                                    className="w-full border rounded-lg px-3 py-2 text-right font-mono bg-amber-50 border-amber-200 focus:ring-amber-500"
+                                    value={formData.hourlyRate}
+                                    onChange={e => updateField('hourlyRate', e.target.value)}
                                     placeholder="0"
                                 />
                             </div>
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1">
-                                    <DollarSign size={12}/> 職務加給 (Allowance)
-                                </label>
-                                <input
-                                    type="number"
-                                    className="w-full border rounded-lg px-3 py-2 text-right font-mono"
-                                    value={formData.allowance}
-                                    onChange={e => updateField('allowance', e.target.value)}
-                                    placeholder="0"
-                                />
+                        ) : (
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1">
+                                        <DollarSign size={12}/> 本薪 (Base Salary)
+                                    </label>
+                                    <input
+                                        type="number"
+                                        className="w-full border rounded-lg px-3 py-2 text-right font-mono"
+                                        value={formData.baseSalary}
+                                        onChange={e => updateField('baseSalary', e.target.value)}
+                                        placeholder="0"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1">
+                                        <DollarSign size={12}/> 職務加給 (Allowance)
+                                    </label>
+                                    <input
+                                        type="number"
+                                        className="w-full border rounded-lg px-3 py-2 text-right font-mono"
+                                        value={formData.allowance}
+                                        onChange={e => updateField('allowance', e.target.value)}
+                                        placeholder="0"
+                                    />
+                                </div>
                             </div>
-                        </div>
+                        )}
 
                         {/* INSURANCE GRADE SELECTOR */}
                         <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
@@ -614,7 +649,10 @@ export const ConsultantManager: React.FC<Props> = ({ clinics }) => {
                                             </div>
                                             <div className="text-xs text-slate-400 mt-0.5 flex flex-wrap gap-3">
                                                 {consultant.onboardDate && (
-                                                    <span className="flex items-center gap-1"><Calendar size={10} /> {consultant.onboardDate}</span>
+                                                    <span className="flex items-center gap-1"><Calendar size={10} /> 到: {consultant.onboardDate}</span>
+                                                )}
+                                                {consultant.resignationDate && (
+                                                    <span className="flex items-center gap-1 text-rose-400"><Calendar size={10} /> 離: {consultant.resignationDate}</span>
                                                 )}
                                                 {consultant.insuredSalary && (
                                                     <span className="flex items-center gap-1"><DollarSign size={10} /> 投保: ${consultant.insuredSalary.toLocaleString()}</span>

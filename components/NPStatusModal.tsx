@@ -53,9 +53,20 @@ export const NPStatusModal: React.FC<Props> = ({ isOpen, onClose, recordId, pati
         try {
             // 1. Fetch Consultants
             const staff = await getStaffList(clinicId);
-            const eligible = staff.filter(s => 
-                !s.role || ['consultant', 'trainee', 'assistant'].includes(s.role)
-            );
+            const eligible = staff.filter(s => {
+                const isRoleMatch = !s.role || ['consultant', 'trainee', 'assistant'].includes(s.role);
+                if (!isRoleMatch) return false;
+
+                // Filter out resigned staff based on the record date
+                if (s.resignationDate && s.resignationDate < date) {
+                    return false;
+                }
+                // Filter out future staff
+                if (s.onboardDate && s.onboardDate > date) {
+                    return false;
+                }
+                return true;
+            });
             setConsultants(eligible.map(s => ({ id: s.id, name: s.name })));
 
             // 2. Fetch Marketing Tags (Dynamic)

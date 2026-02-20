@@ -119,7 +119,9 @@ export interface Consultant {
   avatarColor?: string;  // NEW: Background color for avatar
   // HR & Payroll Fields
   onboardDate?: string;   // 到職日 (YYYY-MM-DD)
+  resignationDate?: string; // 離職日 (YYYY-MM-DD)
   baseSalary?: number;    // 本薪
+  hourlyRate?: number;    // 時薪 (For Part-time)
   allowance?: number;     // 職務加給
   insuredSalary?: number; // 投保薪資
   dependents?: number;    // 眷保眷屬人數
@@ -354,8 +356,10 @@ export interface SalaryRecord {
     yearMonth: string; // YYYY-MM
     staffId: string;
     regularOvertimeMinutes?: number;
+    partTimeHours?: number; // NEW: For Part-time staff
     laborHealthInsurance?: number; // Combined input in UI currently called 'insurance'
     otherAdjustment?: number;
+    holidayBonus?: number; // NEW: Holiday Bonus
     note?: string;
     updatedAt?: string;
 }

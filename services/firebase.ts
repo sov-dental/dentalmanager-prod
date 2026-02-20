@@ -749,6 +749,11 @@ export const getSalaryRecords = async (clinicId: string, yearMonth: string): Pro
 
 export const saveSalaryRecord = async (record: SalaryRecord) => {
     const docId = record.id;
+    console.log("Firestore Write (SalaryRecord):", docId, record);
+    // Explicitly check if holidayBonus is present to debug
+    if (record.holidayBonus !== undefined) {
+        console.log("Saving Holiday Bonus:", record.holidayBonus);
+    }
     await db.collection('salary_records').doc(docId).set(deepSanitize({
         ...record,
         updatedAt: new Date().toISOString()
@@ -766,7 +771,8 @@ export const getBonusSettings = async (clinicId: string, _month?: string): Promi
         selfPayRate: 1, 
         retailRate: 10,
         fullAttendanceBonus: 3000,
-        overtimeRate: 3.5
+        overtimeRate: 3.5,
+        holidayBonus: 0 // NEW: Default Holiday Bonus
     };
 
     if (doc.exists) {

@@ -579,8 +579,8 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
     // 4. Totals Calculation (Updated Logic)
     const totals = useMemo(() => {
         // Calculate granular totals from loaded rows to properly include Retail
-        const currentSelfPayTotal = Object.values(monthlyRows).reduce((sum, rows) => sum + calculateSelfPayFromRows(rows), 0);
-        const prevSelfPayTotal = Object.values(prevMonthlyRows).reduce((sum, rows) => sum + calculateSelfPayFromRows(rows), 0);
+        const currentSelfPayTotal = Object.values(monthlyRows).reduce((sum, rows) => sum + calculateSelfPayFromRows(rows as AccountingRow[]), 0);
+        const prevSelfPayTotal = Object.values(prevMonthlyRows).reduce((sum, rows) => sum + calculateSelfPayFromRows(rows as AccountingRow[]), 0);
 
         const current = snapshot.current.reduce((acc, curr) => ({
             revenue: acc.revenue + curr.actualRevenue,
@@ -745,7 +745,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         // 1. Fill Current Data
         Object.entries(monthlyRows).forEach(([cid, rows]) => {
             if (!clinicBreakdown[cid]) return;
-            rows.forEach(row => {
+            (rows as AccountingRow[]).forEach(row => {
                 const t = row.treatments as any;
                 const r = row.retail;
                 // Calculate Row Total (for the total column in matrix)
@@ -763,7 +763,7 @@ export const GroupDashboard: React.FC<Props> = ({ clinics, userRole }) => {
         // 2. Fill Previous Data
         Object.entries(prevMonthlyRows).forEach(([cid, rows]) => {
             if (!clinicBreakdown[cid]) return;
-            rows.forEach(row => {
+            (rows as AccountingRow[]).forEach(row => {
                 const t = row.treatments as any;
                 const r = row.retail;
                 keys.forEach((k, idx) => {
